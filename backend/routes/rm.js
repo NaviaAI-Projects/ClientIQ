@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db');
+const auth = require('../middleware/auth');
 
-router.get('/list', async (req, res) => {
+router.get('/list',auth, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT
@@ -25,7 +26,7 @@ router.get('/list', async (req, res) => {
   }
 });
 
-router.get('/settings', async (req, res) => {
+router.get('/settings', auth, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT *
@@ -40,7 +41,7 @@ router.get('/settings', async (req, res) => {
   }
 });
 
-router.post('/settings', async (req, res) => {
+router.post('/settings', auth, async (req, res) => {
   const { rm_capacity_limit, lead_expiry_window } = req.body;
 
   try {

@@ -5,6 +5,28 @@ const auth = require('../middleware/auth');
 
 router.post('/rescore', auth, async (req, res) => {
   try {
+    // Add this function at the top of the file, after the imports
+    async function getWeights(pool) {
+      const result = await pool.query(
+        `SELECT key, value FROM settings 
+        WHERE key IN (
+          'options_to_weight','float_weight','equity_weight',
+          'mtf_weight','nri_weight','dormancy_weight',
+          'lead_score_threshold'
+        )`
+      );
+      const w = {};
+      result.rows.forEach(r => { w[r.key] = parseFloat(r.value); });
+      return {
+        options:   w.options_to_weight   || 35,
+        float:     w.float_weight        || 20,
+        equity:    w.equity_weight       || 20,
+        mtf:       w.mtf_weight          || 10,
+        nri:       w.nri_weight          || 8,
+        dormancy:  w.dormancy_weight     || 7,
+        threshold: w.lead_score_threshold || 60
+      };
+    }
     const clients = await pool.query(`
       SELECT
         c.ucc,
@@ -26,11 +48,13 @@ router.post('/rescore', auth, async (req, res) => {
     let processed = 0;
 
     for (const client of clients.rows) {
-      const optionsScore = Number(client.options_turnover) > 0 ? 35 : 0;
-      const floatScore = Number(client.ledger_balance) >= 50000 ? 20 : Number(client.ledger_balance) >= 10000 ? 10 : 0;
-      const equityScore = Number(client.equity_turnover) > 0 ? 20 : 0;
-      const mtfScore = Number(client.mtf_balance) > 0 ? 10 : 0;
-      const nriScore = 0;
+      const weights = await getWeights(pool);
+      const optionsScore = Number(client.options_turnover) > 0 ? weights.options : 0;
+      const floatScore = Number(client.ledger_balance) >= 50000 ? weights.float :
+                        Number(client.ledger_balance) >= 10000 ? weights.float / 2 : 0;
+      const equityScore = Number(client.equity_turnover) > 0 ? weights.equity : 0;
+      const mtfScore = Number(client.mtf_balance) > 0 ? weights.mtf : 0;
+      const nriScore = weights.nri;
 
       let dormancyScore = 0;
       if (client.last_trade_date) {
@@ -93,7 +117,7 @@ router.post('/rescore', auth, async (req, res) => {
         aiNotes
       ]);
 
-      if (leadScore >= 60) {
+      if (leadScore >= weights.threshold) {
         await pool.query(`
           INSERT INTO lead_pool
           (

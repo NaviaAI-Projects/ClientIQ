@@ -218,7 +218,8 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         records_processed,
         records_failed,
         status,
-        imported_by
+        imported_by,
+        created_at
       )
       VALUES
       (
@@ -228,7 +229,8 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         $3,
         $4,
         $5,
-        $6
+        $6,
+        NOW()
       )
     `, [
       file_type,

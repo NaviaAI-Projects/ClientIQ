@@ -4,7 +4,13 @@ const bcrypt = require('bcryptjs');
 const pool = require('../db');
 const auth = require('../middleware/auth');
 
-router.get('/', auth, async (req, res) => {
+function adminOnly(req, res, next) {
+  if (req.user.role !== 'admin')
+    return res.status(403).json({ message: 'Admin access required' });
+  next();
+}
+
+router.get('/', auth, adminOnly, async (req, res) => {
   try {
     const result = await pool.query(
       'SELECT id, name, email, role, supervisor_sub_role, is_active, created_at FROM users ORDER BY name ASC'
@@ -15,7 +21,7 @@ router.get('/', auth, async (req, res) => {
   }
 });
 
-router.post('/', auth, async (req, res) => {
+router.post('/', auth, adminOnly, async (req, res) => {
   const { name, email, password, role, supervisor_sub_role } = req.body;
   try {
     const hash = await bcrypt.hash(password, 10);
@@ -29,7 +35,7 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-router.put('/:id', auth, async (req, res) => {
+router.put('/:id', auth, adminOnly, async (req, res) => {
   const { name, email, role, supervisor_sub_role, is_active } = req.body;
   try {
     const result = await pool.query(

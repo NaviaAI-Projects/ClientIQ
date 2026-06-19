@@ -4,6 +4,7 @@ import { useAuth } from '../context/AuthContext';
 
 const Layout = () => {
   const { user, logout } = useAuth();
+  const [showMenu, setShowMenu] = React.useState(false);
   const navigate = useNavigate();
 
   const handleLogout = () => { logout(); navigate('/login'); };
@@ -45,7 +46,7 @@ const Layout = () => {
       { path: '/unmap-requests', label: 'Unmap Requests', icon: '👤', badge: '2' },
     ]},
     { section: 'CLIENT UNIVERSE', items: [
-      { path: '/all-clients', label: 'All 20,000 Clients', icon: '🌍' },
+      { path: '/all-clients', label: 'All Clients', icon: '🌍' },
       { path: '/unmapped-pool', label: 'Unmapped Pool', icon: '❓' },
       { path: '/client-360', label: 'Client 360', icon: '👤' },
     ]},
@@ -155,25 +156,63 @@ const Layout = () => {
         </nav>
 
         {/* User footer */}
-        <div style={{ marginTop: 'auto', padding: '10px 8px', borderTop: '0.5px solid rgba(0,0,0,0.1)' }}>
-          <div
-            onClick={handleLogout}
-            style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '6px', cursor: 'pointer' }}
-          >
-            <div style={{
-              width: '28px', height: '28px', borderRadius: '50%',
-              background: '#e6f1fb', color: '#185fa5',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '10px', fontWeight: '600', flexShrink: 0
-            }}>
-              {initials}
-            </div>
-            <div>
-              <div style={{ fontSize: '12px', fontWeight: '500', color: '#111' }}>{user?.name}</div>
-              <div style={{ fontSize: '10px', color: '#999' }}>{getRoleLabel()}</div>
-            </div>
-          </div>
+        {/* User footer */}
+<div style={{ marginTop: 'auto', padding: '10px 8px', borderTop: '0.5px solid rgba(0,0,0,0.1)' }}>
+  <div
+    onClick={() => setShowMenu(!showMenu)}
+    style={{ position: 'relative', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '6px' }}
+  >
+    {/* Avatar circle */}
+    <div style={{
+      width: '28px', height: '28px', borderRadius: '50%',
+      background: '#e6f1fb', color: '#185fa5',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: '10px', fontWeight: '600', flexShrink: 0
+    }}>
+      {initials}
+    </div>
+
+    {/* Name and role */}
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ fontSize: '12px', fontWeight: '500', color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {user?.name}
+      </div>
+      <div style={{ fontSize: '10px', color: '#999' }}>
+        {getRoleLabel()}
+      </div>
+    </div>
+
+    {/* Chevron */}
+    <span style={{ fontSize: '10px', color: '#999' }}>⌃</span>
+
+    {/* Dropdown menu */}
+    {showMenu && (
+      <div style={{
+        position: 'absolute', bottom: '44px', left: 0, right: 0,
+        background: '#fff', border: '0.5px solid rgba(0,0,0,0.1)',
+        borderRadius: '8px', padding: '4px',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 200
+      }}>
+        <div style={{ padding: '6px 10px', fontSize: '11px', color: '#999', borderBottom: '0.5px solid rgba(0,0,0,0.1)', marginBottom: '4px' }}>
+          {user?.email}
         </div>
+        <div
+          onClick={(e) => { e.stopPropagation(); handleLogout(); }}
+          style={{
+            padding: '7px 10px', fontSize: '12.5px',
+            cursor: 'pointer', color: '#a32d2d',
+            borderRadius: '5px',
+            display: 'flex', alignItems: 'center', gap: '6px'
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = '#fcebeb'}
+          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+        >
+          🚪 Logout
+        </div>
+      </div>
+    )}
+  </div>
+</div>
       </aside>
 
       {/* Topbar */}
