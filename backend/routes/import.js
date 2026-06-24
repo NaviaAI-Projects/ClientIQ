@@ -164,7 +164,39 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         errors.push(`Trade row error: ${e.message}`);
       }
     }
-}
+    // Insert grouped aggregates into daily_trades
+    for (const g of Object.values(grouped)) {
+      try {
+        const eqCash  = g.segment === 'EQ_CASH' ? g.turnover : 0;
+        const eqFo    = (g.segment === 'EQ_OPT' || g.segment === 'EQ_FUT') ? g.turnover : 0;
+        const commFo  = g.segment === 'COMM_FO' ? g.turnover : 0;
+        const optPrem = g.segment === 'EQ_OPT'  ? g.turnover : 0;
+
+        await pool.query(`
+          INSERT INTO daily_trades
+            (ucc, trade_date, eq_cash_turnover, eq_fo_turnover,
+             commodity_fo_turnover, options_premium_turnover)
+          VALUES ($1,$2,$3,$4,$5,$6)
+          ON CONFLICT (ucc, trade_date) DO UPDATE SET
+            eq_cash_turnover         = daily_trades.eq_cash_turnover + EXCLUDED.eq_cash_turnover,
+            eq_fo_turnover           = daily_trades.eq_fo_turnover + EXCLUDED.eq_fo_turnover,
+            commodity_fo_turnover    = daily_trades.commodity_fo_turnover + EXCLUDED.commodity_fo_turnover,
+            options_premium_turnover = daily_trades.options_premium_turnover + EXCLUDED.options_premium_turnover
+        `, [g.ucc, g.trade_date, eqCash, eqFo, commFo, optPrem]);
+
+        // Update last_trade_date on clients using GREATEST to always keep latest
+        await pool.query(`
+          UPDATE clients
+          SET last_trade_date = GREATEST(last_trade_date, $1::date), updated_at = NOW()
+          WHERE ucc = $2
+        `, [g.trade_date, g.ucc]);
+
+      } catch (e) {
+        console.error(`Trade insert ERROR → UCC:${g.ucc} Segment:${g.segment} Date:${g.trade_date} Error:`, e.message);
+        errors.push(`Trade insert ${g.ucc}: ${e.message}`);
+      }
+    }
+  }
     // ──────────────────────────────────────────
     // BROKERAGE FILE
     // Has 2 header rows. Row 2+ has:
