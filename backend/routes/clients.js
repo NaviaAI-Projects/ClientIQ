@@ -52,7 +52,11 @@ router.get('/my/clients', auth, async (req, res) => {
       [userName]
     );
 
-    const rmId = rmResult.rows[0]?.id || 0;
+    const rmId = rmResult.rows[0]?.id || null;
+    if (!rmId) {
+      console.warn(`No rm_master record found for user: ${userName} (id: ${req.user.id})`);
+      return res.json([]); // or appropriate empty response
+    }
 
     const result = await pool.query(`
       SELECT c.*,

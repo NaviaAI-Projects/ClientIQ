@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import api from '../api';
 
 const MyPerformance = () => {
   const [stats, setStats] = useState({
@@ -14,18 +15,11 @@ const MyPerformance = () => {
 
   const loadPerformance = async () => {
     try {
-      const token = localStorage.getItem('token');
 
       const [clientsRes, leadsRes, logsRes] = await Promise.all([
-        axios.get('http://localhost:5000/api/clients/my/clients', {
-          headers: { Authorization: `Bearer ${token}` }
-        }),
-        axios.get('http://localhost:5000/api/leads/my', {
-          headers: { Authorization: `Bearer ${token}` }
-        }),
-        axios.get('http://localhost:5000/api/contact-logs', {
-          headers: { Authorization: `Bearer ${token}` }
-        })
+        api.get('/clients/my/clients'),
+        api.get('/leads/my'),
+        api.get('/contact-logs')
       ]);
 
       setStats({

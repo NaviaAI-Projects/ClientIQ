@@ -101,7 +101,7 @@ const Client360 = () => {
             <Info label="Plan" value={client.plan} />
             <Info label="Account Open Date" value={formatDate(client.account_open_date)} />
             <Info label="Last Trade Date" value={formatDate(client.last_trade_date)} />
-            <Info label="Status" value={client.is_active ? 'Active' : 'Inactive'} />
+            <Info label="Status" value={client.status || (client.is_active ? 'Active' : 'Inactive')} />
             <Info label="Lead Score" value={client.lead_score || 'N/A'} />
             <Info label="Churn Risk Score" value={client.churn_risk_score || 'N/A'} />
             <Info label="Latest Ledger Balance" value={client.latest_balance || 0} />

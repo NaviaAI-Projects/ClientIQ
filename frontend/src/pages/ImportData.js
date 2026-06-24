@@ -128,7 +128,7 @@ const ImportData = () => {
           Daily Data Import
         </h2>
         <p style={{ fontSize: '13px', color: '#555', marginTop: '3px' }}>
-          Upload the daily Excel/CSV files to update the database
+          Upload in order: Client Master first, then Trade, Brokerage, Ledger, Holdings, MTF. Last trade date is auto-mapped from the Trade file to each client.
         </p>
       </div>
 
@@ -190,7 +190,7 @@ const ImportData = () => {
             color: '#888',
             marginBottom: '14px'
           }}>
-            Upload Bhavcopy first, then Holdings file
+            Upload Bhavcopy first, then Holdings file. Import order: Client Master → Trade → Brokerage → Ledger → Holdings → MTF
           </div>
 
           <div>

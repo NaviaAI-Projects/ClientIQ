@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
+import api from '../api';
 
 const RevenueTracker = () => {
   const [clients, setClients] = useState([]);
@@ -10,16 +10,8 @@ const RevenueTracker = () => {
 
   const loadRevenue = async () => {
     try {
-      const token = localStorage.getItem('token');
 
-      const res = await axios.get(
-        'http://localhost:5000/api/clients',
-        {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        }
-      );
+      const res = await api.get('/clients');
 
       setClients(res.data.clients || []);
     } catch (err) {

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import api from '../api';
 import axios from 'axios';
 
 const CrossSell = () => {
@@ -12,14 +13,7 @@ const CrossSell = () => {
     try {
       const token = localStorage.getItem('token');
 
-      const res = await axios.get(
-        'http://localhost:5000/api/clients',
-        {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        }
-      );
+      const res = await api.get('/clients');
 
       setClients(res.data.clients || []);
     } catch (err) {

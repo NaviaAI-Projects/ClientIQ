@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import api from '../api';
 
 const InteractionLog = () => {
   const [logs, setLogs] = useState([]);
@@ -12,14 +13,7 @@ const InteractionLog = () => {
     try {
       const token = localStorage.getItem('token');
 
-      const res = await axios.get(
-        'http://localhost:5000/api/contact-logs',
-        {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        }
-      );
+      const res = await api.get('/clients');
 
       setLogs(res.data);
     } catch (err) {

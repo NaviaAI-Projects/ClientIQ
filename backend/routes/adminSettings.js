@@ -121,12 +121,20 @@ router.put('/', auth, adminOnly, async (req, res) => {
 router.put('/pipeline', auth, adminOnly, async (req, res) => {
   const { rm_capacity_limit, lead_expiry_window, lead_score_threshold, fd_rate } = req.body;
   try {
-    await pool.query(
-      `INSERT INTO pipeline_settings
-       (rm_capacity_limit, lead_expiry_window, lead_score_threshold, fd_rate, updated_at)
-       VALUES ($1,$2,$3,$4,NOW())`,
-      [rm_capacity_limit, lead_expiry_window, lead_score_threshold, fd_rate]
-    );
+    const existing = await pool.query('SELECT id FROM pipeline_settings ORDER BY id DESC LIMIT 1');
+    if (existing.rows.length > 0) {
+      await pool.query(
+        `UPDATE pipeline_settings SET rm_capacity_limit=$1, lead_expiry_window=$2,
+         lead_score_threshold=$3, fd_rate=$4, updated_at=NOW() WHERE id=$5`,
+        [rm_capacity_limit, lead_expiry_window, lead_score_threshold, fd_rate, existing.rows[0].id]
+      );
+    } else {
+      await pool.query(
+        `INSERT INTO pipeline_settings (rm_capacity_limit, lead_expiry_window, lead_score_threshold, fd_rate, updated_at)
+         VALUES ($1,$2,$3,$4,NOW())`,
+        [rm_capacity_limit, lead_expiry_window, lead_score_threshold, fd_rate]
+      );
+    }
     res.json({ success: true, message: 'Pipeline settings updated' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

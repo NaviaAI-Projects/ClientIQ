@@ -19,8 +19,21 @@ const AiScoring = () => {
     setWeights(updated);
   };
 
-  const saveWeights = () => {
-    alert('Weights saved successfully');
+  const saveWeights = async () => {
+    try {
+      const payload = {
+        options_to_weight: weights[0].weight,
+        float_weight: weights[1].weight,
+        equity_weight: weights[2].weight,
+        mtf_weight: weights[3].weight,
+        nri_weight: weights[4].weight,
+        dormancy_weight: weights[5].weight,
+      };
+      await api.put('/admin-settings', payload);
+      alert('Weights saved successfully');
+    } catch (err) {
+      alert('Failed to save weights');
+    }
   };
 
   const rescoreClients = async () => {

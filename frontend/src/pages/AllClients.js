@@ -33,7 +33,15 @@ const AllClients = () => {
                 <td>{c.client_type}</td>
                 <td>{c.plan}</td>
                 <td>{c.rm_name || '-'}</td>
-                <td>{c.status || 'Active'}</td>
+                <td>
+                  <span style={{
+                    padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
+                    background: c.status === 'Active' ? '#eaf3de' : c.status === 'Suspended' ? '#fcebeb' : '#faeeda',
+                    color: c.status === 'Active' ? '#3b6d11' : c.status === 'Suspended' ? '#a32d2d' : '#854f0b'
+                  }}>
+                    {c.status || (c.is_active ? 'Active' : 'Inactive')}
+                  </span>
+                </td>
               </tr>
             ))}
           </tbody>

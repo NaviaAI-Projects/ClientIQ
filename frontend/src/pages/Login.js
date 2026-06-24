@@ -20,7 +20,9 @@ const Login = () => {
       login(res.data.user, res.data.token);
       const role = res.data.user.role;
       if (role === 'rm' || role === 'team_leader') navigate('/rm-dashboard');
-      else navigate('/supervisor-dashboard');
+      else if (role === 'supervisor') navigate('/supervisor-dashboard');
+      else if (role === 'admin') navigate('/import');
+      else navigate('/login');
     } catch (err) {
       setError(err.response?.data?.message || 'Login failed. Please try again.');
     } finally {

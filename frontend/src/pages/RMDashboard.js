@@ -85,7 +85,7 @@ const RMDashboard = () => {
             <div style={{ textAlign: 'center', padding: '32px', color: '#888' }}>No active leads assigned</div>
           ) : (
             leads.map((lead, i) => (
-              <div key={i} onClick={() => navigate(`/clients/${lead.ucc}`)} style={{
+              <div key={i} onClick={() => navigate('/client-360', { state: { ucc: lead.ucc } })} style={{
                 padding: '12px', borderRadius: '8px', background: '#F8FAFF',
                 marginBottom: '8px', cursor: 'pointer', border: '1px solid #E8F0FF'
               }}>
@@ -127,7 +127,7 @@ const RMDashboard = () => {
             <div style={{ textAlign: 'center', padding: '32px', color: '#888' }}>No clients mapped yet</div>
           ) : (
             clients.map((client, i) => (
-              <div key={i} onClick={() => navigate(`/clients/${client.ucc}`)} style={{
+              <div key={i} onClick={() => navigate('/client-360', { state: { ucc: client.ucc } })} style={{
                 padding: '12px', borderRadius: '8px', background: '#F8FAFF',
                 marginBottom: '8px', cursor: 'pointer', border: '1px solid #E8F0FF'
               }}>

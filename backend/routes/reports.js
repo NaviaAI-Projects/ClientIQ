@@ -81,7 +81,7 @@ router.get('/churn-risk', auth, async (req, res) => {
       FROM clients c
       JOIN ai_scores a ON c.ucc = a.ucc
       LEFT JOIN users u ON c.assigned_rm_id = u.id
-      WHERE a.score_date = (SELECT MAX(score_date) FROM ai_scores)
+      WHERE a.score_date = (SELECT MAX(score_date) FROM ai_scores WHERE ucc = c.ucc)
         AND a.churn_risk_score >= 60
       ORDER BY a.churn_risk_score DESC
       LIMIT 100

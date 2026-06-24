@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import api from '../api';
 
 const DormantClients = () => {
   const [clients, setClients] = useState([]);
@@ -12,14 +13,7 @@ const DormantClients = () => {
     try {
       const token = localStorage.getItem('token');
 
-      const res = await axios.get(
-        'http://localhost:5000/api/clients',
-        {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        }
-      );
+      const res = await api.get('/clients');
 
       const dormantClients = res.data.filter(
         c => c.status?.toLowerCase() === 'dormant'

@@ -3,9 +3,7 @@ const router = express.Router();
 const pool = require('../db');
 const auth = require('../middleware/auth');
 
-router.post('/rescore', auth, async (req, res) => {
-  try {
-    // Add this function at the top of the file, after the imports
+// Add this function at the top of the file, after the imports
     async function getWeights(pool) {
       const result = await pool.query(
         `SELECT key, value FROM settings 
@@ -27,6 +25,9 @@ router.post('/rescore', auth, async (req, res) => {
         threshold: w.lead_score_threshold || 60
       };
     }
+
+router.post('/rescore', auth, async (req, res) => {
+  try {
     const clients = await pool.query(`
       SELECT
         c.ucc,
@@ -48,20 +49,20 @@ router.post('/rescore', auth, async (req, res) => {
     let processed = 0;
 
     for (const client of clients.rows) {
-      const weights = await getWeights(pool);
       const optionsScore = Number(client.options_turnover) > 0 ? weights.options : 0;
       const floatScore = Number(client.ledger_balance) >= 50000 ? weights.float :
                         Number(client.ledger_balance) >= 10000 ? weights.float / 2 : 0;
       const equityScore = Number(client.equity_turnover) > 0 ? weights.equity : 0;
       const mtfScore = Number(client.mtf_balance) > 0 ? weights.mtf : 0;
-      const nriScore = weights.nri;
+      const nriScore = ['NRI','NRE','NRO','NRE-HV','NRO-HV'].includes(client.client_type) ? weights.nri : 0;
 
       let dormancyScore = 0;
       if (client.last_trade_date) {
         const lastTrade = new Date(client.last_trade_date);
         const today = new Date();
         const diffDays = Math.floor((today - lastTrade) / (1000 * 60 * 60 * 24));
-        dormancyScore = diffDays > 30 ? 15 : diffDays > 15 ? 8 : 0;
+        // 2+ missed expiry weeks ≈ 14+ days; 4+ weeks ≈ 28+ days
+        dormancyScore = diffDays >= 28 ? weights.dormancy : diffDays >= 14 ? Math.round(weights.dormancy / 2) : 0;
       }
 
       const leadScore = Math.min(
@@ -132,7 +133,7 @@ router.post('/rescore', auth, async (req, res) => {
           SET
             lead_score = EXCLUDED.lead_score,
             churn_risk_score = EXCLUDED.churn_risk_score,
-            status = 'unassigned'
+            status = lead_pool.status
         `, [
           client.ucc,
           leadScore,
