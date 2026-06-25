@@ -259,11 +259,11 @@ router.get('/daily-options', auth, async (req, res) => {
         COUNT(DISTINCT ucc) AS options_clients,
         EXTRACT(DOW FROM trade_date) AS day_of_week
       FROM daily_trades
-      WHERE trade_date >= NOW() - ($1 || ' days')::INTERVAL
+      WHERE trade_date >= NOW() - ($1 * INTERVAL '1 day')
       GROUP BY trade_date, TO_CHAR(trade_date, 'DD Mon')
       ORDER BY trade_date ASC
-      LIMIT $1
-    `, [parseInt(days)]);
+      LIMIT $2
+    `, [parseInt(days), parseInt(days)]);
 
     // Mark Thursday as expiry day (weekly options expire on Thursday)
     const rows = result.rows.map(r => {
@@ -287,6 +287,277 @@ router.get('/daily-options', auth, async (req, res) => {
 
     res.json({ rows, mtd_avg: parseFloat(mtdAvg.toFixed(2)) });
   } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/client-analytics', auth, async (req, res) => {
+  try {
+    const { days = 17 } = req.query;
+
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(trade_date, 'DD Mon') AS date,
+        trade_date,
+        COUNT(DISTINCT CASE WHEN dt.brokerage_earned > 0 THEN dt.ucc END) AS profitable_clients,
+        COUNT(DISTINCT CASE WHEN dt.brokerage_earned = 0 OR dt.brokerage_earned IS NULL THEN dt.ucc END) AS loss_clients,
+        COUNT(DISTINCT CASE WHEN c.client_type IN ('NRI','NRE','NRO','NRE-HV','NRO-HV') THEN dt.ucc END) AS nri_clients,
+        COUNT(DISTINCT dt.ucc) AS total_clients
+      FROM daily_trades dt
+      JOIN clients c ON dt.ucc = c.ucc
+      WHERE trade_date >= NOW() - ($1 * INTERVAL '1 day')
+      GROUP BY trade_date, TO_CHAR(trade_date, 'DD Mon')
+      ORDER BY trade_date ASC
+      LIMIT $2
+    `, [parseInt(days), parseInt(days)]);
+
+    res.json(result.rows.map(r => ({
+      date:               r.date,
+      profitable_clients: parseInt(r.profitable_clients) || 0,
+      loss_clients:       parseInt(r.loss_clients)       || 0,
+      nri_clients:        parseInt(r.nri_clients)        || 0,
+      total_clients:      parseInt(r.total_clients)      || 0,
+      resident:           (parseInt(r.total_clients) - parseInt(r.nri_clients)) || 0
+    })));
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/new-business', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(DATE_TRUNC('month', trade_date), 'Mon''YY') AS month,
+        DATE_TRUNC('month', trade_date) AS month_start,
+        COUNT(DISTINCT CASE WHEN eq_cash_turnover > 0 THEN ucc END) AS eq_cash,
+        COUNT(DISTINCT CASE WHEN options_premium_turnover > 0 OR eq_fo_turnover > 0 THEN ucc END) AS eq_options,
+        COUNT(DISTINCT CASE WHEN commodity_fo_turnover > 0 THEN ucc END) AS comm_futures
+      FROM daily_trades
+      WHERE trade_date >= NOW() - INTERVAL '12 months'
+      GROUP BY DATE_TRUNC('month', trade_date)
+      ORDER BY month_start ASC
+    `);
+
+    const newAccounts = await pool.query(`
+      SELECT
+        TO_CHAR(DATE_TRUNC('month', account_open_date), 'Mon''YY') AS month,
+        DATE_TRUNC('month', account_open_date) AS month_start,
+        COUNT(*) AS opened
+      FROM clients
+      WHERE account_open_date >= NOW() - INTERVAL '12 months'
+        AND account_open_date IS NOT NULL
+      GROUP BY DATE_TRUNC('month', account_open_date)
+      ORDER BY month_start ASC
+    `);
+
+    const ledgerBalance = await pool.query(`
+      SELECT
+        TO_CHAR(DATE_TRUNC('month', c.account_open_date), 'Mon''YY') AS month,
+        DATE_TRUNC('month', c.account_open_date) AS month_start,
+        SUM(dl.opening_balance) AS new_client_balance
+      FROM clients c
+      JOIN daily_ledger dl ON c.ucc = dl.ucc
+      WHERE c.account_open_date >= NOW() - INTERVAL '12 months'
+        AND c.account_open_date IS NOT NULL
+        AND dl.ledger_date = (
+          SELECT MIN(ledger_date) FROM daily_ledger WHERE ucc = c.ucc
+        )
+      GROUP BY DATE_TRUNC('month', c.account_open_date)
+      ORDER BY month_start ASC
+    `);
+
+    res.json({
+      clients:     result.rows,
+      new_accounts: newAccounts.rows,
+      ledger:      ledgerBalance.rows
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/revenue-ramp', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        c.ucc,
+        DATE_TRUNC('month', dt.trade_date) AS trade_month,
+        DATE_TRUNC('month', c.account_open_date) AS open_month,
+        EXTRACT(YEAR FROM AGE(
+          DATE_TRUNC('month', dt.trade_date),
+          DATE_TRUNC('month', c.account_open_date)
+        )) * 12 +
+        EXTRACT(MONTH FROM AGE(
+          DATE_TRUNC('month', dt.trade_date),
+          DATE_TRUNC('month', c.account_open_date)
+        )) AS months_since_open,
+        SUM(dt.brokerage_earned) AS monthly_brokerage,
+        MAX(CASE WHEN dt.options_premium_turnover > 0
+                   OR dt.eq_fo_turnover > 0 THEN 1 ELSE 0 END) AS is_options_active
+      FROM clients c
+      JOIN daily_trades dt ON c.ucc = dt.ucc
+      WHERE c.account_open_date IS NOT NULL
+        AND dt.trade_date >= c.account_open_date
+      GROUP BY c.ucc, c.account_open_date,
+               DATE_TRUNC('month', c.account_open_date),
+               DATE_TRUNC('month', dt.trade_date)
+    `);
+
+    const cohortMap = {};
+    result.rows.forEach(r => {
+      const m = parseInt(r.months_since_open);
+      if (m < 0 || m > 7) return;
+      if (!cohortMap[m]) cohortMap[m] = { total: 0, count: 0, options_count: 0 };
+      cohortMap[m].total        += parseFloat(r.monthly_brokerage) || 0;
+      cohortMap[m].count        += 1;
+      if (parseInt(r.is_options_active) === 1) cohortMap[m].options_count += 1;
+    });
+
+    const rampData = Array.from({ length: 8 }, (_, i) => ({
+      month:       `M${i + 1}`,
+      avg_revenue: cohortMap[i] && cohortMap[i].count > 0
+        ? Math.round(cohortMap[i].total / cohortMap[i].count)
+        : 0,
+      options_pct: cohortMap[i] && cohortMap[i].count > 0
+        ? Math.round(cohortMap[i].options_count / cohortMap[i].count * 100)
+        : 0
+    }));
+
+    const splitResult = await pool.query(`
+      SELECT
+        segment,
+        ROUND(AVG(monthly_brokerage)::numeric, 2) AS avg_brokerage
+      FROM (
+        SELECT
+          c.ucc,
+          DATE_TRUNC('month', dt.trade_date) AS trade_month,
+          SUM(dt.brokerage_earned) AS monthly_brokerage,
+          CASE
+            WHEN MAX(CASE WHEN dt.options_premium_turnover > 0
+                            OR dt.eq_fo_turnover > 0 THEN 1 ELSE 0 END) = 1
+            THEN 'Options activated'
+            ELSE 'Equity only'
+          END AS segment
+        FROM clients c
+        JOIN daily_trades dt ON c.ucc = dt.ucc
+        WHERE c.account_open_date IS NOT NULL
+        GROUP BY c.ucc, DATE_TRUNC('month', dt.trade_date)
+      ) sub
+      GROUP BY segment
+      ORDER BY avg_brokerage DESC
+    `);
+
+    res.json({
+      ramp:  rampData,
+      split: splitResult.rows
+    });
+  } catch (err) {
+    console.error('REVENUE RAMP ERROR:', err.message);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/rm-impact', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        u.name AS rm_name,
+        COUNT(DISTINCT c.ucc) AS total_clients,
+        COALESCE(SUM(dt.brokerage_earned), 0) AS total_brokerage,
+        COALESCE(SUM(dt.options_premium_turnover + dt.eq_fo_turnover), 0) AS total_options_to,
+        COALESCE(SUM(dt.eq_cash_turnover), 0) AS total_eq_cash,
+        COUNT(DISTINCT dt.trade_date) AS active_days
+      FROM users u
+      JOIN rm_master rm ON LOWER(rm.rm_name) = LOWER(u.name)
+      JOIN clients c ON c.assigned_rm_id = rm.id
+      LEFT JOIN daily_trades dt ON dt.ucc = c.ucc
+      WHERE u.role IN ('rm', 'team_leader')
+        AND u.is_active = true
+        AND c.is_mapped = true
+      GROUP BY u.name
+      ORDER BY total_brokerage DESC
+    `);
+
+    const rows = result.rows.map(r => ({
+      name:          r.rm_name,
+      total_clients: parseInt(r.total_clients) || 0,
+      post_rev:      Math.round(parseFloat(r.total_brokerage) || 0),
+      pre_rev:       0,
+      post_vol:      parseFloat(
+        ((parseFloat(r.total_options_to) || 0) / 10000000).toFixed(2)
+      ),
+      pre_vol:       0,
+      active_days:   parseInt(r.active_days) || 0
+    }));
+
+    res.json(rows);
+  } catch (err) {
+    console.error('RM IMPACT ERROR:', err.message);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/market-share', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(DATE_TRUNC('month', trade_date), 'Mon''YY') AS month,
+        DATE_TRUNC('month', trade_date) AS month_start,
+        SUM(options_premium_turnover + eq_fo_turnover) / 10000000.0 AS navia_options_cr,
+        SUM(eq_cash_turnover) / 10000000.0 AS navia_eq_cash_cr,
+        SUM(commodity_fo_turnover) / 10000000.0 AS navia_comm_cr,
+        COUNT(DISTINCT CASE WHEN options_premium_turnover > 0
+                              OR eq_fo_turnover > 0 THEN ucc END) AS options_clients,
+        COUNT(DISTINCT ucc) AS total_clients
+      FROM daily_trades
+      WHERE trade_date >= NOW() - INTERVAL '9 months'
+      GROUP BY DATE_TRUNC('month', trade_date)
+      ORDER BY month_start ASC
+    `);
+
+    res.json(result.rows.map(r => ({
+      month:              r.month,
+      navia_options_cr:   parseFloat(parseFloat(r.navia_options_cr).toFixed(2))   || 0,
+      navia_eq_cash_cr:   parseFloat(parseFloat(r.navia_eq_cash_cr).toFixed(2))   || 0,
+      navia_comm_cr:      parseFloat(parseFloat(r.navia_comm_cr).toFixed(2))      || 0,
+      options_clients:    parseInt(r.options_clients) || 0,
+      total_clients:      parseInt(r.total_clients)   || 0,
+    })));
+  } catch (err) {
+    console.error('MARKET SHARE ERROR:', err.message);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/market-share', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(DATE_TRUNC('month', trade_date), 'Mon''YY') AS month,
+        DATE_TRUNC('month', trade_date) AS month_start,
+        SUM(options_premium_turnover + eq_fo_turnover) / 10000000.0 AS navia_options_cr,
+        SUM(eq_cash_turnover) / 10000000.0 AS navia_eq_cash_cr,
+        SUM(commodity_fo_turnover) / 10000000.0 AS navia_comm_cr,
+        COUNT(DISTINCT CASE WHEN options_premium_turnover > 0
+                              OR eq_fo_turnover > 0 THEN ucc END) AS options_clients,
+        COUNT(DISTINCT ucc) AS total_clients
+      FROM daily_trades
+      WHERE trade_date >= NOW() - INTERVAL '9 months'
+      GROUP BY DATE_TRUNC('month', trade_date)
+      ORDER BY month_start ASC
+    `);
+
+    res.json(result.rows.map(r => ({
+      month:              r.month,
+      navia_options_cr:   parseFloat(parseFloat(r.navia_options_cr).toFixed(2))   || 0,
+      navia_eq_cash_cr:   parseFloat(parseFloat(r.navia_eq_cash_cr).toFixed(2))   || 0,
+      navia_comm_cr:      parseFloat(parseFloat(r.navia_comm_cr).toFixed(2))      || 0,
+      options_clients:    parseInt(r.options_clients) || 0,
+      total_clients:      parseInt(r.total_clients)   || 0,
+    })));
+  } catch (err) {
+    console.error('MARKET SHARE ERROR:', err.message);
     res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
