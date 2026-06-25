@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import api from '../api';
-import axios from 'axios';
 
 const CrossSell = () => {
   const [clients, setClients] = useState([]);
@@ -11,10 +10,7 @@ const CrossSell = () => {
 
   const loadClients = async () => {
     try {
-      const token = localStorage.getItem('token');
-
       const res = await api.get('/clients');
-
       setClients(res.data.clients || []);
     } catch (err) {
       console.error(err);

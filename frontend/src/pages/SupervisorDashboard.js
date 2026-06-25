@@ -1,8 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
+import { XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
 import api from '../api';
 
+const FMT = (v) => {
+  if (!v) return '₹0';
+  if (v >= 10000000) return '₹' + (v / 100000).toFixed(0) + 'L';
+  if (v >= 100000)   return '₹' + (v / 100000).toFixed(1) + 'L';
+  if (v >= 1000)     return '₹' + (v / 1000).toFixed(0) + 'K';
+  return '₹' + v;
+};
 
 const StatCard = ({ title, value, subtitle, color, icon }) => (
   <div style={{
@@ -131,13 +138,14 @@ const SupervisorDashboard = () => {
             <div style={{ textAlign: 'center', padding: '32px', color: '#888' }}>No RM data yet</div>
           ) : (
             <ResponsiveContainer width="100%" height={250}>
-  <BarChart data={rmPerf.slice(0, 8)}>
-    <CartesianGrid strokeDasharray="3 3" stroke="#E6EBF2" />
-    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => fmt(v)} />
-    <Tooltip formatter={(v) => [fmt(v), 'Brokerage']} />
-    <Legend />
-    <Bar dataKey="total_brokerage" name="Brokerage" fill="#223872" radius={[4,4,0,0]} />
+  <BarChart data={monthlyTrend} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+    <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+    <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+    <YAxis tick={{ fontSize: 10 }} tickFormatter={FMT} />
+    <Tooltip formatter={(v) => [FMT(v)]} />
+    <Legend wrapperStyle={{ fontSize: 11 }} />
+    <Bar dataKey="brokerage"        name="Brokerage"   stackId="s" fill="#b5d4f4" />
+    <Bar dataKey="options_turnover" name="Options Clr" stackId="s" fill="#185fa5" radius={[4,4,0,0]} />
   </BarChart>
 </ResponsiveContainer>
           )}
@@ -167,15 +175,15 @@ const SupervisorDashboard = () => {
   {monthlyTrend.length === 0 ? (
     <div style={{ textAlign: 'center', padding: '32px', color: '#888' }}>No trade data yet</div>
   ) : (
-    <ResponsiveContainer width="100%" height={220}>
-      <AreaChart data={monthlyTrend}>
-        <CartesianGrid strokeDasharray="3 3" stroke="#E6EBF2" />
-        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
-        <YAxis tick={{ fontSize: 11 }} tickFormatter={v => fmt(v)} />
-        <Tooltip formatter={v => [fmt(v), 'Brokerage']} />
-        <Area type="monotone" dataKey="brokerage" name="Brokerage" stroke="#223872" fill="#EDEFF6" strokeWidth={2} />
-      </AreaChart>
-    </ResponsiveContainer>
+    <ResponsiveContainer width="100%" height={250}>
+  <BarChart data={rmPerf.slice(0, 8)} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+    <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+    <YAxis tick={{ fontSize: 11 }} tickFormatter={FMT} />
+    <Tooltip formatter={(v) => [FMT(v), 'Brokerage']} />
+    <Bar dataKey="total_brokerage" name="Brokerage" fill="#b5d4f4" radius={[4,4,0,0]} />
+  </BarChart>
+</ResponsiveContainer>
   )}
 </div>
 

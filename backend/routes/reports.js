@@ -245,4 +245,50 @@ router.get('/churn-risk', auth, async (req, res) => {
   }
 });
 
+router.get('/daily-options', auth, async (req, res) => {
+  try {
+    const { days = 18 } = req.query;
+
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(trade_date, 'DD Mon') AS date,
+        trade_date,
+        COALESCE(SUM(options_premium_turnover), 0) AS options_to_raw,
+        COALESCE(SUM(eq_fo_turnover), 0) AS eq_fo_raw,
+        COALESCE(SUM(eq_cash_turnover), 0) AS eq_cash_raw,
+        COUNT(DISTINCT ucc) AS options_clients,
+        EXTRACT(DOW FROM trade_date) AS day_of_week
+      FROM daily_trades
+      WHERE trade_date >= NOW() - ($1 || ' days')::INTERVAL
+      GROUP BY trade_date, TO_CHAR(trade_date, 'DD Mon')
+      ORDER BY trade_date ASC
+      LIMIT $1
+    `, [parseInt(days)]);
+
+    // Mark Thursday as expiry day (weekly options expire on Thursday)
+    const rows = result.rows.map(r => {
+      // Use options_premium_turnover if available, fall back to eq_fo_turnover
+      const optionsRaw = parseFloat(r.options_to_raw) || parseFloat(r.eq_fo_raw) || 0;
+      const eqCashRaw  = parseFloat(r.eq_cash_raw) || 0;
+      return {
+        date:            r.date,
+        trade_date:      r.trade_date,
+        options_to_cr:   optionsRaw,   // keep in rupees, not crores — values are small
+        eq_cash:         eqCashRaw,
+        options_clients: parseInt(r.options_clients) || 0,
+        is_expiry:       parseInt(r.day_of_week) === 4
+      };
+    });
+
+    // Calculate MTD average
+    const mtdAvg = rows.length > 0
+      ? rows.reduce((s, r) => s + r.options_to_cr, 0) / rows.length
+      : 0;
+
+    res.json({ rows, mtd_avg: parseFloat(mtdAvg.toFixed(2)) });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
 module.exports = router;

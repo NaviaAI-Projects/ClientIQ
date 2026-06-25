@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
 import api from '../api';
 
 const DormantClients = () => {
@@ -11,7 +10,6 @@ const DormantClients = () => {
 
   const loadClients = async () => {
     try {
-      const token = localStorage.getItem('token');
 
       const res = await api.get('/clients');
 
