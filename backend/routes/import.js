@@ -288,10 +288,12 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
           if (!rawStr) continue;
 
           const parts = rawStr.split('|');
-          if (parts.length < 7) continue;
+          if (parts.length < 12) continue;
 
           const ucc   = String(parts[0]).trim();
-          const value = parseFloat(parts[11]) || 0;
+          const qty        = parseFloat(parts[2]) || 0;
+          const pricePerUnit = parseFloat(parts[11]) || 0;
+          const value      = qty * pricePerUnit;
 
           if (!ucc) continue;
 
