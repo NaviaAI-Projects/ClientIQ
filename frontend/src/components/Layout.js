@@ -114,7 +114,7 @@ const Layout = () => {
       }}>
         {/* Logo */}
         <div style={{ padding: '14px 16px', borderBottom: '0.5px solid rgba(0,0,0,0.1)' }}>
-          <div style={{ fontSize: '16px', fontWeight: '700', letterSpacing: '-0.5px', color: '#185fa5' }}>Navia ClientIQ</div>
+          <div style={{ fontSize: '16px', fontWeight: '800', letterSpacing: '-0.5px', color: '#223872', fontFamily: "'Sora', sans-serif" }}>Navia ClientIQ</div>
           <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>Strategic MIS · FY 2026-27</div>
         </div>
 
@@ -133,8 +133,8 @@ const Layout = () => {
                     display: 'flex', alignItems: 'center', gap: '8px',
                     padding: '7px 8px', borderRadius: '6px',
                     cursor: 'pointer', fontSize: '12.5px',
-                    color: isActive ? '#185fa5' : '#555',
-                    background: isActive ? '#e6f1fb' : 'transparent',
+                    color: isActive ? '#223872' : '#45526B',
+background: isActive ? '#EDEFF6' : 'transparent',
                     fontWeight: isActive ? '500' : 'normal',
                     textDecoration: 'none', transition: 'all 0.1s'
                   })}
@@ -143,7 +143,7 @@ const Layout = () => {
                   <span style={{ flex: 1 }}>{item.label}</span>
                   {item.badge && (
                     <span style={{
-                      marginLeft: 'auto', background: '#e6f1fb', color: '#185fa5',
+                      marginLeft: 'auto', background: '#EDEFF6', color: '#223872',
                       fontSize: '10px', fontWeight: '600', padding: '1px 6px', borderRadius: '10px'
                     }}>
                       {item.badge}
@@ -165,7 +165,7 @@ const Layout = () => {
     {/* Avatar circle */}
     <div style={{
       width: '28px', height: '28px', borderRadius: '50%',
-      background: '#e6f1fb', color: '#185fa5',
+      background: '#223872', color: '#FFFFFF',
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontSize: '10px', fontWeight: '600', flexShrink: 0
     }}>
@@ -189,7 +189,8 @@ const Layout = () => {
     {showMenu && (
       <div style={{
         position: 'absolute', bottom: '44px', left: 0, right: 0,
-        background: '#fff', border: '0.5px solid rgba(0,0,0,0.1)',
+        background: '#FFFFFF',
+borderRight: '1px solid #E6EBF2',
         borderRadius: '8px', padding: '4px',
         boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 200
       }}>
@@ -218,14 +219,15 @@ const Layout = () => {
       {/* Topbar */}
       <div style={{
         position: 'fixed', top: 0, left: '228px', right: 0, height: '48px',
-        background: '#fff', borderBottom: '0.5px solid rgba(0,0,0,0.1)',
+       background: '#FFFFFF',
+borderRight: '1px solid #E6EBF2',
         display: 'flex', alignItems: 'center', padding: '0 20px', gap: '10px', zIndex: 100
       }}>
         <span style={{ fontSize: '14px', fontWeight: '500', flex: 1, color: '#111' }}>
           Navia ClientIQ
         </span>
         <span style={{
-          fontSize: '11px', background: '#e6f1fb', color: '#185fa5',
+          fontSize: '11px', background: '#ED4D37', color: '#FFFFFF',
           padding: '3px 10px', borderRadius: '20px', fontWeight: '500'
         }}>
           {getRoleLabel().toUpperCase()}
@@ -236,7 +238,7 @@ const Layout = () => {
       <div style={{
         flex: 1, overflowY: 'auto',
         padding: '72px 24px 40px',
-        background: '#eceae4'
+        background: '#F7F9FC'
       }}>
         <Outlet />
       </div>

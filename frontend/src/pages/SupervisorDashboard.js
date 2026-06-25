@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar, Legend } from 'recharts';
 import api from '../api';
+
 
 const StatCard = ({ title, value, subtitle, color, icon }) => (
   <div style={{
@@ -33,6 +34,7 @@ const SupervisorDashboard = () => {
   const [topClients, setTopClients] = useState([]);
   const [rmPerf, setRmPerf] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [monthlyTrend, setMonthlyTrend] = useState([]);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -42,6 +44,7 @@ const SupervisorDashboard = () => {
           api.get('/dashboard/company'),
           api.get('/reports/top-clients?limit=5'),
           api.get('/reports/rm-performance'),
+          api.get('/reports/monthly-brokerage').then(r => setMonthlyTrend(r.data)).catch(() => {})
         ]);
         setStats(statsRes.data);
         setTopClients(topRes.data);
@@ -128,14 +131,15 @@ const SupervisorDashboard = () => {
             <div style={{ textAlign: 'center', padding: '32px', color: '#888' }}>No RM data yet</div>
           ) : (
             <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={rmPerf.slice(0, 8)}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="name" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => fmt(v)} />
-                <Tooltip formatter={(v) => fmt(v)} />
-                <Bar dataKey="total_brokerage" name="Brokerage" fill="#1B3A6B" radius={[4,4,0,0]} />
-              </BarChart>
-            </ResponsiveContainer>
+  <BarChart data={rmPerf.slice(0, 8)}>
+    <CartesianGrid strokeDasharray="3 3" stroke="#E6EBF2" />
+    <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => fmt(v)} />
+    <Tooltip formatter={(v) => [fmt(v), 'Brokerage']} />
+    <Legend />
+    <Bar dataKey="total_brokerage" name="Brokerage" fill="#223872" radius={[4,4,0,0]} />
+  </BarChart>
+</ResponsiveContainer>
           )}
         </div>
 
@@ -157,6 +161,23 @@ const SupervisorDashboard = () => {
           </div>
         </div>
       </div>
+
+      <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)', marginTop: '24px' }}>
+  <h2 style={{ fontSize: '16px', fontWeight: 'bold', color: '#223872', margin: '0 0 16px' }}>Monthly Revenue Trend</h2>
+  {monthlyTrend.length === 0 ? (
+    <div style={{ textAlign: 'center', padding: '32px', color: '#888' }}>No trade data yet</div>
+  ) : (
+    <ResponsiveContainer width="100%" height={220}>
+      <AreaChart data={monthlyTrend}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#E6EBF2" />
+        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+        <YAxis tick={{ fontSize: 11 }} tickFormatter={v => fmt(v)} />
+        <Tooltip formatter={v => [fmt(v), 'Brokerage']} />
+        <Area type="monotone" dataKey="brokerage" name="Brokerage" stroke="#223872" fill="#EDEFF6" strokeWidth={2} />
+      </AreaChart>
+    </ResponsiveContainer>
+  )}
+</div>
 
     </div>
   );

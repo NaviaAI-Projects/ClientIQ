@@ -32,7 +32,7 @@ const Login = () => {
 
   return (
     <div style={{
-      minHeight: '100vh', background: 'linear-gradient(135deg, #1B3A6B 0%, #2E5FA3 100%)',
+      minHeight: '100vh', background: 'linear-gradient(135deg, #223872 0%, #34508C 100%)',
       display: 'flex', alignItems: 'center', justifyContent: 'center'
     }}>
       <div style={{
@@ -41,9 +41,9 @@ const Login = () => {
       }}>
         {/* Logo */}
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-          <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#1B3A6B' }}>Navia</div>
-          <div style={{ fontSize: '16px', color: '#2E5FA3', marginTop: '4px' }}>ClientIQ Platform</div>
-          <div style={{ width: '40px', height: '3px', background: '#2E5FA3', margin: '12px auto 0' }}></div>
+          <div style={{ fontSize: '32px', fontWeight: '800', color: '#223872', fontFamily: "'Sora', sans-serif" }}>Navia</div>
+<div style={{ fontSize: '16px', color: '#ED4D37', marginTop: '4px', fontWeight: '600' }}>ClientIQ Platform</div>
+<div style={{ width: '40px', height: '3px', background: '#ED4D37', margin: '12px auto 0' }}></div>
         </div>
 
         {/* Form */}
@@ -97,7 +97,7 @@ const Login = () => {
             type="submit"
             disabled={loading}
             style={{
-              width: '100%', padding: '14px', background: loading ? '#94A3B8' : '#1B3A6B',
+              width: '100%', padding: '14px', background: loading ? '#B6C0D0' : '#223872',
               color: 'white', border: 'none', borderRadius: '8px',
               fontSize: '15px', fontWeight: '600', cursor: loading ? 'not-allowed' : 'pointer',
               transition: 'background 0.2s'

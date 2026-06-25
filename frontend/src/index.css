@@ -1,15 +1,59 @@
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#fff;--bg2:#f5f4f0;--bg3:#eceae4;
-  --tx:#111;--tx2:#555;--tx3:#999;
-  --ibg:#e6f1fb;--ic:#185fa5;
-  --sbg:#eaf3de;--sc:#3b6d11;
-  --wbg:#faeeda;--wc:#854f0b;
-  --dbg:#fcebeb;--dc:#a32d2d;
-  --pbg:#eeedfe;--pc:#3c3489;
-  --br:rgba(0,0,0,.10);--br2:rgba(0,0,0,.18);
-  --r:6px;--r2:10px;--r3:14px;
-  --sw:228px;--font:-apple-system,'Segoe UI',system-ui,sans-serif
+  /* Brand */
+  --brand:        #223872;
+  --brand-hover:  #1B2D5C;
+  --brand-active: #152347;
+  --brand-subtle: #EDEFF6;
+  --brand-border: #AEB9D8;
+  --on-brand:     #FFFFFF;
+
+  /* Accent */
+  --accent:       #ED4D37;
+  --accent-hover: #D43A24;
+  --accent-subtle:#FDEDEA;
+
+  /* Surfaces */
+  --bg:           #FFFFFF;
+  --bg2:          #F1F4F9;
+  --bg3:          #F7F9FC;
+  --surface-card: #FFFFFF;
+
+  /* Text */
+  --tx:           #0A1226;
+  --tx2:          #45526B;
+  --tx3:          #8A96AC;
+
+  /* Semantic */
+  --ibg:          #EDEFF6;
+  --ic:           #223872;
+  --sbg:          #E6F7F0;
+  --sc:           #08905C;
+  --wbg:          #FEF4E6;
+  --wc:           #D98A0E;
+  --dbg:          #FDECEC;
+  --dc:           #C8313B;
+  --pbg:          #EDEFF6;
+  --pc:           #34508C;
+
+  /* Borders */
+  --br:           #E6EBF2;
+  --br2:          #D4DBE6;
+
+  /* Radius */
+  --r:   6px;
+  --r2:  10px;
+  --r3:  14px;
+
+  /* Sidebar width */
+  --sw:  228px;
+
+  /* Fonts */
+  --font:         'Manrope', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Sora', 'Segoe UI', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', ui-monospace, monospace;
 }
 body{font-family:var(--font);background:var(--bg3);color:var(--tx);font-size:14px;line-height:1.5}
 .ph{margin-bottom:18px}

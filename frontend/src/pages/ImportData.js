@@ -210,7 +210,7 @@ const ImportData = () => {
           onClick={runPipeline}
           style={{
             padding: '10px 18px',
-            background: '#185fa5',
+            background: '#223872',
             color: 'white',
             border: 'none',
             borderRadius: '6px',

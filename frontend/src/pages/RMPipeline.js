@@ -127,7 +127,7 @@ const RMPipeline = () => {
           onClick={saveSettings}
           style={{
             padding: '9px 18px',
-            background: '#185fa5',
+            background: '#223872',
             color: 'white',
             border: 'none',
             borderRadius: '6px',

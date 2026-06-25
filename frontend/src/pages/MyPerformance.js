@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import axios from 'axios';
 import api from '../api';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 const MyPerformance = () => {
   const [stats, setStats] = useState({
@@ -8,6 +8,8 @@ const MyPerformance = () => {
     leads: 0,
     interactions: 0
   });
+
+  const [monthlyTrend, setMonthlyTrend] = useState([]);
 
   useEffect(() => {
     loadPerformance();
@@ -19,7 +21,8 @@ const MyPerformance = () => {
       const [clientsRes, leadsRes, logsRes] = await Promise.all([
         api.get('/clients/my/clients'),
         api.get('/leads/my'),
-        api.get('/contact-logs')
+        api.get('/contact-logs'),
+        api.get('/reports/monthly-brokerage').then(r => setMonthlyTrend(r.data)).catch(console.error)
       ]);
 
       setStats({
@@ -80,6 +83,20 @@ const MyPerformance = () => {
           <h1>{stats.interactions}</h1>
         </div>
       </div>
+      {monthlyTrend.length > 0 && (
+  <div style={{ background: '#fff', padding: '20px', borderRadius: '12px', marginTop: '20px', boxShadow: '0 2px 8px rgba(0,0,0,0.06)' }}>
+    <h3 style={{ fontSize: '14px', fontWeight: '600', color: '#223872', marginBottom: '16px' }}>My Revenue Trend</h3>
+    <ResponsiveContainer width="100%" height={200}>
+      <BarChart data={monthlyTrend}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#E6EBF2" />
+        <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+        <YAxis tick={{ fontSize: 11 }} />
+        <Tooltip />
+        <Bar dataKey="brokerage" name="Brokerage" fill="#223872" radius={[4,4,0,0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  </div>
+)}
     </div>
   );
 };

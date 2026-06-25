@@ -48,6 +48,8 @@ router.post('/rescore', auth, async (req, res) => {
 
     let processed = 0;
 
+    const weights = await getWeights(pool);
+
     for (const client of clients.rows) {
       const optionsScore = Number(client.options_turnover) > 0 ? weights.options : 0;
       const floatScore = Number(client.ledger_balance) >= 50000 ? weights.float :

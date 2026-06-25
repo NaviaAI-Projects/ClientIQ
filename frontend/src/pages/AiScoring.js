@@ -118,7 +118,7 @@ const AiScoring = () => {
             onClick={saveWeights}
             style={{
               padding: '8px 14px',
-              background: '#185fa5',
+              background: '#223872',
               color: 'white',
               border: 'none',
               borderRadius: '5px',
@@ -134,8 +134,8 @@ const AiScoring = () => {
             style={{
               padding: '8px 14px',
               background: 'white',
-              color: '#185fa5',
-              border: '1px solid #185fa5',
+              color: '#223872',
+              border: '1px solid #223872',
               borderRadius: '5px',
               cursor: 'pointer'
             }}
@@ -187,7 +187,7 @@ const AiScoring = () => {
           style={{
             marginTop: '16px',
             padding: '8px 14px',
-            background: '#185fa5',
+            background: '#223872',
             color: 'white',
             border: 'none',
             borderRadius: '5px',

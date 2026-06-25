@@ -73,6 +73,159 @@ router.get('/rm-performance', auth, async (req, res) => {
   }
 });
 
+// Monthly brokerage trend (last 6 months) — for RM Revenue Tracker + Supervisor Dashboard
+router.get('/monthly-brokerage', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT 
+        TO_CHAR(trade_date, 'Mon''YY') AS month,
+        DATE_TRUNC('month', trade_date) AS month_start,
+        SUM(brokerage_earned) AS brokerage,
+        SUM(eq_cash_turnover + eq_fo_turnover + commodity_fo_turnover) AS turnover,
+        SUM(options_premium_turnover) AS options_turnover
+      FROM daily_trades
+      WHERE trade_date >= NOW() - INTERVAL '6 months'
+      GROUP BY DATE_TRUNC('month', trade_date), TO_CHAR(trade_date, 'Mon''YY')
+      ORDER BY month_start ASC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// Revenue streams breakdown (last 8 months)
+router.get('/revenue-streams', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(trade_date, 'Mon''YY') AS month,
+        DATE_TRUNC('month', trade_date) AS month_start,
+        SUM(options_premium_turnover * 0.0005) AS options_clearing,
+        SUM(brokerage_earned) AS equity_brokerage
+      FROM daily_trades
+      WHERE trade_date >= NOW() - INTERVAL '8 months'
+      GROUP BY DATE_TRUNC('month', trade_date), TO_CHAR(trade_date, 'Mon''YY')
+      ORDER BY month_start ASC
+    `);
+
+    const ledger = await pool.query(`
+      SELECT
+        TO_CHAR(ledger_date, 'Mon''YY') AS month,
+        DATE_TRUNC('month', ledger_date) AS month_start,
+        SUM(opening_balance) * 0.065 / 12 AS float_income
+      FROM daily_ledger
+      WHERE ledger_date >= NOW() - INTERVAL '8 months'
+      GROUP BY DATE_TRUNC('month', ledger_date), TO_CHAR(ledger_date, 'Mon''YY')
+      ORDER BY month_start ASC
+    `);
+
+    const mtf = await pool.query(`
+      SELECT month_year AS month, SUM(interest_earned) AS mtf_interest
+      FROM mtf_monthly
+      WHERE month_year >= TO_CHAR(NOW() - INTERVAL '8 months', 'YYYY-MM')
+      GROUP BY month_year ORDER BY month_year ASC
+    `);
+
+    res.json({ trades: result.rows, ledger: ledger.rows, mtf: mtf.rows });
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// Active vs dormant clients trend (last 12 months)
+router.get('/client-activity-trend', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        TO_CHAR(trade_date, 'Mon''YY') AS month,
+        DATE_TRUNC('month', trade_date) AS month_start,
+        COUNT(DISTINCT ucc) AS active_clients
+      FROM daily_trades
+      WHERE trade_date >= NOW() - INTERVAL '12 months'
+      GROUP BY DATE_TRUNC('month', trade_date), TO_CHAR(trade_date, 'Mon''YY')
+      ORDER BY month_start ASC
+    `);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// Concentration risk — top N clients % of revenue
+router.get('/concentration', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT ucc, SUM(brokerage_earned) AS total_brokerage
+      FROM daily_trades GROUP BY ucc ORDER BY total_brokerage DESC
+    `);
+    const total = result.rows.reduce((s, r) => s + parseFloat(r.total_brokerage), 0);
+    const brackets = [10, 25, 50, 100, 200, 500];
+    const concentration = brackets.map(n => ({
+      label: `Top ${n}`,
+      pct: total > 0
+        ? Math.round(result.rows.slice(0, n).reduce((s, r) => s + parseFloat(r.total_brokerage), 0) / total * 100)
+        : 0
+    }));
+    res.json(concentration);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// Inactive clients by dormancy band
+router.get('/inactive-bands', auth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        CASE
+          WHEN CURRENT_DATE - last_trade_date BETWEEN 30 AND 90   THEN '30–90 days'
+          WHEN CURRENT_DATE - last_trade_date BETWEEN 91 AND 180  THEN '90–180 days'
+          WHEN CURRENT_DATE - last_trade_date BETWEEN 181 AND 365 THEN '180–365 days'
+          WHEN CURRENT_DATE - last_trade_date > 365               THEN '365+ days'
+          WHEN last_trade_date IS NULL                             THEN 'Never traded'
+          ELSE 'Active'
+        END AS band,
+        COUNT(*) AS clients,
+        COUNT(hs.ucc) AS with_holdings
+      FROM clients c
+      LEFT JOIN holdings_summary hs ON c.ucc = hs.ucc AND hs.total_holding_value > 0
+      WHERE c.is_active = true
+      GROUP BY band
+      ORDER BY band
+    `);
+    res.json(result.rows.filter(r => r.band !== 'Active'));
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// RM performance comparison (monthly brokerage per RM)
+router.get('/rm-monthly', auth, async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const fromDate = from || new Date(Date.now() - 5*30*24*60*60*1000).toISOString().split('T')[0];
+    const toDate = to || new Date().toISOString().split('T')[0];
+    const result = await pool.query(`
+      SELECT
+        u.name AS rm_name,
+        TO_CHAR(dt.trade_date, 'Mon''YY') AS month,
+        DATE_TRUNC('month', dt.trade_date) AS month_start,
+        SUM(dt.brokerage_earned) AS brokerage
+      FROM daily_trades dt
+      JOIN clients c ON dt.ucc = c.ucc
+      JOIN rm_master rm ON c.assigned_rm_id = rm.id
+      JOIN users u ON LOWER(u.name) = LOWER(rm.rm_name)
+      WHERE dt.trade_date BETWEEN $1 AND $2
+      GROUP BY u.name, DATE_TRUNC('month', dt.trade_date), TO_CHAR(dt.trade_date, 'Mon''YY')
+      ORDER BY month_start, u.name
+    `, [fromDate, toDate]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
 router.get('/churn-risk', auth, async (req, res) => {
   try {
     const result = await pool.query(`

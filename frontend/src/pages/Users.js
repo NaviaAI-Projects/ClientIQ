@@ -40,11 +40,11 @@ const Users = () => {
   };
 
   const roleStyle = {
-    admin:       { background: '#fcebeb', color: '#a32d2d' },
-    supervisor:  { background: '#faeeda', color: '#854f0b' },
-    rm:          { background: '#e6f1fb', color: '#185fa5' },
-    team_leader: { background: '#eaf3de', color: '#3b6d11' },
-  };
+  admin:       { background: '#FDEDEA', color: '#D43A24' },
+  supervisor:  { background: '#FEF4E6', color: '#D98A0E' },
+  rm:          { background: '#EDEFF6', color: '#223872' },
+  team_leader: { background: '#E6F7F0', color: '#08905C' },
+};
 
   const cell = { padding: '12px 16px' };
   const th = { ...cell, fontSize: '10px', fontWeight: '600', color: '#888', textTransform: 'uppercase', letterSpacing: '0.4px', textAlign: 'left', borderBottom: '0.5px solid rgba(0,0,0,0.1)' };
@@ -57,7 +57,7 @@ const Users = () => {
           <p style={{ fontSize: '13px', color: '#555', marginTop: '3px' }}>Manage RM, Supervisor, Team Leader and Admin accounts</p>
         </div>
         <button onClick={() => setShowForm(!showForm)} style={{
-          padding: '8px 16px', background: '#185fa5', color: 'white',
+          padding: '8px 16px', background: '#223872', color: 'white',
           border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px'
         }}>
           {showForm ? 'Cancel' : '+ Add User'}

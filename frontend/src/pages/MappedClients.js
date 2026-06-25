@@ -95,7 +95,7 @@ const MappedClients = () => {
                       onClick={() => navigate('/client-360', { state: { ucc: client.ucc } })}
                       style={{
                         padding: '6px 12px',
-                        background: '#185fa5',
+                        background: '#223872',
                         color: 'white',
                         border: 'none',
                         borderRadius: '5px',

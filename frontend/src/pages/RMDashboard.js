@@ -4,14 +4,18 @@ import api from '../api';
 
 const StatCard = ({ title, value, subtitle, color, icon }) => (
   <div style={{
-    background: 'white', borderRadius: '12px', padding: '24px',
-    boxShadow: '0 2px 8px rgba(0,0,0,0.08)', borderLeft: `4px solid ${color}`,
-    flex: 1, minWidth: '200px'
-  }}>
+  background: 'white',
+  borderRadius: '12px',
+  padding: '24px',
+  boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+  borderLeft: `4px solid ${color}`,
+  flex: 1,
+  minWidth: '200px'
+}}>
     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
       <div>
         <div style={{ fontSize: '13px', color: '#888', marginBottom: '8px' }}>{title}</div>
-        <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#1B3A6B' }}>{value}</div>
+        <div style={{ fontSize: '32px', fontWeight: 'bold', color: '#223872', fontFamily: "'Sora', sans-serif" }}>{value}</div>
         {subtitle && <div style={{ fontSize: '12px', color: '#888', marginTop: '4px' }}>{subtitle}</div>}
       </div>
       <div style={{ fontSize: '28px' }}>{icon}</div>
@@ -64,9 +68,9 @@ const RMDashboard = () => {
 
       {/* Stat Cards */}
       <div style={{ display: 'flex', gap: '16px', marginBottom: '24px', flexWrap: 'wrap' }}>
-        <StatCard title="My Clients" value={stats?.my_clients || 0} subtitle="Mapped to you" color="#1B3A6B" icon="👥" />
-        <StatCard title="Active Leads" value={stats?.my_leads || 0} subtitle="Assigned to you" color="#2E5FA3" icon="🎯" />
-        <StatCard title="Interactions" value={stats?.interactions_30d || 0} subtitle="Last 30 days" color="#10B981" icon="📞" />
+        <StatCard title="My Clients" value={stats?.my_clients || 0} subtitle="Mapped to you" color="#223872" icon="👥" />
+        <StatCard title="Active Leads" value={stats?.my_leads || 0} subtitle="Assigned to you" color="#ED4D37" icon="🎯" />
+        <StatCard title="Interactions" value={stats?.interactions_30d || 0} subtitle="Last 30 days" color="#0BA86D" icon="📞" />
       </div>
 
       {/* Two Column Layout */}
