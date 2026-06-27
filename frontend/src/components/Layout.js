@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import api from '../api';
 
 // Maps permission checkbox IDs (from Users.js) to sidebar paths
 const PERM_PATH_MAP = {
@@ -60,8 +61,50 @@ function isPathAllowed(user, path) {
 
 const Layout = () => {
   const { user, logout } = useAuth();
-  const [showMenu, setShowMenu] = React.useState(false);
+  const [showMenu, setShowMenu] = useState(false);
   const navigate = useNavigate();
+  const [counts, setCounts] = useState({
+    ai_digest: 0, to_call: 0, assigned_leads: 0,
+    dormant: 0, mapping_approvals: 0, unmap_requests: 0
+  });
+
+  useEffect(() => {
+    if (!user) return;
+    fetchCounts();
+    // Refresh counts every 5 minutes
+    const interval = setInterval(fetchCounts, 300000);
+    return () => clearInterval(interval);
+  }, [user]);
+
+  const fetchCounts = async () => {
+    try {
+      if (user?.role === 'rm' || user?.role === 'team_leader') {
+        const [leadsRes, dormantRes] = await Promise.all([
+          api.get('/leads/my'),
+          api.get('/clients/dormant')
+        ]);
+        const leads = leadsRes.data || [];
+        setCounts(prev => ({
+          ...prev,
+          to_call:        leads.length,
+          assigned_leads: leads.length,
+          dormant:        (dormantRes.data || []).length,
+          ai_digest:      leads.filter(l => l.lead_score >= 50).length,
+        }));
+      }
+      if (user?.role === 'supervisor' || user?.role === 'admin') {
+        const [approvalRes, unmapRes] = await Promise.all([
+          api.get('/leads/mapping-pool'),
+          api.get('/leads/unmap-requests').catch(() => ({ data: [] }))
+        ]);
+        setCounts(prev => ({
+          ...prev,
+          mapping_approvals: (approvalRes.data || []).length,
+          unmap_requests:    (unmapRes.data || []).length,
+        }));
+      }
+    } catch (e) { console.error('Count fetch error:', e); }
+  };
 
   const handleLogout = () => { logout(); navigate('/login'); };
   const initials = user?.name?.split(' ').map(n => n[0]).join('').toUpperCase() || 'U';
@@ -69,17 +112,17 @@ const Layout = () => {
   const rmMenu = [
     { section: 'OVERVIEW', items: [
       { path: '/rm-dashboard', label: 'My Dashboard', icon: '🏠' },
-      { path: '/ai-digest', label: 'AI Daily Digest', icon: '🤖', badge: '3' },
+      { path: '/ai-digest', label: 'AI Daily Digest', icon: '🤖', badge: counts.ai_digest || null },
     ]},
     { section: 'MY LEADS', items: [
-      { path: '/to-call-today', label: 'To Call Today', icon: '📞', badge: '12' },
-      { path: '/assigned-leads', label: 'Assigned Leads', icon: '⭐', badge: '7' },
+      { path: '/to-call-today', label: 'To Call Today', icon: '📞', badge: counts.to_call || null },
+      { path: '/assigned-leads', label: 'Assigned Leads', icon: '⭐', badge: counts.assigned_leads || null },
       { path: '/contact-log', label: 'Contact & Log', icon: '📝' },
     ]},
     { section: 'MY CLIENTS', items: [
       { path: '/mapped-clients', label: 'Mapped Clients', icon: '👥' },
       { path: '/client-360', label: 'Client 360', icon: '👤' },
-      { path: '/dormant-clients', label: 'Dormant Clients', icon: '🌙', badge: '4' },
+      { path: '/dormant-clients', label: 'Dormant Clients', icon: '🌙', badge: counts.dormant || null },
     ]},
     { section: 'REVENUE', items: [
       { path: '/revenue-tracker', label: 'Revenue Tracker', icon: '📈' },
@@ -97,8 +140,8 @@ const Layout = () => {
       { path: '/ai-insights', label: 'AI Insights', icon: '🤖' },
     ]},
     { section: 'APPROVALS', items: [
-      { path: '/mapping-approvals', label: 'Mapping Approvals', icon: '✅', badge: '5' },
-      { path: '/unmap-requests', label: 'Unmap Requests', icon: '👤', badge: '2' },
+      { path: '/mapping-approvals', label: 'Mapping Approvals', icon: '✅', badge: counts.mapping_approvals || null },
+      { path: '/unmap-requests', label: 'Unmap Requests', icon: '👤', badge: counts.unmap_requests || null },
     ]},
     { section: 'CLIENT UNIVERSE', items: [
       { path: '/all-clients', label: 'All Clients', icon: '🌍' },
@@ -215,7 +258,7 @@ const Layout = () => {
                 >
                   <span style={{ fontSize: '14px', width: '18px', flexShrink: 0 }}>{item.icon}</span>
                   <span style={{ flex: 1 }}>{item.label}</span>
-                  {item.badge && (
+                  {item.badge && item.badge > 0 && (
                     <span style={{
                       marginLeft: 'auto', background: '#EDEFF6', color: '#223872',
                       fontSize: '10px', fontWeight: '600', padding: '1px 6px', borderRadius: '10px'

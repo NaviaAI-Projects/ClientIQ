@@ -32,6 +32,8 @@ const routes = [
   ['/api/ai', './routes/ai'],
   ['/api/contact-logs', './routes/contactLogs'],
   ['/api/calls', './routes/calls'],
+  ['/api/whatsapp', './routes/whatsapp'],
+  ['/api/email', './routes/email'],
 ];
 
 routes.forEach(([path, file]) => {
