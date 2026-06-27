@@ -5,66 +5,36 @@ const CrossSell = () => {
   const [clients, setClients] = useState([]);
 
   useEffect(() => {
-    loadClients();
+    api.get('/clients').then(res => setClients(res.data.clients || [])).catch(console.error);
   }, []);
 
-  const loadClients = async () => {
-    try {
-      const res = await api.get('/clients');
-      setClients(res.data.clients || []);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
   return (
-    <div style={{ padding: '30px' }}>
-      <h2>Cross-sell Opportunities</h2>
-      <p style={{ color: '#666', marginBottom: '20px' }}>
-        Clients eligible for additional products
-      </p>
-
-      <div
-        style={{
-          background: '#fff',
-          padding: '20px',
-          borderRadius: '10px'
-        }}
-      >
-        <table
-          style={{
-            width: '100%',
-            borderCollapse: 'collapse'
-          }}
-        >
-          <thead>
-            <tr>
-              <th align="left">UCC</th>
-              <th align="left">Client Name</th>
-              <th align="left">Plan</th>
-              <th align="left">Opportunity</th>
-            </tr>
-          </thead>
-
+    <div>
+      <div className="ph">
+        <h2>Cross-sell Opportunities</h2>
+        <p>AI-identified revenue expansion for your mapped clients</p>
+      </div>
+      <div className="alert a-i">
+        AI analyses trading patterns, MTF eligibility, NRI status, and holding values to generate these signals.
+      </div>
+      <div className="panel">
+        <div className="tw"><table>
+          <thead><tr>
+            <th>UCC</th><th>Client Name</th><th>Plan</th><th>Opportunity</th>
+          </tr></thead>
           <tbody>
-            {clients.length > 0 ? (
-              clients.map(client => (
-                <tr key={client.ucc}>
-                  <td>{client.ucc}</td>
-                  <td>{client.name}</td>
-                  <td>{client.plan}</td>
-                  <td>MTF Activation</td>
-                </tr>
-              ))
-            ) : (
-              <tr>
-                <td colSpan="4" align="center">
-                  No opportunities available
-                </td>
+            {clients.length === 0 ? (
+              <tr><td colSpan="4" style={{ textAlign: 'center', color: '#888', padding: '20px' }}>No opportunities available</td></tr>
+            ) : clients.map(c => (
+              <tr key={c.ucc}>
+                <td>{c.ucc}</td>
+                <td style={{ fontWeight: '500' }}>{c.name}</td>
+                <td><span className="badge b-zero">{c.plan}</span></td>
+                <td><span className="badge b-lead">MTF Activation</span></td>
               </tr>
-            )}
+            ))}
           </tbody>
-        </table>
+        </table></div>
       </div>
     </div>
   );

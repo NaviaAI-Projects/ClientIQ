@@ -59,19 +59,29 @@ const RMDashboard = () => {
   return (
     <div>
       {/* Header */}
-      <div style={{ marginBottom: '24px' }}>
-        <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#1B3A6B', margin: 0 }}>My Dashboard</h1>
-        <p style={{ color: '#888', margin: '4px 0 0', fontSize: '14px' }}>
-          {new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-        </p>
-      </div>
-
-      {/* Stat Cards */}
-      <div style={{ display: 'flex', gap: '16px', marginBottom: '24px', flexWrap: 'wrap' }}>
-        <StatCard title="My Clients" value={stats?.my_clients || 0} subtitle="Mapped to you" color="#223872" icon="👥" />
-        <StatCard title="Active Leads" value={stats?.my_leads || 0} subtitle="Assigned to you" color="#ED4D37" icon="🎯" />
-        <StatCard title="Interactions" value={stats?.interactions_30d || 0} subtitle="Last 30 days" color="#0BA86D" icon="📞" />
-      </div>
+      <div className="ph">
+  <h2>My dashboard</h2>
+  <p>{new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+</div>
+<div className="cards">
+  <div className="card ci">
+    <div className="clbl">MTD revenue (attributed)</div>
+    <div className="cval">{stats?.my_clients || 0}</div>
+    <div className="csub">Mapped to you</div>
+  </div>
+  <div className="card cs">
+    <div className="clbl">Mapped clients</div>
+    <div className="cval">{stats?.my_clients || 0}</div>
+  </div>
+  <div className="card cw">
+    <div className="clbl">Active leads</div>
+    <div className="cval">{stats?.my_leads || 0}</div>
+  </div>
+  <div className="card cp">
+    <div className="clbl">Interactions (30d)</div>
+    <div className="cval">{stats?.interactions_30d || 0}</div>
+  </div>
+</div>
 
       {/* Two Column Layout */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px' }}>

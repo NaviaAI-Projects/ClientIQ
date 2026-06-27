@@ -74,22 +74,32 @@ const SupervisorDashboard = () => {
   return (
     <div>
       {/* Header */}
-      <div style={{ marginBottom: '24px' }}>
-        <h1 style={{ fontSize: '24px', fontWeight: 'bold', color: '#1B3A6B', margin: 0 }}>Company Dashboard</h1>
-        <p style={{ color: '#888', margin: '4px 0 0', fontSize: '14px' }}>
-          {new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-        </p>
-      </div>
-
-      {/* Stat Cards */}
-      <div style={{ display: 'flex', gap: '16px', marginBottom: '24px', flexWrap: 'wrap' }}>
-        <StatCard title="Total Clients" value={stats?.total_clients?.toLocaleString() || 0} subtitle="All clients" color="#1B3A6B" icon="👥" />
-        <StatCard title="Active Clients" value={stats?.active_clients?.toLocaleString() || 0} subtitle="Trading actively" color="#10B981" icon="✅" />
-        <StatCard title="Mapped Clients" value={stats?.mapped_clients?.toLocaleString() || 0} subtitle="Assigned to RMs" color="#2E5FA3" icon="🔗" />
-        <StatCard title="Today's Brokerage" value={fmt(stats?.today_brokerage)} subtitle="Today's earnings" color="#F59E0B" icon="💰" />
-        <StatCard title="Today's Turnover" value={fmt(stats?.today_turnover)} subtitle="Total traded value" color="#8B5CF6" icon="📈" />
-        <StatCard title="Unassigned Leads" value={stats?.unassigned_leads || 0} subtitle="Waiting assignment" color="#EF4444" icon="🎯" />
-      </div>
+      <div className="ph">
+  <h2>Company dashboard</h2>
+  <p>All clients · All RMs · {new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</p>
+</div>
+<div className="cards">
+  <div className="card ci">
+    <div className="clbl">Total clients</div>
+    <div className="cval">{stats?.total_clients?.toLocaleString() || 0}</div>
+    <div className="csub">Mapped {stats?.mapped_clients || 0} · Unmapped {(stats?.total_clients - stats?.mapped_clients) || 0}</div>
+  </div>
+  <div className="card cs">
+    <div className="clbl">Company MTD revenue</div>
+    <div className="cval">{fmt(stats?.today_brokerage)}</div>
+    <div className="csub">Today's brokerage</div>
+  </div>
+  <div className="card cw">
+    <div className="clbl">Active leads in pipeline</div>
+    <div className="cval">{stats?.unassigned_leads || 0}</div>
+    <div className="csub">Unassigned leads</div>
+  </div>
+  <div className="card cd">
+    <div className="clbl">Total float</div>
+    <div className="cval">{fmt(stats?.total_float)}</div>
+    <div className="csub">Client ledger balance</div>
+  </div>
+</div>
 
       {/* Two column */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
@@ -98,7 +108,7 @@ const SupervisorDashboard = () => {
         <div style={{ background: 'white', borderRadius: '12px', padding: '24px', boxShadow: '0 2px 8px rgba(0,0,0,0.08)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
             <h2 style={{ fontSize: '16px', fontWeight: 'bold', color: '#1B3A6B', margin: 0 }}>Top 5 Clients by Brokerage</h2>
-            <button onClick={() => navigate('/reports')} style={{
+            <button onClick={() => navigate('/daily-mis')} style={{
               background: 'none', border: '1px solid #1B3A6B', color: '#1B3A6B',
               padding: '4px 12px', borderRadius: '6px', cursor: 'pointer', fontSize: '12px'
             }}>View Reports</button>

@@ -6,96 +6,60 @@ const AiDigest = () => {
   const [logs, setLogs] = useState([]);
 
   useEffect(() => {
-    loadDigest();
-  }, []);
-
-  const loadDigest = async () => {
-    try {
-      const [leadsRes, logsRes] = await Promise.all([
-        api.get('/leads/my'),
-        api.get('/contact-logs')
-      ]);
-
+    Promise.all([
+      api.get('/leads/my'),
+      api.get('/contact-logs')
+    ]).then(([leadsRes, logsRes]) => {
       setLeads(leadsRes.data || []);
       setLogs(logsRes.data || []);
-    } catch (err) {
-      console.error(err);
-      alert('Failed to load AI Daily Digest');
-    }
-  };
+    }).catch(console.error);
+  }, []);
 
   return (
     <div>
-      <h2 style={{ fontSize: '20px', fontWeight: '600' }}>
-        AI Daily Digest
-      </h2>
+      <div className="ph">
+        <h2>AI Daily Digest</h2>
+        <p>Personalised intelligence · {new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+      </div>
 
-      <p style={{ color: '#666', marginBottom: '20px' }}>
-        Daily AI summary of leads, follow-ups and opportunities
-      </p>
-
-      <div style={styles.card}>
-        <h3>Today&apos;s Priority</h3>
-
+      <div className="panel" style={{ borderLeft: '3px solid var(--ic)' }}>
+        <div className="ptitle">Today's Priority Leads</div>
         {leads.length === 0 ? (
-          <p>No priority leads available today.</p>
-        ) : (
-          leads.map((lead) => (
-            <div key={lead.id} style={styles.item}>
-              <b>{lead.client_name}</b>
-              <p>
-                Lead Score: {lead.lead_score} | Churn Risk: {lead.churn_risk_score}
-              </p>
-              <p>
-                AI Suggestion: This client has a high opportunity score.
-                Recommended to follow up for MTF or revenue conversion.
-              </p>
+          <p style={{ color: 'var(--tx2)', fontSize: '13px' }}>No priority leads available today.</p>
+        ) : leads.map(lead => (
+          <div key={lead.id} style={{ padding: '10px 12px', background: 'var(--bg2)', borderRadius: 'var(--r2)', marginBottom: '8px' }}>
+            <div style={{ fontWeight: '600', fontSize: '13px' }}>{lead.client_name}</div>
+            <div style={{ fontSize: '12px', color: 'var(--tx2)', marginTop: '3px' }}>
+              Lead Score: <span className="ais h">{lead.lead_score}</span> &nbsp;
+              Churn Risk: <span className="ais m">{lead.churn_risk_score}</span>
             </div>
-          ))
-        )}
+            <div style={{ fontSize: '12px', color: 'var(--tx2)', marginTop: '4px' }}>
+              AI: High opportunity client — recommended for MTF or revenue conversion follow-up.
+            </div>
+          </div>
+        ))}
       </div>
 
-      <div style={styles.card}>
-        <h3>Follow-up Summary</h3>
-
+      <div className="panel">
+        <div className="ptitle">Follow-up Summary</div>
         {logs.length === 0 ? (
-          <p>No interaction logs available.</p>
-        ) : (
-          logs.map((log) => (
-            <div key={log.id} style={styles.item}>
-              <b>{log.client_name}</b>
-              <p>{log.interaction_type} - {log.notes}</p>
-              <p>Status: {log.status}</p>
-            </div>
-          ))
-        )}
+          <p style={{ color: 'var(--tx2)', fontSize: '13px' }}>No interaction logs available.</p>
+        ) : logs.map(log => (
+          <div key={log.id} style={{ padding: '10px 12px', background: 'var(--bg2)', borderRadius: 'var(--r2)', marginBottom: '8px' }}>
+            <div style={{ fontWeight: '600', fontSize: '13px' }}>{log.client_name}</div>
+            <div style={{ fontSize: '12px', color: 'var(--tx2)', marginTop: '3px' }}>{log.interaction_type} — {log.notes}</div>
+          </div>
+        ))}
       </div>
 
-      <div style={styles.card}>
-        <h3>Recommended Action</h3>
-        <p>
-          Focus on high-score clients first, complete pending follow-ups,
-          and update interaction notes after each call.
-        </p>
+      <div className="panel">
+        <div className="ptitle">Recommended Action</div>
+        <div className="aibox">
+          Focus on high-score clients first, complete pending follow-ups, and update interaction notes after each call.
+        </div>
       </div>
     </div>
   );
-};
-
-const styles = {
-  card: {
-    background: '#fff',
-    padding: '20px',
-    borderRadius: '10px',
-    marginBottom: '20px',
-    border: '1px solid #eee'
-  },
-  item: {
-    background: '#F8FAFF',
-    padding: '12px',
-    borderRadius: '8px',
-    marginTop: '10px'
-  }
 };
 
 export default AiDigest;
