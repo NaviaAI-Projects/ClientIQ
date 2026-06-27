@@ -2,13 +2,68 @@ import React from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
+// Maps permission checkbox IDs (from Users.js) to sidebar paths
+const PERM_PATH_MAP = {
+  'sup-dash':             '/supervisor-dashboard',
+  'sup-ai':              '/ai-insights',
+  'sup-approve':         '/mapping-approvals',
+  'sup-unmap':           '/unmap-requests',
+  'sup-all':             '/all-clients',
+  'sup-unmapped':        '/unmapped-pool',
+  'sup-c360':            '/client-360',
+  'sup-rm':              '/rm-performance',
+  'sup-leads':           '/lead-pipeline',
+  'sup-daily-mis':       '/daily-mis',
+  'sup-options':         '/options-analytics',
+  'sup-client-analytics':'/client-analytics',
+  'sup-retention':       '/retention',
+  'sup-inactive':        '/inactive-dp',
+  'sup-new-biz':         '/new-business',
+  'sup-rmi':             '/rm-impact',
+  'sup-revenue-float':   '/revenue-float',
+  'sup-concentration':   '/concentration-risk',
+  'sup-mktshare':        '/market-share',
+  'sup-ramp':            '/revenue-ramp',
+};
+
+// Check if a sidebar path is allowed for this user
+function isPathAllowed(user, path) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (user.role === 'rm' || user.role === 'team_leader') return true;
+
+  if (user.role === 'supervisor') {
+    // If individual permissions were saved (from checkbox selections), use them
+    if (user.permissions && typeof user.permissions === 'object' && Object.keys(user.permissions).length > 0) {
+      const permId = Object.entries(PERM_PATH_MAP).find(([, p]) => p === path)?.[0];
+      if (!permId) return true; // path not in map = always allow
+      return !!user.permissions[permId];
+    }
+
+    // Fall back to sub_role template if no individual permissions saved
+    const tmpl = user.supervisor_sub_role || 'rm-supervisor';
+    if (tmpl === 'rm-supervisor') return true;
+    if (tmpl === 'ops-head') {
+      return !['/mapping-approvals', '/unmap-requests', '/rm-performance', '/lead-pipeline'].includes(path);
+    }
+    if (tmpl === 'finance-head') {
+      return [
+        '/supervisor-dashboard', '/daily-mis',
+        '/revenue-float', '/concentration-risk', '/market-share', '/revenue-ramp'
+      ].includes(path);
+    }
+    // custom with no permissions saved = full access (admin will configure)
+    return true;
+  }
+  return false;
+}
+
 const Layout = () => {
   const { user, logout } = useAuth();
   const [showMenu, setShowMenu] = React.useState(false);
   const navigate = useNavigate();
 
   const handleLogout = () => { logout(); navigate('/login'); };
-
   const initials = user?.name?.split(' ').map(n => n[0]).join('').toUpperCase() || 'U';
 
   const rmMenu = [
@@ -92,19 +147,32 @@ const Layout = () => {
 
   const getMenu = () => {
     if (user?.role === 'rm' || user?.role === 'team_leader') return rmMenu;
-    if (user?.role === 'supervisor') return supervisorMenu;
     if (user?.role === 'admin') return adminMenu;
+    if (user?.role === 'supervisor') {
+      // Filter every sidebar item based on this user's saved permissions
+      return supervisorMenu
+        .map(section => ({
+          ...section,
+          items: section.items.filter(item => isPathAllowed(user, item.path))
+        }))
+        .filter(section => section.items.length > 0); // hide sections with no allowed items
+    }
     return [];
   };
 
   const getRoleLabel = () => {
-    const labels = { rm: 'Relationship Manager', team_leader: 'Team Leader', supervisor: 'Supervisor', admin: 'Administrator' };
+    const labels = {
+      rm: 'Relationship Manager',
+      team_leader: 'Team Leader',
+      supervisor: 'Supervisor',
+      admin: 'Administrator'
+    };
     return labels[user?.role] || user?.role;
   };
 
   return (
     <div style={{ display: 'flex', height: '100vh', fontFamily: "-apple-system,'Segoe UI',system-ui,sans-serif" }}>
-      
+
       {/* Sidebar */}
       <aside style={{
         width: '228px', minWidth: '228px', background: '#fff',
@@ -114,7 +182,9 @@ const Layout = () => {
       }}>
         {/* Logo */}
         <div style={{ padding: '14px 16px', borderBottom: '0.5px solid rgba(0,0,0,0.1)' }}>
-          <div style={{ fontSize: '16px', fontWeight: '800', letterSpacing: '-0.5px', color: '#223872', fontFamily: "'Sora', sans-serif" }}>Navia ClientIQ</div>
+          <div style={{ fontSize: '16px', fontWeight: '800', letterSpacing: '-0.5px', color: '#223872', fontFamily: "'Sora', sans-serif" }}>
+            Navia ClientIQ
+          </div>
           <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>Strategic MIS · FY 2026-27</div>
         </div>
 
@@ -122,7 +192,11 @@ const Layout = () => {
         <nav style={{ flex: 1, padding: '10px 8px 2px' }}>
           {getMenu().map((section) => (
             <div key={section.section} style={{ marginBottom: '4px' }}>
-              <div style={{ fontSize: '9px', fontWeight: '600', color: '#999', letterSpacing: '0.8px', textTransform: 'uppercase', padding: '0 8px', marginBottom: '3px', marginTop: '10px' }}>
+              <div style={{
+                fontSize: '9px', fontWeight: '600', color: '#999',
+                letterSpacing: '0.8px', textTransform: 'uppercase',
+                padding: '0 8px', marginBottom: '3px', marginTop: '10px'
+              }}>
                 {section.section}
               </div>
               {section.items.map((item) => (
@@ -134,7 +208,7 @@ const Layout = () => {
                     padding: '7px 8px', borderRadius: '6px',
                     cursor: 'pointer', fontSize: '12.5px',
                     color: isActive ? '#223872' : '#45526B',
-background: isActive ? '#EDEFF6' : 'transparent',
+                    background: isActive ? '#EDEFF6' : 'transparent',
                     fontWeight: isActive ? '500' : 'normal',
                     textDecoration: 'none', transition: 'all 0.1s'
                   })}
@@ -156,71 +230,55 @@ background: isActive ? '#EDEFF6' : 'transparent',
         </nav>
 
         {/* User footer */}
-        {/* User footer */}
-<div style={{ marginTop: 'auto', padding: '10px 8px', borderTop: '0.5px solid rgba(0,0,0,0.1)' }}>
-  <div
-    onClick={() => setShowMenu(!showMenu)}
-    style={{ position: 'relative', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '6px' }}
-  >
-    {/* Avatar circle */}
-    <div style={{
-      width: '28px', height: '28px', borderRadius: '50%',
-      background: '#223872', color: '#FFFFFF',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontSize: '10px', fontWeight: '600', flexShrink: 0
-    }}>
-      {initials}
-    </div>
+        <div style={{ marginTop: 'auto', padding: '10px 8px', borderTop: '0.5px solid rgba(0,0,0,0.1)' }}>
+          <div
+            onClick={() => setShowMenu(!showMenu)}
+            style={{ position: 'relative', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '6px' }}
+          >
+            <div style={{
+              width: '28px', height: '28px', borderRadius: '50%',
+              background: '#223872', color: '#FFFFFF',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: '10px', fontWeight: '600', flexShrink: 0
+            }}>
+              {initials}
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: '12px', fontWeight: '500', color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {user?.name}
+              </div>
+              <div style={{ fontSize: '10px', color: '#999' }}>{getRoleLabel()}</div>
+            </div>
+            <span style={{ fontSize: '10px', color: '#999' }}>⌃</span>
 
-    {/* Name and role */}
-    <div style={{ flex: 1, minWidth: 0 }}>
-      <div style={{ fontSize: '12px', fontWeight: '500', color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {user?.name}
-      </div>
-      <div style={{ fontSize: '10px', color: '#999' }}>
-        {getRoleLabel()}
-      </div>
-    </div>
-
-    {/* Chevron */}
-    <span style={{ fontSize: '10px', color: '#999' }}>⌃</span>
-
-    {/* Dropdown menu */}
-    {showMenu && (
-      <div style={{
-        position: 'absolute', bottom: '44px', left: 0, right: 0,
-        background: '#FFFFFF',
-borderRight: '1px solid #E6EBF2',
-        borderRadius: '8px', padding: '4px',
-        boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 200
-      }}>
-        <div style={{ padding: '6px 10px', fontSize: '11px', color: '#999', borderBottom: '0.5px solid rgba(0,0,0,0.1)', marginBottom: '4px' }}>
-          {user?.email}
+            {showMenu && (
+              <div style={{
+                position: 'absolute', bottom: '44px', left: 0, right: 0,
+                background: '#FFFFFF', border: '1px solid #E6EBF2',
+                borderRadius: '8px', padding: '4px',
+                boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 200
+              }}>
+                <div style={{ padding: '6px 10px', fontSize: '11px', color: '#999', borderBottom: '0.5px solid rgba(0,0,0,0.1)', marginBottom: '4px' }}>
+                  {user?.email}
+                </div>
+                <div
+                  onClick={(e) => { e.stopPropagation(); handleLogout(); }}
+                  style={{ padding: '7px 10px', fontSize: '12.5px', cursor: 'pointer', color: '#a32d2d', borderRadius: '5px', display: 'flex', alignItems: 'center', gap: '6px' }}
+                  onMouseEnter={e => e.currentTarget.style.background = '#fcebeb'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  🚪 Logout
+                </div>
+              </div>
+            )}
+          </div>
         </div>
-        <div
-          onClick={(e) => { e.stopPropagation(); handleLogout(); }}
-          style={{
-            padding: '7px 10px', fontSize: '12.5px',
-            cursor: 'pointer', color: '#a32d2d',
-            borderRadius: '5px',
-            display: 'flex', alignItems: 'center', gap: '6px'
-          }}
-          onMouseEnter={e => e.currentTarget.style.background = '#fcebeb'}
-          onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-        >
-          🚪 Logout
-        </div>
-      </div>
-    )}
-  </div>
-</div>
       </aside>
 
       {/* Topbar */}
       <div style={{
         position: 'fixed', top: 0, left: '228px', right: 0, height: '48px',
-       background: '#FFFFFF',
-borderRight: '1px solid #E6EBF2',
+        background: '#FFFFFF', borderBottom: '1px solid #E6EBF2',
         display: 'flex', alignItems: 'center', padding: '0 20px', gap: '10px', zIndex: 100
       }}>
         <span style={{ fontSize: '14px', fontWeight: '500', flex: 1, color: '#111' }}>

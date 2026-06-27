@@ -12,9 +12,28 @@ const ApiIntegrations = () => {
   const [saveMsg, setSaveMsg] = useState('');
 
   useEffect(() => {
-    api.get('/admin-settings/integrations')
+    // Fix: use /admin-settings not /admin-settings/integrations
+    api.get('/admin-settings')
       .then(res => {
-        if (res.data.data) setSettings(prev => ({ ...prev, ...res.data.data }));
+        const s = res.data.data || {};
+        setSettings(prev => ({
+          ...prev,
+          click_to_call_url:   s.click_to_call_url   || '',
+          click_to_call_key:   s.click_to_call_key   || '',
+          caller_id:           s.caller_id            || '',
+          mobile_fetch_url:    s.mobile_fetch_url     || '',
+          whatsapp_url:        s.whatsapp_url         || '',
+          whatsapp_key:        s.whatsapp_key         || '',
+          whatsapp_sender:     s.whatsapp_sender      || '',
+          whatsapp_namespace:  s.whatsapp_namespace   || '',
+          email_url:           s.email_url            || '',
+          email_key:           s.email_key            || '',
+          email_from:          s.email_from           || '',
+          smtp_host:           s.smtp_host            || '',
+          anthropic_key:       s.anthropic_key        || '',
+          anthropic_model:     s.anthropic_model      || 'claude-sonnet-4-6',
+          digest_time:         s.digest_time          || '07:30',
+        }));
       })
       .catch(console.error)
       .finally(() => setLoading(false));
@@ -29,16 +48,17 @@ const ApiIntegrations = () => {
       await api.put('/admin-settings', payload);
       setSaveMsg('Saved successfully');
       setTimeout(() => setSaveMsg(''), 3000);
-    } catch (err) {
+    } catch {
       setSaveMsg('Save failed');
+      setTimeout(() => setSaveMsg(''), 3000);
     }
   };
 
-  const inputStyle = { padding: '7px 10px', border: '0.5px solid rgba(0,0,0,0.2)', borderRadius: '6px', fontSize: '12.5px', width: '100%', boxSizing: 'border-box' };
-  const labelStyle = { display: 'block', fontSize: '10px', fontWeight: '600', color: '#555', marginBottom: '3px', textTransform: 'uppercase', letterSpacing: '0.4px' };
-  const panelStyle = { background: 'white', borderRadius: '10px', padding: '20px', border: '0.5px solid rgba(0,0,0,0.1)', marginBottom: '14px' };
-  const btnPrimary = { padding: '7px 14px', background: '#223872', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '12px', marginRight: '8px' };
-  const btnSecondary = { padding: '7px 14px', background: 'white', color: '#223872', border: '0.5px solid #223872', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' };
+  const inputStyle    = { padding: '7px 10px', border: '0.5px solid rgba(0,0,0,0.2)', borderRadius: '6px', fontSize: '12.5px', width: '100%', boxSizing: 'border-box' };
+  const labelStyle    = { display: 'block', fontSize: '10px', fontWeight: '600', color: '#555', marginBottom: '3px', textTransform: 'uppercase', letterSpacing: '0.4px' };
+  const panelStyle    = { background: 'white', borderRadius: '10px', padding: '20px', border: '0.5px solid rgba(0,0,0,0.1)', marginBottom: '14px' };
+  const btnPrimary    = { padding: '7px 14px', background: '#223872', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '12px', marginRight: '8px' };
+  const btnSecondary  = { padding: '7px 14px', background: 'white', color: '#223872', border: '0.5px solid #223872', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' };
 
   if (loading) return <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>Loading...</div>;
 
@@ -54,7 +74,7 @@ const ApiIntegrations = () => {
       {saveMsg && (
         <div style={{ padding: '10px 14px', borderRadius: '8px', marginBottom: '14px', fontSize: '13px',
           background: saveMsg.includes('failed') ? '#fcebeb' : '#eaf3de',
-          color: saveMsg.includes('failed') ? '#a32d2d' : '#3b6d11' }}>
+          color:      saveMsg.includes('failed') ? '#a32d2d' : '#3b6d11' }}>
           {saveMsg}
         </div>
       )}
@@ -64,21 +84,30 @@ const ApiIntegrations = () => {
         {/* Click-to-call */}
         <div style={panelStyle}>
           <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>📞 Click-to-call</div>
-          <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>Compatible with Exotel, Ozonetel, MCUBE, or any REST provider</p>
+          <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>Compatible with Doocti, Exotel, Ozonetel, MCUBE, or any REST provider</p>
           <div style={{ display: 'grid', gap: '10px', marginBottom: '12px' }}>
-            {[['API Endpoint URL', 'click_to_call_url', 'url', 'https://api.provider.com/v1/calls'],
-              ['API Key', 'click_to_call_key', 'password', 'sk-…'],
-              ['Caller ID (1600 series)', 'caller_id', 'text', '1600XXXXXXX'],
-              ['Mobile Fetch API Endpoint', 'mobile_fetch_url', 'url', 'https://api.navia.in/client/mobile/{ucc}']
+            {[
+              ['API Endpoint URL',          'click_to_call_url', 'url',      'https://api-naviasp.doocti.com/api/v2/call'],
+              ['API Key',                   'click_to_call_key', 'password', 'Bearer token…'],
+              ['Caller ID',                 'caller_id',         'text',     '8244784278'],
+              ['Mobile Fetch API Endpoint', 'mobile_fetch_url',  'url',      'Leave blank — Sharepro used automatically'],
             ].map(([label, key, type, ph]) => (
               <div key={key}>
                 <label style={labelStyle}>{label}</label>
-                <input type={type} value={settings[key] || ''} onChange={e => set(key, e.target.value)} placeholder={ph} style={inputStyle} />
+                <input type={type} value={settings[key] || ''} onChange={e => set(key, e.target.value)}
+                  placeholder={ph} style={inputStyle} />
               </div>
             ))}
           </div>
           <button style={btnPrimary} onClick={() => saveSection(['click_to_call_url','click_to_call_key','caller_id','mobile_fetch_url'])}>Save</button>
-          <button style={btnSecondary} onClick={() => alert('Test click-to-call API')}>Test</button>
+          <button style={btnSecondary} onClick={async () => {
+            try {
+              const res = await api.get('/calls/test');
+              alert(res.data.message);
+            } catch (err) {
+              alert('Test failed: ' + (err.response?.data?.message || err.message));
+            }
+          }}>Test</button>
         </div>
 
         {/* WhatsApp */}
@@ -86,14 +115,16 @@ const ApiIntegrations = () => {
           <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>💬 WhatsApp Business API</div>
           <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>Compatible with Gupshup, Kaleyra, Interakt, or any WABA BSP</p>
           <div style={{ display: 'grid', gap: '10px', marginBottom: '12px' }}>
-            {[['BSP API Endpoint', 'whatsapp_url', 'url', 'https://api.gupshup.io/sm/api/v1/msg'],
-              ['API Key / Bearer Token', 'whatsapp_key', 'password', '…'],
-              ['Sender WhatsApp Number', 'whatsapp_sender', 'text', '+91XXXXXXXXXX'],
-              ['Template Namespace', 'whatsapp_namespace', 'text', 'navia_crm_msgs']
+            {[
+              ['BSP API Endpoint',       'whatsapp_url',       'url',      'https://api.gupshup.io/sm/api/v1/msg'],
+              ['API Key / Bearer Token', 'whatsapp_key',       'password', '…'],
+              ['Sender WhatsApp Number', 'whatsapp_sender',    'text',     '+91XXXXXXXXXX'],
+              ['Template Namespace',     'whatsapp_namespace', 'text',     'navia_crm_msgs'],
             ].map(([label, key, type, ph]) => (
               <div key={key}>
                 <label style={labelStyle}>{label}</label>
-                <input type={type} value={settings[key] || ''} onChange={e => set(key, e.target.value)} placeholder={ph} style={inputStyle} />
+                <input type={type} value={settings[key] || ''} onChange={e => set(key, e.target.value)}
+                  placeholder={ph} style={inputStyle} />
               </div>
             ))}
           </div>
@@ -106,14 +137,16 @@ const ApiIntegrations = () => {
           <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>📧 Email & Mobile Fetch API</div>
           <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>Fetches client email and mobile at runtime. Not stored.</p>
           <div style={{ display: 'grid', gap: '10px', marginBottom: '12px' }}>
-            {[['Email Fetch API Endpoint', 'email_url', 'url', 'https://api.navia.in/client/email/{ucc}'],
-              ['API Key', 'email_key', 'password', '…'],
-              ['Lead Email Sender', 'email_from', 'email', 'leads@navia.in'],
-              ['SMTP Host (for sending)', 'smtp_host', 'text', 'smtp.navia.in']
+            {[
+              ['Email Fetch API Endpoint', 'email_url',  'url',      'https://api.navia.in/client/email/{ucc}'],
+              ['API Key',                  'email_key',  'password', '…'],
+              ['Lead Email Sender',        'email_from', 'email',    'leads@navia.in'],
+              ['SMTP Host (for sending)',  'smtp_host',  'text',     'smtp.navia.in'],
             ].map(([label, key, type, ph]) => (
               <div key={key}>
                 <label style={labelStyle}>{label}</label>
-                <input type={type} value={settings[key] || ''} onChange={e => set(key, e.target.value)} placeholder={ph} style={inputStyle} />
+                <input type={type} value={settings[key] || ''} onChange={e => set(key, e.target.value)}
+                  placeholder={ph} style={inputStyle} />
               </div>
             ))}
           </div>
@@ -128,7 +161,8 @@ const ApiIntegrations = () => {
           <div style={{ display: 'grid', gap: '10px', marginBottom: '12px' }}>
             <div>
               <label style={labelStyle}>Anthropic API Key</label>
-              <input type="password" value={settings.anthropic_key || ''} onChange={e => set('anthropic_key', e.target.value)} placeholder="sk-ant-…" style={inputStyle} />
+              <input type="password" value={settings.anthropic_key || ''} onChange={e => set('anthropic_key', e.target.value)}
+                placeholder="sk-ant-…" style={inputStyle} />
             </div>
             <div>
               <label style={labelStyle}>Model</label>
@@ -145,6 +179,7 @@ const ApiIntegrations = () => {
           <button style={btnPrimary} onClick={() => saveSection(['anthropic_key','anthropic_model','digest_time'])}>Save</button>
           <button style={btnSecondary} onClick={() => alert('Test Anthropic connection')}>Test</button>
         </div>
+
       </div>
     </div>
   );

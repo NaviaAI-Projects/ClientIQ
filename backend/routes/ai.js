@@ -132,10 +132,13 @@ router.post('/rescore', auth, async (req, res) => {
           )
           VALUES ($1, $2, $3, 'unassigned', NOW())
           ON CONFLICT (ucc) DO UPDATE
-          SET
-            lead_score = EXCLUDED.lead_score,
-            churn_risk_score = EXCLUDED.churn_risk_score,
-            status = lead_pool.status
+SET
+  lead_score = EXCLUDED.lead_score,
+  churn_risk_score = EXCLUDED.churn_risk_score,
+  status = CASE
+    WHEN lead_pool.status IN ('assigned','converted') THEN lead_pool.status
+    ELSE 'unassigned'
+  END
         `, [
           client.ucc,
           leadScore,

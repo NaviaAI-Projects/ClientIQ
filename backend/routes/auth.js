@@ -21,9 +21,7 @@ router.post('/login', async (req, res) => {
     }
 
     const user = result.rows[0];
-
-    const isMatch =
-      await bcrypt.compare(password, user.password_hash || '');
+    const isMatch = await bcrypt.compare(password, user.password_hash || '');
 
     if (!isMatch) {
       return res.status(401).json({ message: 'Invalid email or password' });
@@ -42,30 +40,29 @@ router.post('/login', async (req, res) => {
     res.json({
       token,
       user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        supervisor_sub_role: user.supervisor_sub_role || null
-      }
+  id: user.id,
+  name: user.name,
+  email: user.email,
+  role: user.role,
+  supervisor_sub_role: user.supervisor_sub_role || null,
+  permissions: user.permissions || null
+}
     });
 
   } catch (err) {
     console.log('LOGIN ERROR:', err.message);
-    res.status(500).json({
-      message: 'Server error',
-      error: err.message
-    });
+    res.status(500).json({ message: 'Server error', error: err.message });
   }
 });
 
 router.get('/me', require('../middleware/auth'), async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT id, name, email, role, supervisor_sub_role FROM users WHERE id = $1',
+      `SELECT id, name, email, role, supervisor_sub_role, permissions 
+       FROM users 
+       WHERE id = $1`,
       [req.user.id]
     );
-
     res.json(result.rows[0]);
   } catch (err) {
     console.log('ME ERROR:', err.message);

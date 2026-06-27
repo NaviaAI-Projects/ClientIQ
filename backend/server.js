@@ -8,6 +8,10 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
+app.use((req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 
 app.get('/', (req, res) => {
   res.json({ message: 'Navia ClientIQ Backend is running!' });
@@ -27,6 +31,7 @@ const routes = [
   ['/api/rm', './routes/rm'],
   ['/api/ai', './routes/ai'],
   ['/api/contact-logs', './routes/contactLogs'],
+  ['/api/calls', './routes/calls'],
 ];
 
 routes.forEach(([path, file]) => {
