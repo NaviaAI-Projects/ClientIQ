@@ -10,11 +10,12 @@ const AllClients = () => {
 
   return (
     <div>
-      <h2>All 20,000 Clients</h2>
-      <p style={{ color: '#666' }}>Complete client universe</p>
-
-      <div style={styles.card}>
-        <table style={styles.table}>
+      <div className="ph">
+  <h2>All {clients.length.toLocaleString()} Clients</h2>
+  <p>Complete client universe</p>
+</div>
+<div className="panel">
+  <div className="tw"><table>
           <thead>
             <tr>
               <th>UCC</th>
@@ -48,12 +49,8 @@ const AllClients = () => {
         </table>
       </div>
     </div>
+    </div>
   );
-};
-
-const styles = {
-  card: { background: '#fff', padding: 20, borderRadius: 10, marginTop: 20 },
-  table: { width: '100%', borderCollapse: 'collapse' }
 };
 
 export default AllClients;

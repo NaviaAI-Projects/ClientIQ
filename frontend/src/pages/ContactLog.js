@@ -20,20 +20,18 @@ const ContactLog = () => {
 
   return (
     <div>
-      <h2 style={{ fontSize: '18px', fontWeight: '600' }}>Contact & Log</h2>
-
-      <p style={{ color: '#666', marginBottom: '20px' }}>
-        Client interaction history and follow-up tracking
-      </p>
-
-      <table style={{ width: '100%', background: '#fff', borderCollapse: 'collapse' }}>
-        <thead>
-          <tr>
-            <th style={styles.th}>Date</th>
-            <th style={styles.th}>Client</th>
-            <th style={styles.th}>Type</th>
-            <th style={styles.th}>Notes</th>
-            <th style={styles.th}>Status</th>
+      <div className="ph">
+  <h2>Contact & Log</h2>
+  <p>Client interaction history and follow-up tracking</p>
+</div>
+<div className="panel">
+  <div className="tw"><table>
+    <thead><tr>
+      <th>Date</th>
+            <th>Client</th>
+            <th>Type</th>
+            <th>Notes</th>
+            <th>Status</th>
           </tr>
         </thead>
 
@@ -59,6 +57,8 @@ const ContactLog = () => {
           )}
         </tbody>
       </table>
+    </div>
+    </div>
     </div>
   );
 };

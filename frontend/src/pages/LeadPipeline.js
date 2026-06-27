@@ -10,11 +10,13 @@ const LeadPipeline = () => {
 
   return (
     <div>
-      <h2>Lead Pipeline</h2>
-      <p style={{ color: '#666' }}>Supervisor view of assigned leads</p>
-
-      <div style={styles.card}>
-        <table style={styles.table}>
+      <div className="ph">
+  <h2>Lead Pipeline</h2>
+  <p>All active leads across all RMs</p>
+</div>
+<div className="panel">
+  <div className="tw">
+    <table>
           <thead>
             <tr>
               <th>UCC</th>
@@ -38,12 +40,8 @@ const LeadPipeline = () => {
         </table>
       </div>
     </div>
+    </div>
   );
-};
-
-const styles = {
-  card: { background: '#fff', padding: 20, borderRadius: 10, marginTop: 20 },
-  table: { width: '100%', borderCollapse: 'collapse' }
 };
 
 export default LeadPipeline;

@@ -63,21 +63,12 @@ const MappingApprovals = () => {
 
   return (
     <div>
-      <div style={{ marginBottom: '20px' }}>
-        <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#111' }}>Mapping Approvals</h2>
-        <p style={{ fontSize: '13px', color: '#555', marginTop: '3px' }}>
-          Approve AI-identified leads and assign to an RM
-        </p>
-      </div>
-
-      {actionMsg && (
-        <div style={{
-          padding: '10px 16px', borderRadius: '8px', marginBottom: '16px',
-          background: '#eaf3de', color: '#3b6d11', fontSize: '13px'
-        }}>
-          ✓ {actionMsg}
-        </div>
-      )}
+      <div className="ph">
+  <h2>Mapping Approvals</h2>
+  <p>Approve AI-identified leads and assign to an RM</p>
+</div>
+{actionMsg && <div className="alert a-s">✓ {actionMsg}</div>}
+<div className="panel">
 
       <div style={{
         background: 'white', borderRadius: '12px',
@@ -110,13 +101,9 @@ const MappingApprovals = () => {
                   <td style={{ ...td, color: '#555' }}>{lead.ucc}</td>
                   <td style={td}>{lead.client_type}</td>
                   <td style={td}>
-                    <span style={{
-                      padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600',
-                      background: lead.lead_score >= 80 ? '#eaf3de' : lead.lead_score >= 60 ? '#faeeda' : '#fcebeb',
-                      color: lead.lead_score >= 80 ? '#3b6d11' : lead.lead_score >= 60 ? '#854f0b' : '#a32d2d'
-                    }}>
-                      {lead.lead_score}
-                    </span>
+                    <span className={`ais ${lead.lead_score >= 70 ? 'h' : lead.lead_score >= 50 ? 'm' : 'l'}`}>
+  {lead.lead_score}
+</span>
                   </td>
                   <td style={td}>{lead.churn_risk_score}</td>
                   <td style={{ ...td, color: '#555', maxWidth: '200px', fontSize: '12px' }}>
@@ -140,26 +127,8 @@ const MappingApprovals = () => {
                     </select>
                   </td>
                   <td style={td}>
-                    <button
-                      onClick={() => handleApprove(lead.ucc)}
-                      style={{
-                        padding: '5px 12px', background: '#223872', color: 'white',
-                        border: 'none', borderRadius: '5px', cursor: 'pointer',
-                        fontSize: '12px', marginRight: '6px'
-                      }}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      onClick={() => handleReject(lead.ucc)}
-                      style={{
-                        padding: '5px 12px', background: 'white', color: '#a32d2d',
-                        border: '0.5px solid #a32d2d', borderRadius: '5px',
-                        cursor: 'pointer', fontSize: '12px'
-                      }}
-                    >
-                      Reject
-                    </button>
+                    <button className="btn bp sm" onClick={() => handleApprove(lead.ucc)}>Approve</button>
+<button className="btn bd sm" onClick={() => handleReject(lead.ucc)}>Reject</button>
                   </td>
                 </tr>
               ))}
@@ -167,6 +136,7 @@ const MappingApprovals = () => {
           </table>
         )}
       </div>
+    </div>
     </div>
   );
 };

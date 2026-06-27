@@ -2,84 +2,28 @@ import React from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
-// Maps permission checkbox IDs (from Users.js) to sidebar paths
-const PERM_PATH_MAP = {
-  'sup-dash':             '/supervisor-dashboard',
-  'sup-ai':              '/ai-insights',
-  'sup-approve':         '/mapping-approvals',
-  'sup-unmap':           '/unmap-requests',
-  'sup-all':             '/all-clients',
-  'sup-unmapped':        '/unmapped-pool',
-  'sup-c360':            '/client-360',
-  'sup-rm':              '/rm-performance',
-  'sup-leads':           '/lead-pipeline',
-  'sup-daily-mis':       '/daily-mis',
-  'sup-options':         '/options-analytics',
-  'sup-client-analytics':'/client-analytics',
-  'sup-retention':       '/retention',
-  'sup-inactive':        '/inactive-dp',
-  'sup-new-biz':         '/new-business',
-  'sup-rmi':             '/rm-impact',
-  'sup-revenue-float':   '/revenue-float',
-  'sup-concentration':   '/concentration-risk',
-  'sup-mktshare':        '/market-share',
-  'sup-ramp':            '/revenue-ramp',
-};
-
-// Check if a sidebar path is allowed for this user
-function isPathAllowed(user, path) {
-  if (!user) return false;
-  if (user.role === 'admin') return true;
-  if (user.role === 'rm' || user.role === 'team_leader') return true;
-
-  if (user.role === 'supervisor') {
-    // If individual permissions were saved (from checkbox selections), use them
-    if (user.permissions && typeof user.permissions === 'object' && Object.keys(user.permissions).length > 0) {
-      const permId = Object.entries(PERM_PATH_MAP).find(([, p]) => p === path)?.[0];
-      if (!permId) return true; // path not in map = always allow
-      return !!user.permissions[permId];
-    }
-
-    // Fall back to sub_role template if no individual permissions saved
-    const tmpl = user.supervisor_sub_role || 'rm-supervisor';
-    if (tmpl === 'rm-supervisor') return true;
-    if (tmpl === 'ops-head') {
-      return !['/mapping-approvals', '/unmap-requests', '/rm-performance', '/lead-pipeline'].includes(path);
-    }
-    if (tmpl === 'finance-head') {
-      return [
-        '/supervisor-dashboard', '/daily-mis',
-        '/revenue-float', '/concentration-risk', '/market-share', '/revenue-ramp'
-      ].includes(path);
-    }
-    // custom with no permissions saved = full access (admin will configure)
-    return true;
-  }
-  return false;
-}
-
 const Layout = () => {
   const { user, logout } = useAuth();
   const [showMenu, setShowMenu] = React.useState(false);
   const navigate = useNavigate();
 
   const handleLogout = () => { logout(); navigate('/login'); };
-  const initials = user?.name?.split(' ').map(n => n[0]).join('').toUpperCase() || 'U';
+  const initials = user?.name?.split(' ').map(n => n[0]).join('').toUpperCase().slice(0,2) || 'U';
 
   const rmMenu = [
     { section: 'OVERVIEW', items: [
       { path: '/rm-dashboard', label: 'My Dashboard', icon: '🏠' },
-      { path: '/ai-digest', label: 'AI Daily Digest', icon: '🤖', badge: '3' },
+      { path: '/ai-digest', label: 'AI Daily Digest', icon: '🤖' },
     ]},
     { section: 'MY LEADS', items: [
-      { path: '/to-call-today', label: 'To Call Today', icon: '📞', badge: '12' },
-      { path: '/assigned-leads', label: 'Assigned Leads', icon: '⭐', badge: '7' },
+      { path: '/to-call-today', label: 'To Call Today', icon: '📞' },
+      { path: '/assigned-leads', label: 'Assigned Leads', icon: '⭐' },
       { path: '/contact-log', label: 'Contact & Log', icon: '📝' },
     ]},
     { section: 'MY CLIENTS', items: [
       { path: '/mapped-clients', label: 'Mapped Clients', icon: '👥' },
       { path: '/client-360', label: 'Client 360', icon: '👤' },
-      { path: '/dormant-clients', label: 'Dormant Clients', icon: '🌙', badge: '4' },
+      { path: '/dormant-clients', label: 'Dormant Clients', icon: '🌙' },
     ]},
     { section: 'REVENUE', items: [
       { path: '/revenue-tracker', label: 'Revenue Tracker', icon: '📈' },
@@ -97,8 +41,8 @@ const Layout = () => {
       { path: '/ai-insights', label: 'AI Insights', icon: '🤖' },
     ]},
     { section: 'APPROVALS', items: [
-      { path: '/mapping-approvals', label: 'Mapping Approvals', icon: '✅', badge: '5' },
-      { path: '/unmap-requests', label: 'Unmap Requests', icon: '👤', badge: '2' },
+      { path: '/mapping-approvals', label: 'Mapping Approvals', icon: '✅' },
+      { path: '/unmap-requests', label: 'Unmap Requests', icon: '👤' },
     ]},
     { section: 'CLIENT UNIVERSE', items: [
       { path: '/all-clients', label: 'All Clients', icon: '🌍' },
@@ -147,16 +91,8 @@ const Layout = () => {
 
   const getMenu = () => {
     if (user?.role === 'rm' || user?.role === 'team_leader') return rmMenu;
+    if (user?.role === 'supervisor') return supervisorMenu;
     if (user?.role === 'admin') return adminMenu;
-    if (user?.role === 'supervisor') {
-      // Filter every sidebar item based on this user's saved permissions
-      return supervisorMenu
-        .map(section => ({
-          ...section,
-          items: section.items.filter(item => isPathAllowed(user, item.path))
-        }))
-        .filter(section => section.items.length > 0); // hide sections with no allowed items
-    }
     return [];
   };
 
@@ -170,59 +106,67 @@ const Layout = () => {
     return labels[user?.role] || user?.role;
   };
 
-  return (
-    <div style={{ display: 'flex', height: '100vh', fontFamily: "-apple-system,'Segoe UI',system-ui,sans-serif" }}>
+  const getRoleShort = () => {
+    const labels = {
+      rm: 'RM',
+      team_leader: 'Team Leader',
+      supervisor: 'Supervisor',
+      admin: 'Admin'
+    };
+    return labels[user?.role] || user?.role;
+  };
 
-      {/* Sidebar */}
+  return (
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden' }}>
+
+      {/* Sidebar — exact prototype match */}
       <aside style={{
-        width: '228px', minWidth: '228px', background: '#fff',
-        borderRight: '0.5px solid rgba(0,0,0,0.1)',
+        width: 'var(--sw)', minWidth: 'var(--sw)',
+        background: 'var(--bg)',
+        borderRight: '.5px solid var(--br)',
         display: 'flex', flexDirection: 'column',
         overflowY: 'auto', overflowX: 'hidden', flexShrink: 0
       }}>
         {/* Logo */}
-        <div style={{ padding: '14px 16px', borderBottom: '0.5px solid rgba(0,0,0,0.1)' }}>
-          <div style={{ fontSize: '16px', fontWeight: '800', letterSpacing: '-0.5px', color: '#223872', fontFamily: "'Sora', sans-serif" }}>
+        <div style={{ padding: '14px 16px', borderBottom: '.5px solid var(--br)' }}>
+          <div style={{ fontSize: '16px', fontWeight: '700', letterSpacing: '-.5px', color: 'var(--ic)' }}>
             Navia ClientIQ
           </div>
-          <div style={{ fontSize: '10px', color: '#999', marginTop: '2px' }}>Strategic MIS · FY 2026-27</div>
+          <div style={{ fontSize: '10px', color: 'var(--tx3)', marginTop: '2px' }}>
+            Strategic MIS · FY 2026-27
+          </div>
         </div>
 
-        {/* Navigation */}
+        {/* Nav */}
         <nav style={{ flex: 1, padding: '10px 8px 2px' }}>
-          {getMenu().map((section) => (
+          {getMenu().map(section => (
             <div key={section.section} style={{ marginBottom: '4px' }}>
               <div style={{
-                fontSize: '9px', fontWeight: '600', color: '#999',
-                letterSpacing: '0.8px', textTransform: 'uppercase',
+                fontSize: '9px', fontWeight: '600', color: 'var(--tx3)',
+                letterSpacing: '.8px', textTransform: 'uppercase',
                 padding: '0 8px', marginBottom: '3px', marginTop: '10px'
               }}>
                 {section.section}
               </div>
-              {section.items.map((item) => (
+              {section.items.map(item => (
                 <NavLink
                   key={item.path}
                   to={item.path}
                   style={({ isActive }) => ({
                     display: 'flex', alignItems: 'center', gap: '8px',
-                    padding: '7px 8px', borderRadius: '6px',
+                    padding: '7px 8px', borderRadius: 'var(--r)',
                     cursor: 'pointer', fontSize: '12.5px',
-                    color: isActive ? '#223872' : '#45526B',
-                    background: isActive ? '#EDEFF6' : 'transparent',
+                    color: isActive ? 'var(--ic)' : 'var(--tx2)',
+                    background: isActive ? 'var(--ibg)' : 'transparent',
                     fontWeight: isActive ? '500' : 'normal',
-                    textDecoration: 'none', transition: 'all 0.1s'
+                    textDecoration: 'none', transition: 'all .1s',
+                    border: 'none', width: '100%'
                   })}
                 >
-                  <span style={{ fontSize: '14px', width: '18px', flexShrink: 0 }}>{item.icon}</span>
+                  <span style={{ fontSize: '14px', width: '18px', flexShrink: 0 }}>
+                    {item.icon}
+                  </span>
                   <span style={{ flex: 1 }}>{item.label}</span>
-                  {item.badge && (
-                    <span style={{
-                      marginLeft: 'auto', background: '#EDEFF6', color: '#223872',
-                      fontSize: '10px', fontWeight: '600', padding: '1px 6px', borderRadius: '10px'
-                    }}>
-                      {item.badge}
-                    </span>
-                  )}
                 </NavLink>
               ))}
             </div>
@@ -230,44 +174,64 @@ const Layout = () => {
         </nav>
 
         {/* User footer */}
-        <div style={{ marginTop: 'auto', padding: '10px 8px', borderTop: '0.5px solid rgba(0,0,0,0.1)' }}>
+        <div style={{ marginTop: 'auto', padding: '10px 8px', borderTop: '.5px solid var(--br)' }}>
           <div
             onClick={() => setShowMenu(!showMenu)}
-            style={{ position: 'relative', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 8px', borderRadius: '6px' }}
+            style={{ position: 'relative', cursor: 'pointer' }}
           >
             <div style={{
-              width: '28px', height: '28px', borderRadius: '50%',
-              background: '#223872', color: '#FFFFFF',
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              fontSize: '10px', fontWeight: '600', flexShrink: 0
-            }}>
-              {initials}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: '12px', fontWeight: '500', color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                {user?.name}
+              display: 'flex', alignItems: 'center', gap: '8px',
+              padding: '6px 8px', borderRadius: 'var(--r)'
+            }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--bg2)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+            >
+              <div style={{
+                width: '28px', height: '28px', borderRadius: '50%',
+                background: 'var(--ibg)', color: 'var(--ic)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '10px', fontWeight: '600', flexShrink: 0
+              }}>
+                {initials}
               </div>
-              <div style={{ fontSize: '10px', color: '#999' }}>{getRoleLabel()}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{
+                  fontSize: '12px', fontWeight: '500', color: 'var(--tx)',
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis'
+                }}>
+                  {user?.name}
+                </div>
+                <div style={{ fontSize: '10px', color: 'var(--tx3)' }}>
+                  {getRoleLabel()}
+                </div>
+              </div>
             </div>
-            <span style={{ fontSize: '10px', color: '#999' }}>⌃</span>
 
             {showMenu && (
               <div style={{
                 position: 'absolute', bottom: '44px', left: 0, right: 0,
-                background: '#FFFFFF', border: '1px solid #E6EBF2',
-                borderRadius: '8px', padding: '4px',
+                background: 'var(--bg)', border: '.5px solid var(--br)',
+                borderRadius: 'var(--r2)', padding: '4px',
                 boxShadow: '0 4px 12px rgba(0,0,0,0.1)', zIndex: 200
               }}>
-                <div style={{ padding: '6px 10px', fontSize: '11px', color: '#999', borderBottom: '0.5px solid rgba(0,0,0,0.1)', marginBottom: '4px' }}>
+                <div style={{
+                  padding: '6px 10px', fontSize: '11px', color: 'var(--tx3)',
+                  borderBottom: '.5px solid var(--br)', marginBottom: '4px'
+                }}>
                   {user?.email}
                 </div>
                 <div
-                  onClick={(e) => { e.stopPropagation(); handleLogout(); }}
-                  style={{ padding: '7px 10px', fontSize: '12.5px', cursor: 'pointer', color: '#a32d2d', borderRadius: '5px', display: 'flex', alignItems: 'center', gap: '6px' }}
-                  onMouseEnter={e => e.currentTarget.style.background = '#fcebeb'}
+                  onClick={e => { e.stopPropagation(); handleLogout(); }}
+                  style={{
+                    padding: '7px 10px', fontSize: '12.5px',
+                    cursor: 'pointer', color: 'var(--dc)',
+                    borderRadius: 'var(--r)',
+                    display: 'flex', alignItems: 'center', gap: '6px'
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--dbg)'}
                   onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
                 >
-                  🚪 Logout
+                  🚪 Sign out
                 </div>
               </div>
             )}
@@ -277,26 +241,27 @@ const Layout = () => {
 
       {/* Topbar */}
       <div style={{
-        position: 'fixed', top: 0, left: '228px', right: 0, height: '48px',
-        background: '#FFFFFF', borderBottom: '1px solid #E6EBF2',
-        display: 'flex', alignItems: 'center', padding: '0 20px', gap: '10px', zIndex: 100
+        position: 'fixed', top: 0, left: 'var(--sw)', right: 0, height: '48px',
+        background: 'var(--bg)', borderBottom: '.5px solid var(--br)',
+        display: 'flex', alignItems: 'center', padding: '0 20px',
+        gap: '10px', zIndex: 100
       }}>
-        <span style={{ fontSize: '14px', fontWeight: '500', flex: 1, color: '#111' }}>
+        <span style={{ fontSize: '14px', fontWeight: '500', flex: 1, color: 'var(--tx)' }}>
           Navia ClientIQ
         </span>
         <span style={{
-          fontSize: '11px', background: '#ED4D37', color: '#FFFFFF',
+          fontSize: '11px', background: 'var(--ibg)', color: 'var(--ic)',
           padding: '3px 10px', borderRadius: '20px', fontWeight: '500'
         }}>
-          {getRoleLabel().toUpperCase()}
+          {getRoleShort().toUpperCase()}
         </span>
       </div>
 
-      {/* Main Content */}
+      {/* Main content */}
       <div style={{
         flex: 1, overflowY: 'auto',
         padding: '72px 24px 40px',
-        background: '#F7F9FC'
+        background: 'var(--bg3)'
       }}>
         <Outlet />
       </div>
