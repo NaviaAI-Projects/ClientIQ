@@ -17,6 +17,10 @@ router.get('/my', auth, async (req, res) => {
       [userName]
     );
 
+    router.get('/unmap-requests', auth, async (req, res) => {
+  res.json([]);
+});
+
     const rmId = rmResult.rows[0]?.id || null;
     if (!rmId) {
       console.warn(`No rm_master record found for user: ${userName} (id: ${req.user.id})`);

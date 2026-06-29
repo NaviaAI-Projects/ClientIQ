@@ -2,300 +2,267 @@ import React, { useState, useEffect } from 'react';
 import api from '../api';
 
 const MISSettings = () => {
-  const [fd_rate, setFdRate]                   = useState('6.5');
-  const [fd_effective_from, setFdFrom]         = useState('2026-04-01');
-  const [totalFloat, setTotalFloat]            = useState(null);
-  const [nse_expiry, setNseExpiry]             = useState('Tuesday & Thursday');
-  const [bse_expiry, setBseExpiry]             = useState('Monday & Wednesday');
-  const [mcx_expiry, setMcxExpiry]             = useState('Monday');
-  const [monthly_expiry, setMonthlyExpiry]     = useState('Last Thursday of month');
-  const [custom_expiry, setCustomExpiry]       = useState('');
-  const [dormancy_weeks, setDormancyWeeks]     = useState('2');
-  const [exchangeUrls, setExchangeUrls]        = useState({
-    nse_options: '', nse_futures: '', mcx_options: '', mcx_futures: '', nse_cash: ''
+  const [loading, setLoading]   = useState(true);
+  const [floatStats, setFloatStats] = useState({ total_float: null, daily_income: null });
+  const [saving, setSaving]     = useState('');
+  const [msg, setMsg]           = useState('');
+
+  const [floatSettings, setFloatSettings] = useState({
+    fd_rate:        6.5,
+    effective_from: '01-04-2026'
   });
-  const [revWeights, setRevWeights] = useState({
-    options_to_weight: '40',
-    equity_weight:     '30',
-    float_weight:      '20',
-    mtf_weight:        '10',
+
+  const [expirySettings, setExpirySettings] = useState({
+    nse_weekly_expiry:  'Tuesday & Thursday',
+    bse_weekly_expiry:  'Monday & Wednesday',
+    mcx_weekly_expiry:  'Monday',
+    monthly_expiry:     'Last Thursday of month',
+    custom_expiry:      '',
+    dormancy_threshold: 2
   });
-  const [saveMsg, setSaveMsg] = useState('');
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    Promise.all([
-      api.get('/admin-settings'),
-      api.get('/dashboard/company')
-    ]).then(([sRes, dRes]) => {
-      const s = sRes.data.data || {};
-      if (s.fd_rate)             setFdRate(s.fd_rate);
-      if (s.fd_effective_from)   setFdFrom(s.fd_effective_from);
-      if (s.nse_expiry)          setNseExpiry(s.nse_expiry);
-      if (s.bse_expiry)          setBseExpiry(s.bse_expiry);
-      if (s.mcx_expiry)          setMcxExpiry(s.mcx_expiry);
-      if (s.monthly_expiry)      setMonthlyExpiry(s.monthly_expiry);
-      if (s.custom_expiry_dates) setCustomExpiry(s.custom_expiry_dates);
-      if (s.dormancy_expiry_weeks) setDormancyWeeks(s.dormancy_expiry_weeks);
-      if (s.nse_options_url) setExchangeUrls({
-        nse_options: s.nse_options_url || '',
-        nse_futures: s.nse_futures_url || '',
-        mcx_options: s.mcx_options_url || '',
-        mcx_futures: s.mcx_futures_url || '',
-        nse_cash:    s.nse_cash_url    || '',
-      });
-      if (s.options_to_weight) setRevWeights({
-        options_to_weight: s.options_to_weight || '40',
-        equity_weight:     s.equity_weight     || '30',
-        float_weight:      s.float_weight      || '20',
-        mtf_weight:        s.mtf_weight        || '10',
-      });
-      setTotalFloat(dRes.data?.total_float || 0);
-    }).catch(console.error)
-    .finally(() => setLoading(false));
-  }, []);
+  const [feedUrls, setFeedUrls] = useState({
+    nse_eq_options_url:  '',
+    nse_eq_futures_url:  '',
+    mcx_comm_options_url:'',
+    mcx_comm_futures_url:'',
+    nse_eq_cash_url:     ''
+  });
 
-  const showMsg = (text) => {
-    setSaveMsg(text);
-    setTimeout(() => setSaveMsg(''), 3000);
-  };
+  const [weights, setWeights] = useState({
+    options_to_weight:  35,
+    equity_weight:      20,
+    float_weight:       20,
+    mtf_weight:         10
+  });
 
-  const save = async (payload) => {
+  useEffect(() => { loadSettings(); }, []);
+
+  const loadSettings = async () => {
+    setLoading(true);
     try {
-      await api.put('/admin-settings', payload);
-      showMsg('Saved successfully');
-    } catch {
-      showMsg('Save failed');
-    }
+      const res = await api.get('/admin-settings');
+      const s   = res.data.data || {};
+      setFloatSettings({
+        fd_rate:        parseFloat(s.fd_rate)  || 6.5,
+        effective_from: s.effective_from || '01-04-2026'
+      });
+      setExpirySettings({
+        nse_weekly_expiry:  s.nse_weekly_expiry  || 'Tuesday & Thursday',
+        bse_weekly_expiry:  s.bse_weekly_expiry  || 'Monday & Wednesday',
+        mcx_weekly_expiry:  s.mcx_weekly_expiry  || 'Monday',
+        monthly_expiry:     s.monthly_expiry     || 'Last Thursday of month',
+        custom_expiry:      s.custom_expiry      || '',
+        dormancy_threshold: s.dormancy_threshold || 2
+      });
+      setFeedUrls({
+        nse_eq_options_url:   s.nse_eq_options_url   || '',
+        nse_eq_futures_url:   s.nse_eq_futures_url   || '',
+        mcx_comm_options_url: s.mcx_comm_options_url || '',
+        mcx_comm_futures_url: s.mcx_comm_futures_url || '',
+        nse_eq_cash_url:      s.nse_eq_cash_url      || ''
+      });
+      setWeights({
+        options_to_weight: parseFloat(s.options_to_weight) || 35,
+        equity_weight:     parseFloat(s.equity_weight)     || 20,
+        float_weight:      parseFloat(s.float_weight)      || 20,
+        mtf_weight:        parseFloat(s.mtf_weight)        || 10
+      });
+    } catch (err) { console.error(err); }
+    // Fetch live float stats
+    try {
+      const fRes = await api.get('/dashboard/float-stats');
+      if (fRes.data) setFloatStats(fRes.data);
+    } catch (e) { console.error(e); }
+    setLoading(false);
   };
 
-  const fmt = (n) => {
-    if (!n) return '—';
-    if (n >= 10000000) return '₹' + (n / 10000000).toFixed(1) + 'Cr';
-    if (n >= 100000)   return '₹' + (n / 100000).toFixed(1) + 'L';
-    return '₹' + Number(n).toLocaleString('en-IN');
+  const saveSection = async (key, data) => {
+    setSaving(key); setMsg('');
+    try {
+      await api.put('/admin-settings', data);
+      setMsg(key + '_success');
+      setTimeout(() => setMsg(''), 3000);
+    } catch { setMsg(key + '_error'); }
+    setSaving('');
   };
 
-  const dailyFloat = totalFloat
-    ? '₹' + Math.round((totalFloat * parseFloat(fd_rate || 0)) / 100 / 365).toLocaleString('en-IN') + ' / day'
-    : '—';
+  const inp   = { padding: '8px 12px', border: '1px solid #ddd', borderRadius: '6px', fontSize: '13px', width: '100%', boxSizing: 'border-box' };
+  const lbl   = { display: 'block', fontSize: '11px', fontWeight: '600', color: '#666', marginBottom: '4px' };
+  const panel = { background: 'white', borderRadius: '12px', border: '1px solid #eee', padding: '20px', marginBottom: '16px' };
+  const btn   = (s) => ({ padding: '8px 20px', background: saving === s ? '#94a3b8' : '#223872', color: 'white', border: 'none', borderRadius: '6px', cursor: saving === s ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: '600', marginRight: '8px' });
 
-  // Styles — all inside component so all hooks/state are in scope
-  const panel = {
-    background: 'white', borderRadius: '10px', padding: '20px',
-    border: '0.5px solid rgba(0,0,0,0.1)', marginBottom: '14px'
-  };
-  const inputStyle = {
-    padding: '7px 10px', border: '0.5px solid rgba(0,0,0,0.2)',
-    borderRadius: '6px', fontSize: '12.5px', width: '100%', boxSizing: 'border-box'
-  };
-  const labelStyle = {
-    display: 'block', fontSize: '10px', fontWeight: '600',
-    color: '#555', marginBottom: '3px', textTransform: 'uppercase', letterSpacing: '0.4px'
-  };
-  const btnPrimary = {
-    padding: '8px 16px', background: '#223872', color: 'white',
-    border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '12px', marginRight: '8px'
-  };
-  const btnSecondary = {
-    padding: '8px 16px', background: 'white', color: '#223872',
-    border: '0.5px solid #223872', borderRadius: '5px', cursor: 'pointer', fontSize: '12px'
-  };
-  const th = {
-    textAlign: 'left', padding: '8px 12px', fontSize: '10px',
-    fontWeight: '600', color: '#888', textTransform: 'uppercase',
-    borderBottom: '0.5px solid rgba(0,0,0,0.1)'
-  };
+  const showMsg = (key) => msg === key + '_success'
+    ? <span style={{ color: '#3b6d11', fontSize: '12px' }}>✓ Saved</span>
+    : msg === key + '_error'
+    ? <span style={{ color: '#a32d2d', fontSize: '12px' }}>✗ Failed</span>
+    : null;
 
   if (loading) return <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>Loading...</div>;
 
   return (
-    <div>
-      <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#111' }}>MIS Settings</h2>
-      <p style={{ fontSize: '13px', color: '#555', marginTop: '3px', marginBottom: '16px' }}>
-        Configure float income rate, exchange volume feed URLs, expiry calendar, and AI scoring weights for Navia's revenue model
+    <div style={{ fontFamily: "'Inter', sans-serif" }}>
+      <h2 style={{ fontSize: '18px', fontWeight: '700', color: '#111', margin: 0 }}>MIS Settings</h2>
+      <p style={{ fontSize: '13px', color: '#777', marginTop: '4px', marginBottom: '20px' }}>
+        Configure float income rate, exchange volume feed URLs, expiry calendar, and AI scoring weights
       </p>
 
-      {saveMsg && (
-        <div style={{
-          padding: '10px 14px', borderRadius: '8px', marginBottom: '14px', fontSize: '13px',
-          background: saveMsg.includes('failed') ? '#fcebeb' : '#eaf3de',
-          color:      saveMsg.includes('failed') ? '#a32d2d' : '#3b6d11'
-        }}>
-          {saveMsg.includes('failed') ? '✗' : '✓'} {saveMsg}
-        </div>
-      )}
-
-      {/* ── PANEL 1: Float Income Settings ── */}
+      {/* Float Income Settings */}
       <div style={panel}>
-        <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>₹ Float income settings</div>
-        <p style={{ fontSize: '12px', color: '#888', marginBottom: '14px' }}>
-          Float income is estimated daily as: total client ledger balance (aggregate from ledger file) × rate ÷ 365.
-          Displayed in the Corporate Daily MIS as an estimated income line.
+        <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '4px' }}>₹ Float Income Settings</div>
+        <p style={{ fontSize: '12px', color: '#888', marginBottom: '16px' }}>
+          Float income is estimated daily as: total client ledger balance × rate ÷ 365. Displayed in Corporate Daily MIS.
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', marginBottom: '14px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '14px', marginBottom: '16px' }}>
           <div>
-            <label style={labelStyle}>Float Deployment Rate (% p.a.)</label>
-            <input type="number" step="0.1" value={fd_rate}
-              onChange={e => setFdRate(e.target.value)} style={inputStyle} />
+            <label style={lbl}>Float Deployment Rate (% p.a.)</label>
+            <input type="number" step="0.1" value={floatSettings.fd_rate}
+              onChange={e => setFloatSettings({ ...floatSettings, fd_rate: Number(e.target.value) })} style={inp} />
           </div>
           <div>
-            <label style={labelStyle}>Effective From</label>
-            <input type="date" value={fd_effective_from}
-              onChange={e => setFdFrom(e.target.value)} style={inputStyle} />
+            <label style={lbl}>Effective From</label>
+            <input value={floatSettings.effective_from}
+              onChange={e => setFloatSettings({ ...floatSettings, effective_from: e.target.value })} style={inp} />
           </div>
           <div>
-            <label style={labelStyle}>Total Client Float (₹Cr) — Last Computed</label>
-            <input readOnly value={fmt(totalFloat)} style={{ ...inputStyle, background: '#f5f4f0' }} />
-          </div>
-          <div>
-            <label style={labelStyle}>Estimated Daily Float Income</label>
-            <input readOnly value={dailyFloat} style={{ ...inputStyle, background: '#f5f4f0' }} />
+            <label style={lbl}>Total Client Float (₹Cr) — Last Computed</label>
+            <input value={floatStats.total_float ? '₹' + parseFloat(floatStats.total_float).toLocaleString('en-IN', {maximumFractionDigits: 2}) : '—'} disabled style={{ ...inp, background: '#f5f5f5', color: '#888' }} />
           </div>
         </div>
-        <button style={btnPrimary} onClick={() => save({ fd_rate, fd_effective_from })}>
-          💾 Save rate
+        <button style={btn('float')} onClick={() => saveSection('float', floatSettings)}>
+          {saving === 'float' ? 'Saving...' : '💾 Save rate'}
         </button>
+        {showMsg('float')}
       </div>
 
-      {/* ── PANEL 2: Expiry Calendar Settings ── */}
+      {/* Expiry Calendar Settings */}
       <div style={panel}>
-        <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>📅 Expiry calendar settings</div>
-        <p style={{ fontSize: '12px', color: '#888', marginBottom: '14px' }}>
+        <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '4px' }}>📅 Expiry Calendar Settings</div>
+        <p style={{ fontSize: '12px', color: '#888', marginBottom: '16px' }}>
           System highlights expiry days in the MIS and applies the expiry signal in AI churn scoring for options traders.
         </p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '14px', marginBottom: '16px' }}>
           <div>
-            <label style={labelStyle}>NSE Weekly Expiry Days</label>
-            <select value={nse_expiry} onChange={e => setNseExpiry(e.target.value)} style={inputStyle}>
+            <label style={lbl}>NSE Weekly Expiry Days</label>
+            <select value={expirySettings.nse_weekly_expiry}
+              onChange={e => setExpirySettings({ ...expirySettings, nse_weekly_expiry: e.target.value })} style={inp}>
               <option>Tuesday & Thursday</option>
               <option>Thursday only</option>
-              <option>Tuesday only</option>
-              <option>Custom</option>
+              <option>Wednesday & Thursday</option>
             </select>
           </div>
           <div>
-            <label style={labelStyle}>BSE Weekly Expiry Days</label>
-            <select value={bse_expiry} onChange={e => setBseExpiry(e.target.value)} style={inputStyle}>
+            <label style={lbl}>BSE Weekly Expiry Days</label>
+            <select value={expirySettings.bse_weekly_expiry}
+              onChange={e => setExpirySettings({ ...expirySettings, bse_weekly_expiry: e.target.value })} style={inp}>
               <option>Monday & Wednesday</option>
-              <option>Wednesday only</option>
-              <option>Custom</option>
+              <option>Tuesday & Friday</option>
+              <option>Monday only</option>
             </select>
           </div>
           <div>
-            <label style={labelStyle}>MCX Weekly Expiry</label>
-            <select value={mcx_expiry} onChange={e => setMcxExpiry(e.target.value)} style={inputStyle}>
+            <label style={lbl}>MCX Weekly Expiry</label>
+            <select value={expirySettings.mcx_weekly_expiry}
+              onChange={e => setExpirySettings({ ...expirySettings, mcx_weekly_expiry: e.target.value })} style={inp}>
               <option>Monday</option>
               <option>Tuesday</option>
-              <option>Custom</option>
+              <option>Friday</option>
             </select>
           </div>
           <div>
-            <label style={labelStyle}>Monthly Expiry Rule</label>
-            <select value={monthly_expiry} onChange={e => setMonthlyExpiry(e.target.value)} style={inputStyle}>
+            <label style={lbl}>Monthly Expiry Rule</label>
+            <select value={expirySettings.monthly_expiry}
+              onChange={e => setExpirySettings({ ...expirySettings, monthly_expiry: e.target.value })} style={inp}>
               <option>Last Thursday of month</option>
               <option>Last Wednesday of month</option>
-              <option>Manual</option>
+              <option>Last Friday of month</option>
             </select>
           </div>
+          <div>
+            <label style={lbl}>Dormancy Threshold (consecutive expiry weeks missed)</label>
+            <input type="number" value={expirySettings.dormancy_threshold}
+              onChange={e => setExpirySettings({ ...expirySettings, dormancy_threshold: Number(e.target.value) })} style={inp} />
+          </div>
+          <div>
+            <label style={lbl}>Custom Expiry Dates (DD/MM/YYYY, comma-separated)</label>
+            <input value={expirySettings.custom_expiry} placeholder="e.g. 26/06/2026, 03/07/2026"
+              onChange={e => setExpirySettings({ ...expirySettings, custom_expiry: e.target.value })} style={inp} />
+          </div>
         </div>
-        <div style={{ marginBottom: '10px' }}>
-          <label style={labelStyle}>Custom Expiry Dates (comma-separated, DD/MM/YYYY)</label>
-          <input value={custom_expiry} onChange={e => setCustomExpiry(e.target.value)}
-            placeholder="e.g. 26/06/2026, 03/07/2026 for special expiries" style={inputStyle} />
-        </div>
-        <div style={{ marginBottom: '14px', fontSize: '12px', color: '#555' }}>
-          Dormancy threshold for options traders: missing&nbsp;
-          <input type="number" value={dormancy_weeks} onChange={e => setDormancyWeeks(e.target.value)}
-            style={{ width: '50px', padding: '3px 6px', border: '0.5px solid rgba(0,0,0,0.2)', borderRadius: '4px', display: 'inline', fontSize: '12px' }} />
-          &nbsp;consecutive expiry weeks = dormancy alert (regardless of calendar days)
-        </div>
-        <button style={btnPrimary} onClick={() => save({
-          nse_expiry, bse_expiry, mcx_expiry, monthly_expiry,
-          custom_expiry_dates: custom_expiry,
-          dormancy_expiry_weeks: dormancy_weeks
-        })}>
-          💾 Save expiry settings
+        <button style={btn('expiry')} onClick={() => saveSection('expiry', expirySettings)}>
+          {saving === 'expiry' ? 'Saving...' : '💾 Save expiry settings'}
         </button>
+        {showMsg('expiry')}
       </div>
 
-      {/* ── PANEL 3: Exchange Volume Feed URLs ── */}
+      {/* Exchange Volume Feed URLs */}
       <div style={panel}>
-        <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>🌐 Exchange volume feed URLs</div>
-        <p style={{ fontSize: '12px', color: '#888', marginBottom: '14px' }}>
-          System fetches exchange volumes monthly for market share computation.
-          Paste the NSE/BSE data feed or scrape URL for each segment.
-          Data is fetched on the 1st of each month for the prior month.
+        <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '4px' }}>🌐 Exchange Volume Feed URLs</div>
+        <p style={{ fontSize: '12px', color: '#888', marginBottom: '16px' }}>
+          System fetches exchange volumes monthly for market share computation. Data is fetched on the 1st of each month.
         </p>
-        <div style={{ display: 'grid', gap: '10px', marginBottom: '14px' }}>
+        <div style={{ display: 'grid', gap: '12px', marginBottom: '16px' }}>
           {[
-            ['NSE Equity Options Volume Feed URL', 'nse_options'],
-            ['NSE Equity Futures Volume Feed URL', 'nse_futures'],
-            ['MCX Commodity Options Volume Feed URL', 'mcx_options'],
-            ['MCX Commodity Futures Volume Feed URL', 'mcx_futures'],
-            ['NSE Equity Cash Volume Feed URL', 'nse_cash'],
+            ['NSE Equity Options Volume Feed URL',   'nse_eq_options_url'],
+            ['NSE Equity Futures Volume Feed URL',   'nse_eq_futures_url'],
+            ['MCX Commodity Options Volume Feed URL','mcx_comm_options_url'],
+            ['MCX Commodity Futures Volume Feed URL','mcx_comm_futures_url'],
+            ['NSE Equity Cash Volume Feed URL',      'nse_eq_cash_url'],
           ].map(([label, key]) => (
             <div key={key}>
-              <label style={labelStyle}>{label}</label>
-              <input type="url" value={exchangeUrls[key] || ''}
-                onChange={e => setExchangeUrls(prev => ({ ...prev, [key]: e.target.value }))}
-                placeholder="https://..." style={inputStyle} />
+              <label style={lbl}>{label}</label>
+              <input value={feedUrls[key]} placeholder="https://..."
+                onChange={e => setFeedUrls({ ...feedUrls, [key]: e.target.value })} style={inp} />
             </div>
           ))}
         </div>
-        <button style={btnPrimary} onClick={() => save({
-          nse_options_url: exchangeUrls.nse_options,
-          nse_futures_url: exchangeUrls.nse_futures,
-          mcx_options_url: exchangeUrls.mcx_options,
-          mcx_futures_url: exchangeUrls.mcx_futures,
-          nse_cash_url:    exchangeUrls.nse_cash,
-        })}>
-          💾 Save URLs
+        <button style={btn('feeds')} onClick={() => saveSection('feeds', feedUrls)}>
+          {saving === 'feeds' ? 'Saving...' : '💾 Save URLs'}
         </button>
-        <button style={btnSecondary} onClick={() => alert('Test fetch initiated')}>
+        <button style={{ ...btn('test'), background: 'white', color: '#223872', border: '1px solid #223872' }}
+          onClick={() => alert('Feed test triggered — check backend logs')}>
           🔄 Test fetch now
         </button>
+        {showMsg('feeds')}
       </div>
 
-      {/* ── PANEL 4: Revenue Model Weights ── */}
+      {/* Revenue Model Weights */}
       <div style={panel}>
-        <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>📊 Revenue model weights (for AI scoring)</div>
-        <p style={{ fontSize: '12px', color: '#888', marginBottom: '14px' }}>
-          These reflect Navia's actual revenue split and drive lead scoring priorities. Options volume is the primary signal.
+        <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '4px' }}>📊 Revenue Model Weights (for AI Scoring)</div>
+        <p style={{ fontSize: '12px', color: '#888', marginBottom: '16px' }}>
+          These reflect Navia's actual revenue split and drive lead scoring priorities.
         </p>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', marginBottom: '14px' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px', marginBottom: '16px' }}>
           <thead>
-            <tr>
-              <th style={th}>Revenue Stream</th>
-              <th style={th}>Your Revenue Share (%)</th>
-              <th style={th}>AI Lead Scoring Weight (%)</th>
+            <tr style={{ borderBottom: '1px solid #eee' }}>
+              <th style={{ textAlign: 'left', padding: '8px 12px', fontSize: '11px', fontWeight: '600', color: '#888', textTransform: 'uppercase' }}>Revenue Stream</th>
+              <th style={{ textAlign: 'left', padding: '8px 12px', fontSize: '11px', fontWeight: '600', color: '#888', textTransform: 'uppercase' }}>Your Revenue Share</th>
+              <th style={{ textAlign: 'left', padding: '8px 12px', fontSize: '11px', fontWeight: '600', color: '#888', textTransform: 'uppercase' }}>AI Lead Scoring Weight (%)</th>
             </tr>
           </thead>
           <tbody>
             {[
-              { label: 'Options clearing / turnover',  share: '40%', key: 'options_to_weight' },
-              { label: 'Equity brokerage',             share: '30%', key: 'equity_weight'     },
-              { label: 'Client float (ledger balance)', share: '20%', key: 'float_weight'     },
-              { label: 'MTF interest',                 share: '10%', key: 'mtf_weight'        },
-            ].map((row, i) => (
-              <tr key={i} style={{ borderBottom: '0.5px solid rgba(0,0,0,0.05)' }}>
+              { label: 'Options clearing / turnover', share: '40%', key: 'options_to_weight' },
+              { label: 'Equity brokerage',            share: '30%', key: 'equity_weight' },
+              { label: 'Client float (ledger balance)',share: '20%', key: 'float_weight' },
+              { label: 'MTF interest',                share: '10%', key: 'mtf_weight' },
+            ].map(row => (
+              <tr key={row.key} style={{ borderBottom: '1px solid #f5f5f5' }}>
                 <td style={{ padding: '10px 12px' }}>{row.label}</td>
                 <td style={{ padding: '10px 12px', color: '#888' }}>{row.share}</td>
                 <td style={{ padding: '10px 12px' }}>
-                  <input
-                    type="number"
-                    value={revWeights[row.key]}
-                    onChange={e => setRevWeights(prev => ({ ...prev, [row.key]: e.target.value }))}
-                    style={{ padding: '6px 10px', border: '0.5px solid rgba(0,0,0,0.2)', borderRadius: '5px', width: '80px', fontSize: '13px' }}
-                  />
+                  <input type="number" value={weights[row.key]}
+                    onChange={e => setWeights({ ...weights, [row.key]: Number(e.target.value) })}
+                    style={{ ...inp, maxWidth: '100px' }} />
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
-        <button style={btnPrimary} onClick={() => save(revWeights)}>
-          💾 Save weights
+        <button style={btn('weights')} onClick={() => saveSection('weights', weights)}>
+          {saving === 'weights' ? 'Saving...' : '💾 Save weights'}
         </button>
+        {showMsg('weights')}
       </div>
     </div>
   );

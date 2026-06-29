@@ -1,44 +1,94 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../api';
 
 const DormantClients = () => {
   const [clients, setClients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const navigate = useNavigate();
 
-  useEffect(() => {
-    api.get('/reports/inactive-clients')
-      .then(res => setClients(res.data || []))
-      .catch(console.error);
-  }, []);
+  useEffect(() => { loadClients(); }, []);
+
+  const loadClients = async () => {
+    setLoading(true);
+    try {
+      const res = await api.get('/clients/my/clients');
+      // Dormant = no trade in last 30 days
+      const dormant = (res.data || []).filter(c => {
+        if (!c.last_trade_date) return true;
+        const days = Math.floor((Date.now() - new Date(c.last_trade_date)) / 86400000);
+        return days > 30;
+      });
+      setClients(dormant);
+    } catch (err) {
+      console.error(err);
+    } finally { setLoading(false); }
+  };
+
+  const getDaysSince = (date) => {
+    if (!date) return '—';
+    const days = Math.floor((Date.now() - new Date(date)) / 86400000);
+    return `${days} days ago`;
+  };
+
+  const th = { textAlign: 'left', padding: '10px 14px', fontSize: '11px', fontWeight: '600', color: '#888', textTransform: 'uppercase', borderBottom: '1px solid #eee', background: '#fafafa' };
+  const td = { padding: '12px 14px', fontSize: '13px', borderBottom: '1px solid #f5f5f5' };
 
   return (
     <div>
-      <div className="ph">
-        <h2>Dormant Mapped Clients</h2>
-        <p>Clients with no trade in 30+ days who previously traded at least monthly</p>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
+        <button onClick={() => navigate(-1)}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#223872', fontSize: '13px', fontWeight: '500' }}>
+          ← Back
+        </button>
       </div>
-      <div className="alert a-d">
-        AI flags clients showing declining trading patterns. Contact this week to prevent revenue loss.
-      </div>
-      <div className="panel">
-        <div className="tw"><table>
-          <thead><tr>
-            <th>UCC</th><th>Name</th><th>Type</th><th>Last Trade</th><th>Days Inactive</th><th>Status</th>
-          </tr></thead>
-          <tbody>
-            {clients.length === 0 ? (
-              <tr><td colSpan="6" style={{ padding: '20px', textAlign: 'center', color: '#888' }}>No dormant clients</td></tr>
-            ) : clients.map(c => (
-              <tr key={c.ucc}>
-                <td>{c.ucc}</td>
-                <td style={{ fontWeight: '500' }}>{c.name}</td>
-                <td><span className={`badge b-${c.client_type?.toLowerCase() === 'nri' ? 'nri' : 'ri'}`}>{c.client_type}</span></td>
-                <td>{c.last_trade_date ? new Date(c.last_trade_date).toLocaleDateString('en-IN') : '-'}</td>
-                <td>{c.days_inactive || '-'}</td>
-                <td><span className="badge b-dor">Dormant</span></td>
+      <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#111' }}>Dormant Clients</h2>
+      <p style={{ color: '#666', marginTop: '4px', marginBottom: '20px', fontSize: '13px' }}>
+        Clients with no trading activity in the last 30+ days
+      </p>
+
+      <div style={{ background: 'white', borderRadius: '12px', border: '1px solid #eee', overflow: 'hidden' }}>
+        <div style={{ padding: '14px 18px', borderBottom: '1px solid #eee', fontSize: '14px', fontWeight: '600', display: 'flex', justifyContent: 'space-between' }}>
+          <span>🌙 Dormant Clients</span>
+          <span style={{ background: '#faeeda', color: '#854f0b', padding: '2px 10px', borderRadius: '10px', fontSize: '12px', fontWeight: '600' }}>
+            {clients.length} clients
+          </span>
+        </div>
+        {loading ? (
+          <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>Loading...</div>
+        ) : (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+            <thead>
+              <tr>
+                <th style={th}>UCC</th>
+                <th style={th}>Client Name</th>
+                <th style={th}>Type</th>
+                <th style={th}>Last Trade</th>
+                <th style={th}>Action</th>
               </tr>
-            ))}
-          </tbody>
-        </table></div>
+            </thead>
+            <tbody>
+              {clients.length === 0 ? (
+                <tr><td colSpan="5" style={{ padding: '30px', textAlign: 'center', color: '#888' }}>No dormant clients</td></tr>
+              ) : (
+                clients.map(c => (
+                  <tr key={c.ucc}>
+                    <td style={{ ...td, color: '#555' }}>{c.ucc}</td>
+                    <td style={{ ...td, fontWeight: '600' }}>{c.name}</td>
+                    <td style={td}>{c.client_type}</td>
+                    <td style={{ ...td, color: '#854f0b' }}>{getDaysSince(c.last_trade_date)}</td>
+                    <td style={td}>
+                      <button onClick={() => navigate('/client-360', { state: { ucc: c.ucc } })}
+                        style={{ padding: '4px 10px', background: '#223872', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' }}>
+                        View 360
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );

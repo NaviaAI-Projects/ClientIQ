@@ -7,13 +7,10 @@ const SHAREPRO_KEY = 'e0JDQzRGQzRCLTU1QTEtNEM0Qi04M0E1LURGRjA0NERCNzgxRX0=';
 // Fetch full client details from Sharepro by UCC
 async function getClientDetails(ucc) {
   try {
-    const response = await axios({
-      method: 'GET',
-      url: SHAREPRO_URL,
-      headers: { 'Content-Type': 'application/json' },
-      data: { key: SHAREPRO_KEY, ucc: String(ucc) },
-      timeout: 8000
-    });
+    const response = await axios.post(SHAREPRO_URL,
+      { key: SHAREPRO_KEY, ucc: String(ucc) },
+      { headers: { 'Content-Type': 'application/json' }, timeout: 8000 }
+    );
     const data   = response.data;
     const client = Array.isArray(data) ? data[0] : data;
     return client || null;

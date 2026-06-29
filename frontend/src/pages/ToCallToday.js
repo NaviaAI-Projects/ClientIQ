@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../api';
 
 const ToCallToday = () => {
   const [leads, setLeads]       = useState([]);
-  const [calling, setCalling]   = useState(null); // tracks which UCC is being called
+  const [calling, setCalling]   = useState(null);
+  const navigate = useNavigate(); // tracks which UCC is being called
 
   useEffect(() => { loadLeads(); }, []);
 
@@ -37,16 +39,27 @@ const ToCallToday = () => {
   };
 
   return (
-    <>
-    <div className="ph">
-  <h2>To Call Today</h2>
-  <p>AI-prioritised outreach list — click-to-call enabled</p>
-</div>
-<div className="panel">
-  <div className="tw"><table>
-    <thead><tr>
-      <th>UCC</th><th>Client Name</th><th>Lead Score</th><th>Priority</th><th>Action</th>
-    </tr></thead>
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
+        <button onClick={() => navigate(-1)}
+          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#223872', fontSize: '13px', padding: '4px 0', fontWeight: '500' }}>
+          ← Back
+        </button>
+      </div>
+      <h2 style={{ fontSize: '18px', fontWeight: '600' }}>To Call Today</h2>
+      <p style={{ color: '#666', marginTop: '5px' }}>High priority clients requiring RM follow-up</p>
+
+      <div style={{ background: '#fff', borderRadius: '10px', padding: '20px', marginTop: '20px', border: '1px solid #eee' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid #eee' }}>
+              {['UCC', 'Client Name', 'Lead Score', 'Priority', 'Action'].map(h => (
+                <th key={h} align="left" style={{ padding: '10px', fontSize: '11px', fontWeight: '600', color: '#888', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
           <tbody>
             {leads.length === 0 ? (
               <tr>
@@ -63,17 +76,29 @@ const ToCallToday = () => {
                     <td style={{ padding: '12px 10px', fontSize: '13px', color: '#555' }}>{lead.ucc}</td>
                     <td style={{ padding: '12px 10px', fontSize: '13px', fontWeight: '600' }}>{lead.client_name}</td>
                     <td style={{ padding: '12px 10px', fontSize: '13px' }}>
-                      <span className="ais h">{lead.lead_score}</span>
+                      <span style={{ background: '#f0f4ff', color: '#223872', padding: '2px 8px', borderRadius: '4px', fontWeight: '600' }}>
+                        {lead.lead_score}
+                      </span>
                     </td>
                     <td style={{ padding: '12px 10px' }}>
-                      <span className={`badge ${priority.label === 'High' ? 'b-dor' : priority.label === 'Medium' ? 'b-pend' : 'b-act'}`}>
-  {priority.label}
-</span>
+                      <span style={{ background: priority.bg, color: priority.color, padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600' }}>
+                        {priority.label}
+                      </span>
                     </td>
                     <td style={{ padding: '12px 10px' }}>
-                      <button className={`btn ${isCalling ? '' : 'bp'} sm`} onClick={() => handleCall(lead)} disabled={isCalling}>
-  {isCalling ? '⏳ Calling...' : '📞 Call Client'}
-</button>
+                      <button
+                        onClick={() => handleCall(lead)}
+                        disabled={isCalling}
+                        style={{
+                          background: isCalling ? '#94a3b8' : '#223872',
+                          color: '#fff', border: 'none',
+                          padding: '6px 14px', borderRadius: '5px',
+                          cursor: isCalling ? 'not-allowed' : 'pointer',
+                          fontSize: '12px', fontWeight: '500'
+                        }}
+                      >
+                        {isCalling ? '⏳ Calling...' : '📞 Call Client'}
+                      </button>
                     </td>
                   </tr>
                 );
@@ -83,7 +108,6 @@ const ToCallToday = () => {
         </table>
       </div>
     </div>
-    </>
   );
 };
 

@@ -34,6 +34,7 @@ const routes = [
   ['/api/calls', './routes/calls'],
   ['/api/whatsapp', './routes/whatsapp'],
   ['/api/email', './routes/email'],
+  ['/api/nudge', './routes/nudge'],
 ];
 
 routes.forEach(([path, file]) => {
@@ -56,3 +57,16 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+
+// Email scheduler
+const { triggerDailyDigest, checkAndSendChurnAlerts, checkAndSendLeadExpiryWarnings } = require('./routes/emailTriggers');
+
+// Run every day at 07:30
+setInterval(() => {
+  const now = new Date();
+  if (now.getHours() === 7 && now.getMinutes() === 30) {
+    triggerDailyDigest();
+    checkAndSendChurnAlerts();
+    checkAndSendLeadExpiryWarnings();
+  }
+}, 60000); // check every minute

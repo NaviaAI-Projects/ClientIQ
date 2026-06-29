@@ -74,6 +74,7 @@ const Layout = () => {
     // Refresh counts every 5 minutes
     const interval = setInterval(fetchCounts, 300000);
     return () => clearInterval(interval);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   const fetchCounts = async () => {
@@ -95,7 +96,7 @@ const Layout = () => {
       if (user?.role === 'supervisor' || user?.role === 'admin') {
         const [approvalRes, unmapRes] = await Promise.all([
           api.get('/leads/mapping-pool'),
-          api.get('/leads/unmap-requests').catch(() => ({ data: [] }))
+          Promise.resolve({ data: [] })
         ]);
         setCounts(prev => ({
           ...prev,

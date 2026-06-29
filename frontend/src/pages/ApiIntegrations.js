@@ -151,7 +151,14 @@ const ApiIntegrations = () => {
             ))}
           </div>
           <button style={btnPrimary} onClick={() => saveSection(['email_url','email_key','email_from','smtp_host'])}>Save</button>
-          <button style={btnSecondary} onClick={() => alert('Test email API')}>Test</button>
+          <button style={btnSecondary} onClick={async () => {
+  try {
+    const res = await api.get('/email/test');
+    alert(res.data.message);
+  } catch (err) {
+    alert('Test failed: ' + (err.response?.data?.message || err.message));
+  }
+}}>Test</button>
         </div>
 
         {/* Claude AI */}
@@ -166,10 +173,18 @@ const ApiIntegrations = () => {
             </div>
             <div>
               <label style={labelStyle}>Model</label>
-              <select value={settings.anthropic_model || 'claude-sonnet-4-6'} onChange={e => set('anthropic_model', e.target.value)} style={inputStyle}>
-                <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-                <option value="claude-opus-4-6">claude-opus-4-6</option>
-              </select>
+              <select value={settings.anthropic_model || 'llama3-8b-8192'} 
+  onChange={e => set('anthropic_model', e.target.value)} style={inputStyle}>
+  <optgroup label="Groq (Free)">
+    <option value="llama3-8b-8192">llama3-8b-8192 (Fast, Free)</option>
+    <option value="llama3-70b-8192">llama3-70b-8192 (Powerful, Free)</option>
+    <option value="mixtral-8x7b-32768">mixtral-8x7b-32768 (Free)</option>
+  </optgroup>
+  <optgroup label="Anthropic Claude (Paid)">
+    <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
+    <option value="claude-opus-4-6">claude-opus-4-6</option>
+  </optgroup>
+</select>
             </div>
             <div>
               <label style={labelStyle}>Daily Digest Send Time</label>
