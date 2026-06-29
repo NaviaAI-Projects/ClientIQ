@@ -4,7 +4,7 @@ const pool    = require('../db');
 const auth    = require('../middleware/auth');
 const axios   = require('axios');
 
-const GROQ_API_KEY = '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';
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_MODEL   = 'llama-3.1-8b-instant';
 
