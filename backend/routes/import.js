@@ -1,22 +1,18 @@
 const express = require('express');
-const router = express.Router();
-const multer = require('multer');
-const XLSX = require('xlsx');
-const pool = require('../db');
-const auth = require('../middleware/auth');
-const fs = require('fs');
+const router  = require('express').Router();
+const multer  = require('multer');
+const XLSX    = require('xlsx');
+const pool    = require('../db');
+const auth    = require('../middleware/auth');
+const fs      = require('fs');
+const upload  = multer({ dest: 'uploads/' });
 
-const upload = multer({ dest: 'uploads/' });
+const BATCH_SIZE = 500; // Insert 500 rows at a time
 
-// ── Helper: parse date string DD/MM/YYYY or DD-MM-YYYY → YYYY-MM-DD
 function parseDate(val) {
   if (!val) return null;
   const s = String(val).trim();
-
-  // Already YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-
-  // DD/MM/YYYY or DD-MM-YYYY or DD-Mon-YY (e.g. 18-Jun-26)
   const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
   if (m) {
     const day = m[1].padStart(2, '0');
@@ -24,10 +20,7 @@ function parseDate(val) {
     const yr  = m[3].length === 2 ? '20' + m[3] : m[3];
     return `${yr}-${mon}-${day}`;
   }
-
-  // DD-Mon-YY format (e.g. 18-Jun-26)
-  const months = { jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06',
-                   jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12' };
+  const months = { jan:'01',feb:'02',mar:'03',apr:'04',may:'05',jun:'06', jul:'07',aug:'08',sep:'09',oct:'10',nov:'11',dec:'12' };
   const m2 = s.match(/^(\d{1,2})[\/\-]([a-zA-Z]{3})[\/\-](\d{2,4})$/);
   if (m2) {
     const day = m2[1].padStart(2, '0');
@@ -35,36 +28,24 @@ function parseDate(val) {
     const yr  = m2[3].length === 2 ? '20' + m2[3] : m2[3];
     return `${yr}-${mon}-${day}`;
   }
-
-  // Excel serial date number (e.g. 46191)
   if (!isNaN(val) && Number(val) > 40000) {
     const d = new Date((Number(val) - 25569) * 86400 * 1000);
     return d.toISOString().split('T')[0];
   }
-
   const d = new Date(s);
   if (!isNaN(d)) return d.toISOString().split('T')[0];
   return null;
 }
 
-// ── Helper: extract UCC from brokerage party string "NAME [UCC]"
 function extractUCC(partyStr) {
   if (!partyStr) return null;
   const m = String(partyStr).match(/\[(\d+)\]/);
   return m ? m[1] : null;
 }
 
-// ── Helper: determine segment from Exchg. Seg + Instrument Name
-// Real file values:
-//   Exchg. Seg: NSE, BSE → EQ_CASH
-//   Exchg. Seg: NFO, BFO + Instrument: OPTIDX/OPTSTK → EQ_OPT
-//   Exchg. Seg: NFO, BFO + Instrument: FUTIDX/FUTSTK → EQ_FUT
-//   Exchg. Seg: MCX, NCDEX + Instrument: OPTFUT/OPTIDX → COMM_OPT
-//   Exchg. Seg: MCX, NCDEX + Instrument: FUTCOM → COMM_FUT
 function getSegment(exchg, instrName) {
   const e = String(exchg || '').toUpperCase().trim();
   const i = String(instrName || '').toUpperCase().trim();
-
   if (e === 'MCX' || e === 'NCDEX') {
     if (i === 'OPTFUT' || i === 'OPTIDX' || i === 'OPTSTK') return 'COMM_OPT';
     return 'COMM_FUT';
@@ -73,423 +54,351 @@ function getSegment(exchg, instrName) {
     if (i === 'OPTIDX' || i === 'OPTSTK') return 'EQ_OPT';
     return 'EQ_FUT';
   }
-  // NSE / BSE — equity cash
   return 'EQ_CASH';
 }
 
-// ══════════════════════════════════════════════
-// POST /api/import/upload
-// ══════════════════════════════════════════════
+// Bulk insert helper — inserts rows in batches
+async function bulkInsert(client, query, valuesFn, rows, batchSize = BATCH_SIZE) {
+  let inserted = 0;
+  for (let i = 0; i < rows.length; i += batchSize) {
+    const batch  = rows.slice(i, i + batchSize);
+    const values = [];
+    const params = [];
+    let   pi     = 1;
+    for (const row of batch) {
+      const v = valuesFn(row);
+      if (!v) continue;
+      values.push(`(${v.map(() => `$${pi++}`).join(',')})`);
+      params.push(...v);
+    }
+    if (values.length === 0) continue;
+    const sql = query.replace('__VALUES__', values.join(','));
+    await client.query(sql, params);
+    inserted += values.length;
+  }
+  return inserted;
+}
+
 router.post('/upload', auth, upload.single('file'), async (req, res) => {
   const { file_type } = req.body;
+  if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
 
-  if (!req.file) {
-    return res.status(400).json({ message: 'No file uploaded' });
-  }
-
-  let processed = 0;
-  let failed = 0;
+  let processed = 0, failed = 0;
   const errors = [];
+  const dbClient = await pool.connect();
 
   try {
-
-    // ── Read file using XLSX
-    // FIX: Use raw:true + cellDates:false to avoid Trans. Time crash in trade ODS files
-    const workbook = XLSX.readFile(req.file.path, { cellDates: false, raw: true });
+    const workbook  = XLSX.readFile(req.file.path, { cellDates: false, raw: true });
     const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
+    const sheet     = workbook.Sheets[sheetName];
 
-    // ──────────────────────────────────────────
-    // CLIENT MASTER
-    // Columns: UCC, Client Name, Gender, Regd Date,
-    //          Accross ExchOverall Status, Mobile No1, Email Id1,
-    //          Last TradeAccross Exch, Day Gap, Client Address, Client Country
-    // ──────────────────────────────────────────
+    await dbClient.query('BEGIN');
+
+    // ── CLIENT MASTER ──────────────────────────────────────
     if (file_type === 'client_master') {
       const rows = XLSX.utils.sheet_to_json(sheet, { raw: true, defval: '' });
+      const validRows = [];
 
       for (const row of rows) {
-        try {
-          const ucc    = String(row['UCC'] || '').trim();
-          const name   = String(row['Client Name'] || '').trim();
-          const status = String(
-            row['Accross Exch\nOverall Status'] ||
-            row['Accross ExchOverall Status'] ||
-            row['Overall Status'] || ''
-          ).trim();
-          const regdDate  = parseDate(row['Regd Date']);
-          const lastTrade = parseDate(
-            String(row['Last Trade\nAccross Exch'] || row['Last TradeAccross Exch'] || '').trim()
-          );
-          const isActive     = status.toLowerCase().includes('active');
-          const clientStatus = status || 'Active';
+        const ucc    = String(row['UCC'] || '').trim();
+        const name   = String(row['Client Name'] || '').trim();
+        if (!ucc || !name) { failed++; continue; }
 
-          if (!ucc || !name) { failed++; continue; }
+        const status    = String(row['Accross Exch\nOverall Status'] || row['Accross ExchOverall Status'] || row['Overall Status'] || '').trim();
+        const regdDate  = parseDate(row['Regd Date']);
+        const lastTrade = parseDate(String(row['Last Trade\nAccross Exch'] || row['Last TradeAccross Exch'] || '').trim());
+        const isActive  = status.toLowerCase().includes('active');
+        validRows.push({ ucc, name, regdDate, lastTrade, isActive, status: status || 'Active' });
+      }
 
-          await pool.query(`
-            INSERT INTO clients
-              (ucc, name, client_type, plan, account_open_date, last_trade_date, is_active, status)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-            ON CONFLICT (ucc) DO UPDATE SET
-              name              = EXCLUDED.name,
-              account_open_date = EXCLUDED.account_open_date,
-              last_trade_date   = EXCLUDED.last_trade_date,
-              is_active         = EXCLUDED.is_active,
-              status            = EXCLUDED.status,
-              updated_at        = NOW()
-          `, [ucc, name, 'RI', 'zero-brokerage', regdDate, lastTrade, isActive, clientStatus]);
+      // Deduplicate by UCC — keep last occurrence
+      const uccMap = {};
+      for (const r of validRows) uccMap[r.ucc] = r;
+      const dedupedRows = Object.values(uccMap);
 
-          processed++;
-        } catch (e) {
-          failed++;
-          errors.push(`Client ${row['UCC']}: ${e.message}`);
+      // Bulk upsert in batches
+      for (let i = 0; i < dedupedRows.length; i += BATCH_SIZE) {
+        validRows.length = 0; // clear for loop reference fix
+        const batch = dedupedRows.slice(i, i + BATCH_SIZE);
+        const values = [];
+        const params = [];
+        let pi = 1;
+        for (const r of batch) {
+          values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
+          params.push(r.ucc, r.name, 'RI', 'zero-brokerage', r.regdDate, r.lastTrade, r.isActive, r.status);
         }
+        await dbClient.query(`
+          INSERT INTO clients (ucc, name, client_type, plan, account_open_date, last_trade_date, is_active, status)
+          VALUES ${values.join(',')}
+          ON CONFLICT (ucc) DO UPDATE SET
+            name = EXCLUDED.name,
+            account_open_date = EXCLUDED.account_open_date,
+            last_trade_date = EXCLUDED.last_trade_date,
+            is_active = EXCLUDED.is_active,
+            status = EXCLUDED.status,
+            updated_at = NOW()
+        `, params);
+        processed += batch.length;
       }
     }
 
-    // ──────────────────────────────────────────
-    // TRADE FILE
-    // Columns: Account Id, Client Name, Exchg. Seg, Trading Symbol,
-    //          Instrument Name, Traded Value, Trade Date
-    //
-    // FIX 1: Use Instrument Name (not Trading Symbol) for segment detection
-    // FIX 2: Separate EQ_OPT and COMM_OPT correctly
-    // FIX 3: raw:true avoids Trans. Time column crash
-    // NOTE: Save TradeFile as .xlsx from LibreOffice before uploading
-    //       (ODS Trans. Time column format "56:17.7" can crash on some servers)
-    // ──────────────────────────────────────────
+    // ── TRADE FILE ──────────────────────────────────────────
     else if (file_type === 'trade') {
       const rows = XLSX.utils.sheet_to_json(sheet, { raw: true, defval: '' });
+      const { rows: uccRows } = await dbClient.query('SELECT ucc FROM clients');
+      const knownUCCs = new Set(uccRows.map(r => String(r.ucc).trim()));
       const grouped = {};
 
-      // Pre-load all known UCCs once
-      const { rows: uccRows } = await pool.query('SELECT ucc FROM clients');
-      const knownUCCs = new Set(uccRows.map(r => String(r.ucc).trim()));
-
       for (const row of rows) {
-        try {
-          const ucc       = String(row['Account Id'] || '').trim();
-          const exchg     = String(row['Exchg. Seg'] || '').trim();
-          const instrName = String(row['Instrument Name'] || '').trim();
-          const traded    = parseFloat(row['Traded Value']) || 0;
-          const tradeDateRaw = String(row['Trade Date'] || '').trim();
-          const tradeDate = parseDate(tradeDateRaw);
-          const segment   = getSegment(exchg, instrName);
+        const ucc       = String(row['Account Id'] || '').trim();
+        const exchg     = String(row['Exchg. Seg'] || '').trim();
+        const instrName = String(row['Instrument Name'] || '').trim();
+        const traded    = parseFloat(row['Traded Value']) || 0;
+        const tradeDate = parseDate(String(row['Trade Date'] || '').trim());
+        const segment   = getSegment(exchg, instrName);
 
-          if (!ucc || !tradeDate || traded <= 0) {
-            failed++;
-            continue;
-          }
+        if (!ucc || !tradeDate || traded <= 0) { failed++; continue; }
+        if (!knownUCCs.has(ucc)) { failed++; errors.push(`UCC not found: ${ucc}`); continue; }
 
-          if (!knownUCCs.has(ucc)) {
-            failed++;
-            errors.push(`UCC not in clients: ${ucc}`);
-            continue;
-          }
-
-          const key = `${ucc}__${tradeDate}__${segment}`;
-          if (!grouped[key]) {
-            grouped[key] = { ucc, trade_date: tradeDate, segment, turnover: 0 };
-          }
-          grouped[key].turnover += traded;
-          processed++;
-
-        } catch (e) {
-          failed++;
-          errors.push(`Trade row: ${e.message}`);
-        }
+        const key = `${ucc}__${tradeDate}__${segment}`;
+        if (!grouped[key]) grouped[key] = { ucc, trade_date: tradeDate, segment, turnover: 0 };
+        grouped[key].turnover += traded;
+        processed++;
       }
 
-      // Insert grouped aggregates into daily_trades
-      for (const g of Object.values(grouped)) {
-        try {
-          const eqCash  = g.segment === 'EQ_CASH'  ? g.turnover : 0;
-          const eqFut   = g.segment === 'EQ_FUT'   ? g.turnover : 0;
-          const eqOpt   = g.segment === 'EQ_OPT'   ? g.turnover : 0;
-          const commFut = g.segment === 'COMM_FUT'  ? g.turnover : 0;
-          const commOpt = g.segment === 'COMM_OPT'  ? g.turnover : 0;
+      // groupedRows already deduplicated by ucc+trade_date key
+      const groupedRows = Object.values(grouped);
+      // Extra safety - deduplicate by ucc+trade_date
+      const tradeMap = {};
+      for (const g of groupedRows) {
+        const k = g.ucc + '__' + g.trade_date;
+        if (!tradeMap[k]) tradeMap[k] = g;
+        else {
+          tradeMap[k].eq_cash  += g.eq_cash;
+          tradeMap[k].eq_fo    += g.eq_fo;
+          tradeMap[k].comm     += g.comm;
+          tradeMap[k].opt_prem += g.opt_prem;
+        }
+      }
+      const dedupedTrades = Object.values(tradeMap);
+      for (let i = 0; i < dedupedTrades.length; i += BATCH_SIZE) {
+        const batch = dedupedTrades.slice(i, i + BATCH_SIZE);
+        const values = [];
+        const params = [];
+        let pi = 1;
+        for (const g of batch) {
+          values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
+          params.push(g.ucc, g.trade_date, g.eq_cash, g.eq_fo, g.comm, g.opt_prem);
+        }
+        await dbClient.query(`
+          INSERT INTO daily_trades (ucc, trade_date, eq_cash_turnover, eq_fo_turnover, commodity_fo_turnover, options_premium_turnover)
+          VALUES ${values.join(',')}
+          ON CONFLICT (ucc, trade_date) DO UPDATE SET
+            eq_cash_turnover         = daily_trades.eq_cash_turnover + EXCLUDED.eq_cash_turnover,
+            eq_fo_turnover           = daily_trades.eq_fo_turnover + EXCLUDED.eq_fo_turnover,
+            commodity_fo_turnover    = daily_trades.commodity_fo_turnover + EXCLUDED.commodity_fo_turnover,
+            options_premium_turnover = daily_trades.options_premium_turnover + EXCLUDED.options_premium_turnover
+        `, params);
+      }
 
-          // eq_fo_turnover = futures + options combined
-          // options_premium_turnover = equity options + commodity options (primary AI signal)
-          // commodity_fo_turnover = commodity futures + commodity options
-          const eqFoTotal   = eqFut + eqOpt;
-          const optPremTotal = eqOpt + commOpt;
-          const commTotal    = commFut + commOpt;
-
-          await pool.query(`
-            INSERT INTO daily_trades
-              (ucc, trade_date, eq_cash_turnover, eq_fo_turnover,
-               commodity_fo_turnover, options_premium_turnover)
-            VALUES ($1,$2,$3,$4,$5,$6)
-            ON CONFLICT (ucc, trade_date) DO UPDATE SET
-              eq_cash_turnover         = daily_trades.eq_cash_turnover + EXCLUDED.eq_cash_turnover,
-              eq_fo_turnover           = daily_trades.eq_fo_turnover + EXCLUDED.eq_fo_turnover,
-              commodity_fo_turnover    = daily_trades.commodity_fo_turnover + EXCLUDED.commodity_fo_turnover,
-              options_premium_turnover = daily_trades.options_premium_turnover + EXCLUDED.options_premium_turnover
-          `, [g.ucc, g.trade_date, eqCash, eqFoTotal, commTotal, optPremTotal]);
-
-          // Keep last_trade_date always at the latest date seen
-          await pool.query(`
-            UPDATE clients
-            SET last_trade_date = GREATEST(last_trade_date, $1::date), updated_at = NOW()
-            WHERE ucc = $2
-          `, [g.trade_date, g.ucc]);
-
-        } catch (e) {
-          console.error(`Trade insert ERROR → UCC:${g.ucc} Seg:${g.segment} Date:${g.trade_date}:`, e.message);
-          errors.push(`Trade insert ${g.ucc}: ${e.message}`);
+      // Bulk update last_trade_date
+      const uccsToUpdate = [...new Set(dedupedTrades.map(g => g.ucc))];
+      for (let i = 0; i < uccsToUpdate.length; i += BATCH_SIZE) {
+        const batch = uccsToUpdate.slice(i, i + BATCH_SIZE);
+        const latestDates = {};
+        dedupedTrades.filter(g => batch.includes(g.ucc)).forEach(g => {
+          if (!latestDates[g.ucc] || g.trade_date > latestDates[g.ucc]) latestDates[g.ucc] = g.trade_date;
+        });
+        for (const [ucc, date] of Object.entries(latestDates)) {
+          await dbClient.query(`UPDATE clients SET last_trade_date = GREATEST(last_trade_date, $1::date), updated_at = NOW() WHERE ucc = $2`, [date, ucc]);
         }
       }
     }
 
-    // ──────────────────────────────────────────
-    // BROKERAGE FILE
-    // Has 2 header rows:
-    //   Row 0: Party | Square-Off | ... | Total | ... | NetBrokerage | GST
-    //   Row 1: NaN   | Brokerage  | TurnoverIn Rs. | ... | Brokerage(G) | Turnoverin Rs. | ...
-    //   Row 2+: data
-    // Col 0: "NAME [UCC]"
-    // Col 7: Brokerage(G)  ← total brokerage
-    // Col 8: Turnoverin Rs. ← total turnover
-    //
-    // FIX: was range:3 (skipped 3 rows, missed first data row). Correct is range:2
-    // ──────────────────────────────────────────
+    // ── BROKERAGE FILE ──────────────────────────────────────
     else if (file_type === 'brokerage') {
-      // range:2 → skip 2 header rows, data starts at row index 2
-      const rows = XLSX.utils.sheet_to_json(sheet, { range: 2, header: 1, defval: '' });
-
+      const rows  = XLSX.utils.sheet_to_json(sheet, { range: 2, header: 1, defval: '' });
       const today = new Date().toISOString().split('T')[0];
+      const validRows = [];
 
       for (const row of rows) {
-        try {
-          const party     = String(row[0] || '').trim();
-          const ucc       = extractUCC(party);
-          const brokerage = parseFloat(row[7]) || 0;  // Brokerage(G)
-          const turnover  = parseFloat(row[8]) || 0;  // Turnoverin Rs.
+        const party = String(row[0] || '').trim();
+        const ucc   = extractUCC(party);
+        if (!ucc) { failed++; continue; }
+        if (party.toLowerCase().includes('total') || party.toLowerCase().includes('grand')) continue;
+        const brokerage = parseFloat(row[7]) || 0;
+        validRows.push({ ucc, brokerage, today });
+      }
 
-          if (!ucc) { failed++; continue; }
-          // Skip summary/total rows
-          if (party.toLowerCase().includes('total') || party.toLowerCase().includes('grand')) continue;
-
-          await pool.query(`
-            INSERT INTO daily_trades (ucc, trade_date, brokerage_earned)
-            VALUES ($1,$2,$3)
-            ON CONFLICT (ucc, trade_date) DO UPDATE SET
-              brokerage_earned = EXCLUDED.brokerage_earned
-          `, [ucc, today, brokerage]);
-
-          processed++;
-        } catch (e) {
-          failed++;
-          errors.push(`Brokerage ${row[0]}: ${e.message}`);
+      // Deduplicate brokerage by UCC
+      const brokerageMap = {};
+      for (const r of validRows) brokerageMap[r.ucc] = r;
+      const dedupedBrokerage = Object.values(brokerageMap);
+      for (let i = 0; i < dedupedBrokerage.length; i += BATCH_SIZE) {
+        const batch = dedupedBrokerage.slice(i, i + BATCH_SIZE);
+        const values = [], params = [];
+        let pi = 1;
+        for (const r of batch) {
+          values.push(`($${pi++},$${pi++},$${pi++})`);
+          params.push(r.ucc, r.today, r.brokerage);
         }
+        await dbClient.query(`
+          INSERT INTO daily_trades (ucc, trade_date, brokerage_earned)
+          VALUES ${values.join(',')}
+          ON CONFLICT (ucc, trade_date) DO UPDATE SET brokerage_earned = EXCLUDED.brokerage_earned
+        `, params);
+        processed += batch.length;
       }
     }
 
-    // ──────────────────────────────────────────
-    // LEDGER FILE
-    // Row 0: header row — UCC, Account Name, ClosingDebit, ClosingCredit
-    // Row 1+: data
-    // Opening balance = ClosingCredit - ClosingDebit
-    //
-    // FIX: was range:2 (skipped header + first data row). Correct is range:1
-    // ──────────────────────────────────────────
+    // ── LEDGER FILE ─────────────────────────────────────────
     else if (file_type === 'ledger') {
-      // range:1 → skip 1 header row, data starts at row index 1
-      const rows = XLSX.utils.sheet_to_json(sheet, { range: 1, header: 1, defval: 0 });
-
+      const rows  = XLSX.utils.sheet_to_json(sheet, { range: 1, header: 1, defval: 0 });
       const today = new Date().toISOString().split('T')[0];
+      const validRows = [];
 
       for (const row of rows) {
-        try {
-          const ucc     = String(row[0] || '').trim();
-          const debit   = parseFloat(row[2]) || 0;  // ClosingDebit
-          const credit  = parseFloat(row[3]) || 0;  // ClosingCredit
-          const balance = credit - debit;            // Net opening balance
+        const ucc = String(row[0] || '').trim();
+        if (!ucc || ucc === 'UCC') { failed++; continue; }
+        const balance = (parseFloat(row[3]) || 0) - (parseFloat(row[2]) || 0);
+        validRows.push({ ucc, balance, today });
+      }
 
-          if (!ucc || ucc === 'UCC') { failed++; continue; }
-
-          await pool.query(`
-            INSERT INTO daily_ledger (ucc, ledger_date, opening_balance)
-            VALUES ($1,$2,$3)
-            ON CONFLICT (ucc, ledger_date) DO UPDATE SET
-              opening_balance = EXCLUDED.opening_balance
-          `, [ucc, today, balance]);
-
-          processed++;
-        } catch (e) {
-          failed++;
-          errors.push(`Ledger ${row[0]}: ${e.message}`);
+      // Deduplicate ledger by UCC
+      const ledgerMap = {};
+      for (const r of validRows) ledgerMap[r.ucc] = r;
+      const dedupedLedger = Object.values(ledgerMap);
+      for (let i = 0; i < dedupedLedger.length; i += BATCH_SIZE) {
+        const batch = dedupedLedger.slice(i, i + BATCH_SIZE);
+        const values = [], params = [];
+        let pi = 1;
+        for (const r of batch) {
+          values.push(`($${pi++},$${pi++},$${pi++})`);
+          params.push(r.ucc, r.today, r.balance);
         }
+        await dbClient.query(`
+          INSERT INTO daily_ledger (ucc, ledger_date, opening_balance)
+          VALUES ${values.join(',')}
+          ON CONFLICT (ucc, ledger_date) DO UPDATE SET opening_balance = EXCLUDED.opening_balance
+        `, params);
+        processed += batch.length;
       }
     }
 
-    // ──────────────────────────────────────────
-    // HOLDINGS FILE
-    // Pipe-delimited single-column ODS:
-    //   parts[0]  = UCC
-    //   parts[1]  = ISIN
-    //   parts[2]  = Qty
-    //   parts[11] = Total holding value (already qty × price — do NOT multiply again)
-    //
-    // FIX: was doing qty * parts[11], but parts[11] is already the total value
-    // ──────────────────────────────────────────
+    // ── HOLDINGS FILE ────────────────────────────────────────
     else if (file_type === 'holdings') {
       const rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-
-      const today = new Date().toISOString().split('T')[0];
+      const today   = new Date().toISOString().split('T')[0];
       const holdings = {};
 
       for (const row of rawRows) {
-        try {
-          const rawStr = String(row[0] || '').trim();
-          if (!rawStr || rawStr.startsWith('UCC')) continue;
-
-          const parts = rawStr.split('|');
-          if (parts.length < 12) continue;
-
-          const ucc   = String(parts[0]).trim();
-          const value = parseFloat(parts[11]) || 0;  // Total value — already computed
-
-          if (!ucc) continue;
-
-          if (!holdings[ucc]) holdings[ucc] = 0;
-          holdings[ucc] += value;
-          processed++;
-        } catch (e) {
-          failed++;
-          errors.push(`Holding row: ${e.message}`);
-        }
+        const rawStr = String(row[0] || '').trim();
+        if (!rawStr || rawStr.startsWith('UCC')) continue;
+        const parts = rawStr.split('|');
+        if (parts.length < 12) continue;
+        const ucc   = String(parts[0]).trim();
+        const value = parseFloat(parts[11]) || 0;
+        if (!ucc) continue;
+        if (!holdings[ucc]) holdings[ucc] = 0;
+        holdings[ucc] += value;
+        processed++;
       }
 
-      // Insert total holding value per UCC
-      for (const [ucc, totalValue] of Object.entries(holdings)) {
-        try {
-          await pool.query(`
-            INSERT INTO holdings_summary (ucc, holding_date, total_holding_value)
-            VALUES ($1,$2,$3)
-            ON CONFLICT (ucc, holding_date) DO UPDATE SET
-              total_holding_value = EXCLUDED.total_holding_value
-          `, [ucc, today, totalValue]);
-        } catch (e) {
-          errors.push(`Holdings insert ${ucc}: ${e.message}`);
+      const holdingRows = Object.entries(holdings);
+      for (let i = 0; i < holdingRows.length; i += BATCH_SIZE) {
+        const batch = holdingRows.slice(i, i + BATCH_SIZE);
+        const values = [], params = [];
+        let pi = 1;
+        for (const [ucc, totalValue] of batch) {
+          values.push(`($${pi++},$${pi++},$${pi++})`);
+          params.push(ucc, today, totalValue);
         }
+        await dbClient.query(`
+          INSERT INTO holdings_summary (ucc, holding_date, total_holding_value)
+          VALUES ${values.join(',')}
+          ON CONFLICT (ucc, holding_date) DO UPDATE SET total_holding_value = EXCLUDED.total_holding_value
+        `, params);
       }
     }
 
-    // ──────────────────────────────────────────
-    // MTF FILE
-    // Real columns (from actual file):
-    //   UCC, Client Name, ..., VoucherDate, FromDate, ToDate,
-    //   InterestRate (%), GraceDays, Interest(Rs.), ..., NetCharged
-    //
-    // FIX: corrected column name lookup order to match real file
-    // Use FromDate for month_year; fall back to VoucherDate
-    // ──────────────────────────────────────────
+    // ── MTF FILE ─────────────────────────────────────────────
     else if (file_type === 'mtf') {
-      // Row 0 = header, data from row 1
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', range: 1 });
+      const validRows = [];
 
       for (const row of rows) {
-        try {
-          const ucc = String(row['UCC'] || '').trim();
+        const ucc = String(row['UCC'] || '').trim();
+        const fromDate = parseDate(row['FromDate'] || row['From\nDate'] || row['From Date'] || row['VoucherDate'] || row['Voucher\nDate'] || '');
+        const netCharged = parseFloat(row['NetCharged'] || row['Net\nCharged'] || row['Net Charged'] || 0);
+        const interest   = parseFloat(row['Interest(Rs.)'] || row['Interest\n(Rs.)'] || row['Interest'] || 0);
+        if (!ucc || ucc === 'UCC' || !fromDate) { failed++; continue; }
+        validRows.push({ ucc, monthYear: fromDate.substring(0, 7), amount: netCharged || interest });
+      }
 
-          // FromDate is the most reliable date field in real MTF file
-          const fromDate = parseDate(
-            row['FromDate'] || row['From\nDate'] || row['From Date'] ||
-            row['VoucherDate'] || row['Voucher\nDate'] || ''
-          );
-
-          // NetCharged is the actual amount charged to client
-          const netCharged = parseFloat(
-            row['NetCharged'] || row['Net\nCharged'] || row['Net Charged'] || 0
-          );
-          const interest = parseFloat(
-            row['Interest(Rs.)'] || row['Interest\n(Rs.)'] || row['Interest'] || 0
-          );
-
-          if (!ucc || ucc === 'UCC' || !fromDate) { failed++; continue; }
-
-          const monthYear = fromDate.substring(0, 7); // YYYY-MM
-
-          await pool.query(`
-            INSERT INTO mtf_monthly (ucc, month_year, avg_mtf_balance, interest_earned)
-            VALUES ($1,$2,$3,$4)
-            ON CONFLICT (ucc, month_year) DO UPDATE SET
-              interest_earned = mtf_monthly.interest_earned + EXCLUDED.interest_earned
-          `, [ucc, monthYear, 0, netCharged || interest]);
-
-          processed++;
-        } catch (e) {
-          failed++;
-          errors.push(`MTF ${row['UCC']}: ${e.message}`);
+      // Deduplicate MTF by ucc+monthYear
+      const mtfMap = {};
+      for (const r of validRows) {
+        const k = r.ucc + '__' + r.monthYear;
+        if (!mtfMap[k]) mtfMap[k] = { ...r };
+        else mtfMap[k].amount += r.amount;
+      }
+      const dedupedMTF = Object.values(mtfMap);
+      for (let i = 0; i < dedupedMTF.length; i += BATCH_SIZE) {
+        const batch = dedupedMTF.slice(i, i + BATCH_SIZE);
+        const values = [], params = [];
+        let pi = 1;
+        for (const r of batch) {
+          values.push(`($${pi++},$${pi++},$${pi++},$${pi++})`);
+          params.push(r.ucc, r.monthYear, 0, r.amount);
         }
+        await dbClient.query(`
+          INSERT INTO mtf_monthly (ucc, month_year, avg_mtf_balance, interest_earned)
+          VALUES ${values.join(',')}
+          ON CONFLICT (ucc, month_year) DO UPDATE SET interest_earned = mtf_monthly.interest_earned + EXCLUDED.interest_earned
+        `, params);
+        processed += batch.length;
       }
     }
 
-    // ──────────────────────────────────────────
-    // BHAVCOPY
-    // Not needed — holdings file already contains computed total values (parts[11])
-    // Kept for future ISIN-level pricing if required
-    // ──────────────────────────────────────────
     else if (file_type === 'bhavcopy') {
-      res.json({ message: 'Bhavcopy not required — holdings file already contains computed values', processed: 0, failed: 0 });
-      return;
+      await dbClient.query('COMMIT');
+      dbClient.release();
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.json({ message: 'Bhavcopy not required — holdings file already contains computed values', processed: 0, failed: 0 });
     }
 
-    // ── Log the import
+    await dbClient.query('COMMIT');
+
+    // Log import
     await pool.query(`
-      INSERT INTO import_log
-        (import_date, file_type, file_name, records_processed,
-         records_failed, status, imported_by, created_at)
+      INSERT INTO import_log (import_date, file_type, file_name, records_processed, records_failed, status, imported_by, created_at)
       VALUES (NOW(),$1,$2,$3,$4,$5,$6,NOW())
-    `, [
-      file_type,
-      req.file.originalname,
-      processed,
-      failed,
-      failed === 0 ? 'success' : (processed > 0 ? 'partial' : 'failed'),
-      req.user.id
-    ]);
+    `, [file_type, req.file.originalname, processed, failed, failed === 0 ? 'success' : (processed > 0 ? 'partial' : 'failed'), req.user.id]);
 
-    // ── Delete temp file
     if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-
-    res.json({
-      message: 'Import complete',
-      processed,
-      failed,
-      errors: errors.slice(0, 10)
-    });
+    res.json({ message: 'Import complete', processed, failed, errors: errors.slice(0, 10) });
 
   } catch (err) {
-    console.error('IMPORT MAIN ERROR:', err.message);
+    await dbClient.query('ROLLBACK').catch(() => {});
+    console.error('IMPORT ERROR:', err.message);
     if (fs.existsSync(req.file?.path)) fs.unlinkSync(req.file.path);
     res.status(500).json({ message: 'Import failed', error: err.message });
+  } finally {
+    dbClient.release();
   }
 });
 
-// ══════════════════════════════════════════════
-// GET /api/import/logs
-// ══════════════════════════════════════════════
 router.get('/logs', auth, async (req, res) => {
   try {
     const result = await pool.query(`
-      SELECT il.*, u.name AS imported_by_name
-      FROM import_log il
+      SELECT il.*, u.name AS imported_by_name FROM import_log il
       LEFT JOIN users u ON il.imported_by = u.id
-      ORDER BY il.created_at DESC
-      LIMIT 50
+      ORDER BY il.created_at DESC LIMIT 50
     `);
     res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
+  } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
 });
 
-// ══════════════════════════════════════════════
-// POST /api/import/run-pipeline
-// ══════════════════════════════════════════════
 router.post('/run-pipeline', auth, async (req, res) => {
   try {
     const checks = await Promise.all([
@@ -499,20 +408,11 @@ router.post('/run-pipeline', auth, async (req, res) => {
       pool.query(`SELECT COUNT(*) FROM import_log WHERE file_type='holdings'      AND status IN ('success','partial') AND import_date > NOW()-INTERVAL '1 day'`),
       pool.query(`SELECT COUNT(*) FROM import_log WHERE file_type='client_master' AND status IN ('success','partial') AND import_date > NOW()-INTERVAL '7 day'`),
     ]);
-
     const names   = ['Trade File', 'Brokerage File', 'Ledger File', 'Holdings File', 'Client Master'];
     const missing = checks.map((r, i) => parseInt(r.rows[0].count) === 0 ? names[i] : null).filter(Boolean);
-
-    if (missing.length > 0) {
-      return res.status(400).json({
-        message: 'Pipeline cannot run. Missing recent imports: ' + missing.join(', ')
-      });
-    }
-
+    if (missing.length > 0) return res.status(400).json({ message: 'Pipeline cannot run. Missing recent imports: ' + missing.join(', ') });
     res.json({ message: 'Import pipeline completed successfully' });
-  } catch (err) {
-    res.status(500).json({ message: 'Pipeline failed', error: err.message });
-  }
+  } catch (err) { res.status(500).json({ message: 'Pipeline failed', error: err.message }); }
 });
 
 module.exports = router;
