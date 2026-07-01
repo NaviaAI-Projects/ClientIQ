@@ -76,12 +76,10 @@ const SupervisorDashboard = () => {
     <div style={{ fontFamily: "-apple-system,'Segoe UI',system-ui,sans-serif" }}>
 
       {/* Header */}
-      <div style={{ marginBottom: '20px' }}>
-        <h1 style={{ fontSize: '22px', fontWeight: '700', color: N.tx, margin: 0 }}>Company Dashboard</h1>
-        <p style={{ color: N.tx3, margin: '4px 0 0', fontSize: '13px' }}>
-          {new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
-        </p>
-      </div>
+      <div className="ph">
+  <h2>Company dashboard</h2>
+  <p>{new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+</div>
 
       {/* Stat Cards Row 1 */}
       <div style={{ display: 'flex', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
