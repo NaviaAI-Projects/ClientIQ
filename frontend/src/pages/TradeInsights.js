@@ -26,8 +26,10 @@ const FMT = v => {
   const prefix = n < 0 ? '–₹' : '₹';
   const abs = Math.abs(n);
   if (abs >= 100000) return prefix + (abs/100000).toFixed(1) + 'L';
-  if (abs >= 1000)   return prefix + (abs/1000).toFixed(0) + 'K';
-  return prefix + abs.toLocaleString('en-IN');
+  if (abs >= 1000)   return prefix + (abs/1000).toFixed(1) + 'K';
+  if (abs >= 1)      return prefix + Math.round(abs).toLocaleString('en-IN');
+  if (abs > 0)       return prefix + abs.toFixed(2); // sub-rupee: show paise
+  return prefix + '0';
 };
 
 const FMTP = v => {

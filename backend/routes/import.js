@@ -58,24 +58,9 @@ function getSegment(exchg, instrName) {
   return 'EQ_CASH';
 }
 
-// ── Auto-detect file type from filename ───────────────────────
-function detectFileType(filename) {
-  const n = (filename || '').toLowerCase().replace(/[\s_\-\.]+/g, '');
-  if (n.includes('clientmaster') || n.includes('client_master') || n.includes('clientmst')) return 'client_master';
-  if (n.includes('mtf') || n.includes('margintrade') || n.includes('mtfinterest'))           return 'mtf';
-  if (n.includes('brokerage') || n.includes('brokerge') || n.includes('brok'))               return 'brokerage';
-  if (n.includes('ledger') || n.includes('ledgr'))                                           return 'ledger';
-  if (n.includes('holding') || n.includes('dp') || n.includes('dpholding'))                  return 'holdings';
-  if (n.includes('trade') || n.includes('tradefile') || n.includes('tradein'))               return 'trade';
-  return null;
-}
-
 router.post('/upload', auth, upload.single('file'), async (req, res) => {
-  let file_type = req.body.file_type || detectFileType(req.file?.originalname);
+  const { file_type } = req.body;
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
-  if (!file_type) return res.status(400).json({
-    message: `Could not detect file type from "${req.file?.originalname}". Rename to include: clientmaster, trade, brokerage, ledger, holdings, or mtf.`
-  });
 
   let processed = 0, failed = 0;
   const errors  = [];
@@ -172,11 +157,27 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
         // Aggregate for daily_trades summary
         const key = `${ucc}__${tradeDate}`;
-        if (!grouped[key]) grouped[key] = { ucc, trade_date: tradeDate, eq_cash: 0, eq_fo: 0, comm: 0, opt_prem: 0 };
+        if (!grouped[key]) grouped[key] = {
+          ucc, trade_date: tradeDate,
+          eq_cash: 0, eq_fo: 0, comm: 0, opt_prem: 0,
+          instruments: {},  // track turnover per symbol
+          calls: 0, puts: 0
+        };
         grouped[key].eq_cash  += segment === 'EQ_CASH'  ? traded : 0;
         grouped[key].eq_fo    += (segment === 'EQ_FUT'  || segment === 'EQ_OPT')   ? traded : 0;
         grouped[key].comm     += (segment === 'COMM_FUT' || segment === 'COMM_OPT') ? traded : 0;
         grouped[key].opt_prem += (segment === 'EQ_OPT'  || segment === 'COMM_OPT') ? traded : 0;
+
+        // Track per-instrument turnover for top_instrument
+        if (symbol) {
+          if (!grouped[key].instruments[symbol]) grouped[key].instruments[symbol] = 0;
+          grouped[key].instruments[symbol] += traded;
+        }
+
+        // Track call/put ratio
+        const ot = String(row['Option Type'] || '').trim().toUpperCase();
+        if (ot === 'CE') grouped[key].calls += traded;
+        if (ot === 'PE') grouped[key].puts  += traded;
         processed++;
       }
 
@@ -212,6 +213,25 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       // Delete raw trades older than 90 days (per document)
       await dbClient.query(`DELETE FROM trades WHERE trade_date < CURRENT_DATE - INTERVAL '90 days'`);
 
+      // Compute top_instrument per UCC per day
+      const dailyGroups = Object.values(grouped);
+      dailyGroups.forEach(g => {
+        const instEntries = Object.entries(g.instruments || {});
+        if (instEntries.length > 0) {
+          instEntries.sort((a, b) => b[1] - a[1]);
+          g.top_instrument = instEntries[0][0]; // symbol with highest turnover
+          // Determine instrument type from the symbol
+          const topSym = g.top_instrument.toUpperCase();
+          if (topSym.endsWith('CE'))       g.top_instrument_type = 'CE';
+          else if (topSym.endsWith('PE'))  g.top_instrument_type = 'PE';
+          else if (topSym.includes('FUT')) g.top_instrument_type = 'FUT';
+          else                             g.top_instrument_type = 'EQ';
+        }
+        // Call/put ratio
+        const totalOptions = g.calls + g.puts;
+        g.call_put_ratio = totalOptions > 0 ? parseFloat((g.calls / totalOptions * 100).toFixed(2)) : null;
+      });
+
       // 2. Upsert aggregated daily_trades
       const groupedRows = Object.values(grouped);
       for (let i = 0; i < groupedRows.length; i += BATCH_SIZE) {
@@ -219,13 +239,23 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const values = [], params = [];
         let pi = 1;
         for (const g of batch) {
-          values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
-          params.push(g.ucc, g.trade_date, g.eq_cash, g.eq_fo, g.comm, g.opt_prem);
+          values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
+          params.push(g.ucc, g.trade_date, g.eq_cash, g.eq_fo, g.comm, g.opt_prem,
+            g.top_instrument || null, g.top_instrument_type || null, g.call_put_ratio || null);
         }
         await dbClient.query(`
-          INSERT INTO daily_trades (ucc, trade_date, eq_cash_turnover, eq_fo_turnover, commodity_fo_turnover, options_premium_turnover)
+          INSERT INTO daily_trades (ucc, trade_date, eq_cash_turnover, eq_fo_turnover,
+            commodity_fo_turnover, options_premium_turnover,
+            top_instrument, top_instrument_type, call_put_ratio)
           VALUES ${values.join(',')}
           ON CONFLICT (ucc, trade_date) DO UPDATE SET
+            eq_cash_turnover        = EXCLUDED.eq_cash_turnover,
+            eq_fo_turnover          = EXCLUDED.eq_fo_turnover,
+            commodity_fo_turnover   = EXCLUDED.commodity_fo_turnover,
+            options_premium_turnover = EXCLUDED.options_premium_turnover,
+            top_instrument          = EXCLUDED.top_instrument,
+            top_instrument_type     = EXCLUDED.top_instrument_type,
+            call_put_ratio          = EXCLUDED.call_put_ratio
             eq_cash_turnover         = EXCLUDED.eq_cash_turnover,
             eq_fo_turnover           = EXCLUDED.eq_fo_turnover,
             commodity_fo_turnover    = EXCLUDED.commodity_fo_turnover,
@@ -345,19 +375,22 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
     // ── HOLDINGS FILE ─────────────────────────────────────
     else if (file_type === 'holdings') {
-      const rawRows  = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
       const today    = new Date().toISOString().split('T')[0];
       const holdings = {};
 
-      for (const row of rawRows) {
-        const rawStr = String(row[0] || '').trim();
-        if (!rawStr || rawStr.startsWith('UCC')) continue;
-        const parts = rawStr.split('|');
-        if (parts.length < 12) continue;
-        const ucc   = String(parts[0]).trim();
-        const value = parseFloat(parts[11]) || 0;
-        if (!ucc) continue;
-        // ISIN detail discarded — only total value stored (per document)
+      // Read raw file — pipe-delimited, no headers
+      const rawContent = fs.readFileSync(req.file.path, 'utf8');
+      const lines = rawContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+
+      for (const line of lines) {
+        const parts = line.split('|');
+        if (parts.length < 4) continue;
+        const ucc      = String(parts[0]).trim();
+        if (!ucc || isNaN(ucc)) continue;
+        const qty      = parseFloat(parts[2])  || 0;  // col 2 = quantity
+        const avgPrice = parseFloat(parts[11]) || 0;  // col 11 = average price per unit
+        const value    = qty * avgPrice;               // total holding value
+        if (value === 0) { failed++; continue; }
         if (!holdings[ucc]) holdings[ucc] = 0;
         holdings[ucc] += value;
         processed++;
@@ -387,18 +420,22 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
       for (const row of rows) {
         const ucc        = String(row['UCC'] || row[0] || '').trim();
-        const fromDateRaw = row['From\nDate'] || row['FromDate'] || row['From Date'] || row[2] || '';
-        const fromDate   = parseDate(fromDateRaw);
-        const lastIdx    = row.length - 1;
-        const netCharged = parseFloat(row['Net\nCharged'] || row['NetCharged'] || row['Net Charged'] || row[lastIdx] || 0);
-        const interest   = parseFloat(row['Interest\n(Rs.)'] || row['Interest(Rs.)'] || row['Interest'] || row[lastIdx - 1] || 0);
+        // MTF file has fixed columns — use index positions (more reliable than string keys with newlines)
+        // Col 15 = From Date, Col 19 = Interest (Rs.), Col 27 = Net Charged
+        const fromDateRaw = row[15] || row['From\nDate'] || row['From Date'] || row[2] || '';
+        const fromDate    = parseDate(String(fromDateRaw).trim());
+        const netCharged  = parseFloat(row[27]) || 0;
+        const interest    = parseFloat(row[19]) || 0;
+        const interestRate = parseFloat(row[17]) || 0;
+        const toDateRaw   = row[16] || '';
+        const toDate      = parseDate(String(toDateRaw).trim());
 
         if (!ucc || isNaN(parseInt(ucc)) || !fromDate) { failed++; continue; }
         const monthYear = fromDate.substring(0, 7);
         const amount    = netCharged || interest;
         if (!amount) { failed++; continue; }
         const k = `${ucc}__${monthYear}`;
-        if (!mtfMap[k]) mtfMap[k] = { ucc, monthYear, amount };
+        if (!mtfMap[k]) mtfMap[k] = { ucc, monthYear, amount, fromDate, toDate, interestRate };
         else mtfMap[k].amount += amount;
       }
 
@@ -409,13 +446,15 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         let pi = 1;
         for (const r of batch) {
           values.push(`($${pi++},$${pi++},$${pi++},$${pi++})`);
-          params.push(r.ucc, r.monthYear, 0, r.amount);
+          params.push(r.ucc, r.monthYear, 0, r.amount, r.fromDate || null, r.toDate || null, r.interestRate || 0);
         }
         await dbClient.query(`
-          INSERT INTO mtf_monthly (ucc, month_year, avg_mtf_balance, interest_earned)
+          INSERT INTO mtf_monthly (ucc, month_year, avg_mtf_balance, interest_earned, from_date, to_date, interest_rate)
           VALUES ${values.join(',')}
           ON CONFLICT (ucc, month_year) DO UPDATE SET
-            interest_earned = mtf_monthly.interest_earned + EXCLUDED.interest_earned
+            interest_earned = mtf_monthly.interest_earned + EXCLUDED.interest_earned,
+            to_date         = EXCLUDED.to_date,
+            interest_rate   = EXCLUDED.interest_rate
         `, params);
         processed += batch.length;
       }
