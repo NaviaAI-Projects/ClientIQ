@@ -115,16 +115,20 @@ router.post('/click-to-call', auth, async (req, res) => {
 
     // 4. Log interaction
     try {
-      await pool.query(
-        `INSERT INTO interactions
-         (ucc, rm_id, interaction_type, notes, outcome, interaction_date)
-         VALUES ($1, $2, 'CLICK_TO_CALL', $3, 'INITIATED', NOW())`,
-        [ucc, req.user.id,
-         `Call initiated to client: ${destinationNumber}`]
-      );
-    } catch (e) {
-      console.log('Interaction log failed:', e.message);
-    }
+  await pool.query(
+    `INSERT INTO interactions
+     (ucc, rm_id, interaction_type, notes, outcome, call_ref_id, call_status, interaction_date, created_at)
+     VALUES ($1, $2, 'CALL', $3, 'INITIATED', $4, 'INITIATED', NOW(), NOW())`,
+    [
+      ucc,
+      req.user.id,
+      `Click-to-call to client: ${destinationNumber}`,
+      smartfloRes.data.ref_id || smartfloRes.data.uuid || null
+    ]
+  );
+} catch (e) {
+  console.log('Interaction log failed:', e.message);
+}
 
     res.json({
       success: true,
@@ -152,4 +156,67 @@ router.get('/test', auth, async (req, res) => {
   });
 });
 
+// ══════════════════════════════════════════════
+// POST /api/calls/webhook
+// Smartflo calls this when call ends
+// ══════════════════════════════════════════════
+router.post('/webhook', async (req, res) => {
+  try {
+    console.log('Smartflo webhook received:', JSON.stringify(req.body));
+
+    const {
+  uuid,
+  ref_id,
+  call_id, 
+  call_status,
+  duration,
+  recording_url,
+} = req.body;
+
+const callId = ref_id || uuid || call_id;
+
+if (!callId) {
+  return res.status(200).json({ success: true, message: 'No call ID' });
+}
+
+console.log(`Attempting to update call_ref_id: ${callId}`);
+const result = await pool.query(
+  `UPDATE interactions 
+   SET call_status = $1, duration_seconds = $2, recording_url = $3, outcome = $4
+   WHERE call_ref_id = $5`,
+  [
+    call_status || 'COMPLETED',
+    parseInt(duration) || 0,
+    recording_url || null,
+    call_status === 'answered' ? 'CONNECTED' : 'MISSED',
+    callId
+  ]
+);
+console.log(`Rows updated: ${result.rowCount}`);
+
+    // Update the interaction row that was created on call initiation
+    await pool.query(
+  `UPDATE interactions 
+   SET call_status      = $1,
+       duration_seconds = $2,
+       recording_url    = $3,
+       outcome          = $4
+   WHERE call_ref_id = $5`,
+  [
+    call_status || 'COMPLETED',
+    parseInt(duration) || 0,
+    recording_url || null,
+    call_status === 'answered' ? 'CONNECTED' : 'MISSED',
+    callId  // ← changed from ref_id
+  ]
+);
+
+    console.log(`Webhook processed: ref_id=${ref_id} status=${call_status} duration=${duration}`);
+    res.status(200).json({ success: true });
+
+  } catch (err) {
+    console.error('Webhook error:', err.message);
+    res.status(200).json({ success: true }); // Always return 200 to Smartflo
+  }
+});
 module.exports = router;

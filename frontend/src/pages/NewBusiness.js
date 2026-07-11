@@ -6,7 +6,7 @@ import {
 } from 'recharts';
 
 const FMT = v => {
-  if (!v) return '₹0';
+  if (!v) return '₹0';s
   if (v >= 10000000) return '₹' + (v/10000000).toFixed(1) + 'Cr';
   if (v >= 100000)   return '₹' + (v/100000).toFixed(1) + 'L';
   if (v >= 1000)     return '₹' + (v/1000).toFixed(0) + 'K';

@@ -34,9 +34,10 @@ const ContactLog = () => {
     setLoading(true);
     try {
       const [logsRes, clientsRes] = await Promise.all([
-        api.get('/contact-logs'),
-        api.get('/clients/my/clients')
-      ]);
+  api.get('/interactions/my'),
+  api.get('/clients/my/clients'),
+  api.get('/interactions/my/all')
+]);
       setLogs(logsRes.data || []);
       setClients(clientsRes.data || []);
     } catch (err) { console.error(err); }
@@ -233,7 +234,35 @@ const ContactLog = () => {
                         </div>
                       </div>
                       {log.notes && <div style={{ fontSize: '12px', color: '#666', marginBottom: '4px' }}>{log.notes}</div>}
-                      {log.follow_up_date && (
+
+{/* Call-specific details */}
+{log.interaction_type === 'CALL' && (
+  <div style={{ display: 'flex', gap: '8px', marginTop: '6px', flexWrap: 'wrap' }}>
+    {log.call_status && (
+      <span style={{
+        fontSize: '11px', fontWeight: '600', padding: '2px 8px', borderRadius: '8px',
+        background: log.call_status === 'answered' ? '#eaf3de' : '#fcebeb',
+        color: log.call_status === 'answered' ? '#10B981' : '#EF4444'
+      }}>
+        {log.call_status === 'answered' ? '✅ Answered' : '❌ Missed'}
+      </span>
+    )}
+    {log.duration_seconds > 0 && (
+      <span style={{ fontSize: '11px', color: '#888', background: '#f5f5f5', padding: '2px 8px', borderRadius: '8px' }}>
+        ⏱ {Math.floor(log.duration_seconds / 60)}m {log.duration_seconds % 60}s
+      </span>
+    )}
+    {log.recording_url && (
+      <a href={log.recording_url} target="_blank" rel="noopener noreferrer"
+        style={{ fontSize: '11px', fontWeight: '600', padding: '2px 8px', borderRadius: '8px',
+          background: '#e8f3ff', color: '#3B82F6', textDecoration: 'none' }}>
+        🎙 Play Recording
+      </a>
+    )}
+  </div>
+)}
+
+{log.follow_up_date && (
                         <div style={{ fontSize: '11px', color: '#F59E0B', background: '#faeeda', display: 'inline-block', padding: '1px 8px', borderRadius: '8px' }}>
                           📅 Follow-up: {new Date(log.follow_up_date).toLocaleDateString('en-IN')}
                         </div>
