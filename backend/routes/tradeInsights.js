@@ -192,43 +192,76 @@ async function buildInsightsData(ucc, days = 90) {
 
   // ── Real per-instrument P&L from matched buy/sell pairs ──
   const tradePnlRes = await pool.query(`
+    WITH buys AS (
+      SELECT trading_symbol, trade_date, trade_price, trade_qty,
+        ROW_NUMBER() OVER (PARTITION BY trading_symbol, trade_date ORDER BY trans_time, id) AS rn
+      FROM trades
+      WHERE ucc = $1
+        AND buy_sell = 'Buy'
+        AND trade_date >= NOW() - ($2 * INTERVAL '1 day')
+    ),
+    sells AS (
+      SELECT trading_symbol, trade_date, trade_price, trade_qty,
+        ROW_NUMBER() OVER (PARTITION BY trading_symbol, trade_date ORDER BY trans_time, id) AS rn
+      FROM trades
+      WHERE ucc = $1
+        AND buy_sell = 'Sell'
+        AND trade_date >= NOW() - ($2 * INTERVAL '1 day')
+    )
     SELECT
-      t1.trading_symbol                                                    AS instrument,
-      SUM((t2.trade_price - t1.trade_price) * t1.trade_qty)               AS realised_pnl,
-      COUNT(*)                                                              AS matched_trades,
-      SUM(CASE WHEN t2.trade_price > t1.trade_price THEN 1 ELSE 0 END)   AS wins
-    FROM trades t1
-    JOIN trades t2
-      ON  t1.ucc            = t2.ucc
-      AND t1.trade_date     = t2.trade_date
-      AND t1.trading_symbol = t2.trading_symbol
-      AND t1.buy_sell       = 'Buy'
-      AND t2.buy_sell       = 'Sell'
-    WHERE t1.ucc = $1
-      AND t1.trade_date >= NOW() - ($2 * INTERVAL '1 day')
-    GROUP BY t1.trading_symbol
+      b.trading_symbol                                                        AS instrument,
+      ROUND(SUM((s.trade_price - b.trade_price) * b.trade_qty)::numeric, 2) AS realised_pnl,
+      COUNT(*)                                                                AS matched_trades,
+      SUM(CASE WHEN s.trade_price > b.trade_price THEN 1 ELSE 0 END)        AS wins
+    FROM buys b
+    JOIN sells s
+      ON  b.trading_symbol = s.trading_symbol
+      AND b.trade_date     = s.trade_date
+      AND b.rn             = s.rn
+    GROUP BY b.trading_symbol
     ORDER BY realised_pnl DESC
   `, [ucc, parseInt(days)]).catch(() => ({ rows: [] }));
 
-  // Map real P&L to base instrument names
-  const pnlByInstrument = {};
+  // Map real P&L — store by both raw symbol and base group key
+  const pnlByRawSymbol = {};  // exact trading_symbol → pnl
+  const pnlByInstrument = {}; // grouped base key → pnl
+
   tradePnlRes.rows.forEach(r => {
     const raw = String(r.instrument || '').toUpperCase();
+    const pnl = parseFloat(r.realised_pnl) || 0;
+    const mt  = parseInt(r.matched_trades) || 0;
+    const wins= parseInt(r.wins) || 0;
+
+    // Store by exact symbol (e.g. NIFTY2661623900PE)
+    pnlByRawSymbol[raw] = { pnl, matched_trades: mt, wins };
+
+    // Also store by base group (e.g. NIFTY PE)
     const baseMatch = raw.match(/^(NIFTY|BANKNIFTY|FINNIFTY|MIDCPNIFTY|SENSEX|BANKEX|CRUDEOIL|GOLD|SILVER|[A-Z]+)/);
     const base = baseMatch ? baseMatch[1] : raw.slice(0, 10);
-    const ot   = raw.endsWith('CE') ? 'CE' : raw.endsWith('PE') ? 'PE' : '';
+    const ot   = raw.endsWith('CE') ? 'CE' : raw.endsWith('PE') ? 'PE' : raw.endsWith('EQ') ? 'EQ' : '';
     const key  = ot ? `${base} ${ot}` : base;
     if (!pnlByInstrument[key]) pnlByInstrument[key] = { pnl: 0, matched_trades: 0, wins: 0 };
-    pnlByInstrument[key].pnl            += Math.round(parseFloat(r.realised_pnl) || 0);
-    pnlByInstrument[key].matched_trades += parseInt(r.matched_trades) || 0;
-    pnlByInstrument[key].wins           += parseInt(r.wins) || 0;
+    pnlByInstrument[key].pnl            += pnl;  // keep float during accumulation
+    pnlByInstrument[key].matched_trades += mt;
+    pnlByInstrument[key].wins           += wins;
   });
+
+  // Helper — lookup P&L by instrument key (try exact match first, then base group)
+  function getPnl(instrumentKey) {
+    const k = String(instrumentKey || '').toUpperCase();
+    const round = obj => obj ? { ...obj, pnl: Math.round(obj.pnl) } : null;
+    if (pnlByRawSymbol[k]) return round(pnlByRawSymbol[k]);
+    if (pnlByInstrument[k]) return round(pnlByInstrument[k]);
+    const stripped = k.replace(/-EQ$/, ' EQ').replace(/-A$/, ' A');
+    if (pnlByInstrument[stripped]) return round(pnlByInstrument[stripped]);
+    return null;
+  }
 
   const hasPnlData = Object.keys(pnlByInstrument).length > 0;
 
   // Top instruments for options_stats — real P&L where available
   const topInstrumentsOptions = top5.map(r => {
-    const p  = pnlByInstrument[r.instrument] || {};
+    const p  = getPnl(r.instrument) || {};
     const mt = p.matched_trades || 0;
     return {
       instrument: r.instrument,
@@ -243,7 +276,7 @@ async function buildInsightsData(ucc, days = 90) {
 
   // Top instruments for best_worst tab
   const topInstrumentsBW = top5.map(r => {
-    const p  = pnlByInstrument[r.instrument] || {};
+    const p  = getPnl(r.instrument) || {};
     const mt = p.matched_trades || 0;
     return {
       instrument: r.instrument,
