@@ -3,8 +3,6 @@ const router = express.Router();
 const pool = require('../db');
 const auth = require('../middleware/auth');
 
-<<<<<<< HEAD
-=======
 // ✅ /my/all MUST be before /:ucc
 router.get('/my/all', auth, async (req, res) => {
   try {
@@ -22,7 +20,6 @@ router.get('/my/all', auth, async (req, res) => {
   }
 });
 
->>>>>>> master
 router.get('/:ucc', auth, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -51,26 +48,4 @@ router.post('/', auth, async (req, res) => {
   }
 });
 
-<<<<<<< HEAD
-// GET /api/interactions/my — all interactions for logged-in RM
-router.get('/my/all', auth, async (req, res) => {
-  try {
-    const result = await pool.query(`
-      SELECT 
-        i.*,
-        c.name as client_name
-      FROM interactions i
-      LEFT JOIN clients c ON i.ucc = c.ucc
-      WHERE i.rm_id = $1
-      ORDER BY i.created_at DESC
-      LIMIT 100
-    `, [req.user.id]);
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ message: 'Server error', error: err.message });
-  }
-});
-
-=======
->>>>>>> master
 module.exports = router;

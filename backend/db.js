@@ -15,13 +15,10 @@ const pool = new Pool({
   connectionTimeoutMillis: 10000,
 });
 
-<<<<<<< HEAD
-=======
 pool.on('connect', client => {
   client.query("SET TIME ZONE 'Asia/Kolkata'");
 });
 
->>>>>>> master
 pool.on('connect', () => {
   console.log('Connected to PostgreSQL database');
 });

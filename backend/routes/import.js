@@ -475,11 +475,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
     await pool.query(`
       INSERT INTO import_log (import_date, file_type, file_name, records_processed, records_failed, status, imported_by, created_at)
-<<<<<<< HEAD
-      VALUES (NOW(),$1,$2,$3,$4,$5,$6,NOW())
-=======
       VALUES (NOW() AT TIME ZONE 'Asia/Kolkata',$1,$2,$3,$4,$5,$6,NOW() AT TIME ZONE 'Asia/Kolkata')
->>>>>>> master
     `, [file_type, req.file.originalname, processed, failed,
         failed === 0 ? 'success' : (processed > 0 ? 'partial' : 'failed'), req.user.id]);
 
