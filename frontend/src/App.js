@@ -39,6 +39,10 @@ import RevenueRamp from './pages/RevenueRamp';
 import MarketShare from './pages/MarketShare';
 import NewBusiness from './pages/NewBusiness';
 import RMImpact from './pages/RMImpact';
+<<<<<<< HEAD
+=======
+import OptinLanding from './pages/OptinLanding';
+>>>>>>> master
 
 // Admin Pages
 import ImportData from './pages/ImportData';
@@ -76,6 +80,10 @@ function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/trade-insights" element={<TradeInsightsPublic />} />
+<<<<<<< HEAD
+=======
+          <Route path="/optin/:token" element={<OptinLanding />} /> 
+>>>>>>> master
           <Route path="/" element={<PrivateRoute><Layout /></PrivateRoute>}>
             <Route index element={<HomeRedirect />} />
 
@@ -92,6 +100,10 @@ function App() {
             <Route path="cross-sell" element={<PrivateRoute roles={['rm','team_leader']}><CrossSell /></PrivateRoute>} />
             <Route path="interaction-log" element={<PrivateRoute roles={['rm','team_leader']}><InteractionLog /></PrivateRoute>} />
             <Route path="my-performance" element={<PrivateRoute roles={['rm','team_leader']}><MyPerformance /></PrivateRoute>} />
+<<<<<<< HEAD
+=======
+            <Route path="/interaction-log" element={<InteractionLog />} />
+>>>>>>> master
 
             {/* Supervisor Routes */}
             <Route path="supervisor-dashboard" element={<PrivateRoute roles={['supervisor','admin']}><SupervisorDashboard /></PrivateRoute>} />

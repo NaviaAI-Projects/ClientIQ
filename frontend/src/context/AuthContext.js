@@ -36,12 +36,20 @@ export const AuthProvider = ({ children }) => {
     .finally(() => setReady(true));
   }, []);
 
+<<<<<<< HEAD
   const login = (userData, tokenData) => {
+=======
+ const login = (userData, tokenData) => {
+>>>>>>> master
     setUser(userData);
     setToken(tokenData);
     localStorage.setItem('user', JSON.stringify(userData));
     localStorage.setItem('token', tokenData);
+<<<<<<< HEAD
   };
+=======
+};
+>>>>>>> master
 
   const logout = () => {
     setUser(null);

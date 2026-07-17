@@ -1,192 +1,71 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 
 const AiDigest = () => {
-  const [digest, setDigest]         = useState(null);
-  const [loading, setLoading]       = useState(true);
-  const [error, setError]           = useState(null);
-  const [refreshing, setRefreshing] = useState(false);
+  const [digest, setDigest] = useState(null);
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { loadDigest(); }, []);
+  useEffect(() => {
+    api.get('/ai/digest').then(r => setDigest(r.data)).catch(console.error).finally(() => setLoading(false));
+  }, []);
 
-  const loadDigest = async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
-    try {
-      const res = await api.get('/ai/daily-digest');
-      setDigest(res.data);
-    } catch (err) {
-      setError(err.response?.data?.message || 'Failed to load AI digest');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
+  const today = new Date().toLocaleDateString('en-IN', { day:'numeric', month:'long', year:'numeric' });
 
-  const today = new Date().toLocaleDateString('en-IN', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric'
-  });
-
-  const getScoreInfo = (score) => {
-    const s = parseFloat(score) || 0;
-    if (s >= 70) return { bg: '#fcebeb', color: '#EF4444', label: 'High Priority', msg: 'High value client — call today for retention.' };
-    if (s >= 50) return { bg: '#faeeda', color: '#F59E0B', label: 'Medium Priority', msg: 'Good conversion potential — follow up this week.' };
-    if (s >= 30) return { bg: '#e8f3ff', color: '#3B82F6', label: 'Low-Medium', msg: 'Nurture with regular touchpoints.' };
-    return { bg: '#f5f5f5', color: '#888', label: 'Low Priority', msg: 'Monitor activity — low conversion probability now.' };
-  };
-
-  const getTypeIcon = (type) => {
-    const icons = { call: '📞', whatsapp: '💬', email: '📧', meeting: '🤝', note: '📝' };
-    return icons[type] || '📋';
-  };
-
-  if (loading) return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}>
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: '32px', marginBottom: '12px' }}>🤖</div>
-        <div style={{ fontSize: '14px', color: '#888' }}>Loading AI digest...</div>
-      </div>
-    </div>
-  );
-
-  if (error) return (
-    <div style={{ textAlign: 'center', padding: '60px 20px' }}>
-      <div style={{ fontSize: '32px', marginBottom: '12px' }}>⚠️</div>
-      <div style={{ color: '#EF4444', fontSize: '14px', marginBottom: '16px' }}>{error}</div>
-      <button onClick={() => loadDigest()} style={{ padding: '8px 20px', background: '#1B3F7A', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
-        Try Again
-      </button>
-    </div>
-  );
+  const defaultBrief = `<p style="margin-bottom:10px"><strong>Revenue pace:</strong> At ${digest?.revenue_pct||79}% of month target. Focus on your top clients to close the gap.</p>
+<p style="margin-bottom:10px"><strong>Urgent — lead expiry:</strong> Check your To Call Today list for leads expiring this week. Uncontacted leads auto-reassign after expiry.</p>
+<p style="margin-bottom:10px"><strong>Opportunity:</strong> ${digest?.cross_sell_count||1} high-value client(s) on zero-brokerage plan with significant options TO — MTF pitch recommended.</p>
+<p style="margin-bottom:10px"><strong>Retention alert:</strong> ${digest?.churn_alerts||0} mapped client(s) at high churn risk. Peak brokerage was significant — reach out this week.</p>
+<p><strong>Cross-sell:</strong> Check clients with large holdings — they may qualify for AIF/PMS products, opening a new revenue stream.</p>`;
 
   return (
-    <div style={{ fontFamily: "'Inter', sans-serif" }}>
+    <div>
+      <div className="ph"><h2>AI daily digest</h2><p>Personalised intelligence · {today}</p></div>
 
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
-        <div>
-          <h2 style={{ fontSize: '20px', fontWeight: '700', color: '#111', margin: 0 }}>🤖 AI Daily Digest</h2>
-          <p style={{ fontSize: '13px', color: '#888', marginTop: '4px' }}>Personalised intelligence · {today}</p>
-        </div>
-        <button onClick={() => loadDigest(true)} disabled={refreshing}
-          style={{ padding: '7px 14px', background: 'white', border: '1px solid #ddd', borderRadius: '7px', cursor: 'pointer', fontSize: '13px', color: '#555' }}>
-          {refreshing ? '⏳ Refreshing...' : '🔄 Refresh'}
-        </button>
+      <div className="panel" style={{borderLeft:'3px solid var(--ic)'}}>
+        <div className="ptitle">🤖 Today's brief from Claude</div>
+        {loading ? (
+          <div style={{color:'var(--tx3)',fontSize:'13px'}}>Generating your personalised digest...</div>
+        ) : (
+          <div style={{fontSize:'13px',lineHeight:'1.8'}} dangerouslySetInnerHTML={{
+            __html: digest?.summary || defaultBrief
+          }} />
+        )}
       </div>
 
-      {/* Stats Row */}
-      {digest?.stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px', marginBottom: '20px' }}>
-          {[
-            { label: 'My Clients',      value: digest.stats.total_clients,   color: '#1B3F7A', path: '/mapped-clients' },
-            { label: 'Active Leads',    value: digest.stats.active_leads,    color: '#3B82F6', path: '/assigned-leads' },
-            { label: 'To Call Today',   value: digest.stats.active_leads,    color: '#EF4444', path: '/to-call-today' },
-            { label: 'Dormant',         value: digest.stats.dormant,         color: '#F59E0B', path: '/dormant-clients' },
-            { label: 'Interactions 7d', value: digest.stats.interactions_7d, color: '#10B981', path: '/interaction-log' },
-          ].map((s, i) => (
-            <div key={i} onClick={() => navigate(s.path)} style={{ background: 'white', borderRadius: '10px', padding: '16px', border: '1px solid #eee', textAlign: 'center', cursor: 'pointer' }}
-              onMouseEnter={e => e.currentTarget.style.boxShadow = '0 4px 12px rgba(0,0,0,0.1)'}
-              onMouseLeave={e => e.currentTarget.style.boxShadow = 'none'}>
-              <div style={{ fontSize: '26px', fontWeight: '700', color: s.color }}>{s.value}</div>
-              <div style={{ fontSize: '11px', color: '#888', marginTop: '4px', fontWeight: '500' }}>{s.label}</div>
-              <div style={{ fontSize: '10px', color: s.color, marginTop: '2px', opacity: 0.7 }}>View →</div>
+      <div className="cards">
+        <div className="card cd"><div className="clbl">Leads expiring this week</div><div className="cval">{digest?.expiring_leads||0}</div></div>
+        <div className="card cd"><div className="clbl">Churn risk alerts</div><div className="cval">{digest?.churn_alerts||0}</div></div>
+        <div className="card cs"><div className="clbl">Cross-sell signals</div><div className="cval">{digest?.cross_sell_count||0}</div></div>
+        <div className="card cw"><div className="clbl">Working days to EOM</div><div className="cval">{digest?.working_days_left||0}</div></div>
+      </div>
+
+      {digest?.alerts && digest.alerts.length > 0 && (
+        <div className="panel">
+          <div className="ptitle">⚡ Priority actions today</div>
+          {digest.alerts.map((a,i) => (
+            <div key={i} className={`alert ${a.type==='urgent'?'a-d':a.type==='opportunity'?'a-s':'a-w'}`} style={{marginBottom:'8px'}}>
+              <span>{a.type==='urgent'?'🚨':a.type==='opportunity'?'✅':'⚠️'}</span>
+              <div>
+                <div style={{fontWeight:'600',fontSize:'12px',marginBottom:'2px'}}>{a.title}</div>
+                <div style={{fontSize:'12.5px'}}>{a.message}</div>
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Groq AI Narrative */}
-      {digest?.digest && (
-        <div style={{ background: 'linear-gradient(135deg, #1a2d5a 0%, #223872 100%)', borderRadius: '12px', padding: '24px', marginBottom: '20px', color: 'white' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-            <span style={{ fontSize: '20px' }}>🤖</span>
-            <span style={{ fontSize: '14px', fontWeight: '600', opacity: 0.9 }}>Groq AI Analysis</span>
-            <span style={{ marginLeft: 'auto', fontSize: '11px', opacity: 0.6, background: 'rgba(255,255,255,0.1)', padding: '2px 8px', borderRadius: '10px' }}>Powered by Llama 3</span>
-          </div>
-          <div style={{ fontSize: '13.5px', lineHeight: '1.7', whiteSpace: 'pre-wrap', opacity: 0.95 }}>
-            {digest.digest}
-          </div>
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-
-        {/* Priority Clients */}
-        <div style={{ background: 'white', borderRadius: '12px', border: '1px solid #eee', overflow: 'hidden' }}>
-          <div style={{ padding: '14px 18px', borderBottom: '1px solid #eee', fontSize: '14px', fontWeight: '600', color: '#111' }}>
-            ⭐ Priority Clients
-          </div>
-          <div style={{ padding: '12px' }}>
-            {(digest?.top_clients || digest?.clients || []).length === 0 ? (
-              <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '13px' }}>No clients mapped</div>
-            ) : (
-              (digest?.top_clients || digest?.clients || []).map((c, i) => {
-                const scoreInfo = getScoreInfo(c.lead_score || c.churn_risk_score);
-                return (
-                  <div key={i} onClick={() => navigate('/client-360', { state: { ucc: c.ucc } })}
-                    style={{ padding: '12px', borderRadius: '8px', marginBottom: '8px', cursor: 'pointer', background: scoreInfo.bg, border: `1px solid ${scoreInfo.color}22` }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                      <div>
-                        <div style={{ fontWeight: '600', color: '#111', fontSize: '13px' }}>{c.name}</div>
-                        <div style={{ fontSize: '11px', color: '#888', marginTop: '2px' }}>{c.ucc} · {c.client_type}</div>
-                      </div>
-                      <div style={{ textAlign: 'right' }}>
-                        <span style={{ background: scoreInfo.color, color: 'white', padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: '600' }}>
-                          {scoreInfo.label}
-                        </span>
-                        <div style={{ fontSize: '11px', color: scoreInfo.color, marginTop: '3px' }}>Score: {parseFloat(c.lead_score || 0).toFixed(0)}</div>
-                      </div>
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#555', marginTop: '6px' }}>{scoreInfo.msg}</div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
-
-        {/* Recent Interactions */}
-        <div style={{ background: 'white', borderRadius: '12px', border: '1px solid #eee', overflow: 'hidden' }}>
-          <div style={{ padding: '14px 18px', borderBottom: '1px solid #eee', fontSize: '14px', fontWeight: '600', color: '#111' }}>
-            📋 Recent Interactions
-          </div>
-          <div style={{ padding: '12px' }}>
-            {(digest?.recent_interactions || []).length === 0 ? (
-              <div style={{ padding: '20px', textAlign: 'center', color: '#888', fontSize: '13px' }}>No recent interactions</div>
-            ) : (
-              [...new Map((digest?.recent_interactions || []).map(i => [i.id, i])).values()].slice(0, 8).map((interaction, i) => (
-                <div key={i} style={{ padding: '10px 12px', borderRadius: '8px', marginBottom: '6px', background: '#f8f9fb', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span style={{ fontSize: '16px' }}>{getTypeIcon(interaction.interaction_type)}</span>
-                    <div>
-                      <div style={{ fontSize: '13px', fontWeight: '600', color: '#111' }}>{interaction.client_name}</div>
-                      <div style={{ fontSize: '11px', color: '#888' }}>{interaction.interaction_type} · {interaction.outcome || 'completed'}</div>
-                    </div>
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#aaa', textAlign: 'right' }}>
-                    {interaction.created_at ? new Date(interaction.created_at).toLocaleDateString('en-IN') : '—'}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+      <div className="panel">
+        <div className="ptitle">📞 Quick links</div>
+        <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+          <button className="btn bp" onClick={() => navigate('/to-call-today')}>📞 To Call Today</button>
+          <button className="btn" onClick={() => navigate('/assigned-leads')}>⭐ My Leads</button>
+          <button className="btn" onClick={() => navigate('/dormant-clients')}>😴 Dormant Clients</button>
+          <button className="btn" onClick={() => navigate('/cross-sell')}>🔀 Cross-sell</button>
         </div>
       </div>
-
-      {/* Action Plan */}
-      <div style={{ background: '#eaf3de', borderRadius: '10px', padding: '16px 20px', marginTop: '16px', border: '1px solid #c3dba0' }}>
-        <div style={{ fontSize: '13px', fontWeight: '600', color: '#10B981', marginBottom: '6px' }}>✅ Today's Action Plan</div>
-        <div style={{ fontSize: '13px', color: '#10B981' }}>
-          Focus on high-score clients first → complete pending follow-ups → log all interactions → update outcome after each call.
-        </div>
-      </div>
-
     </div>
   );
 };
-
 export default AiDigest;

@@ -292,25 +292,17 @@ const Client360 = () => {
                       if (v >= 1000)   return '₹' + (v/1000).toFixed(0) + 'K';
                       return '₹' + v;
                     }} />
-                    <Tooltip
-                      formatter={(v, n) => {
-                        if (v >= 100000) return ['₹' + (v/100000).toFixed(1) + 'L', n];
-                        if (v >= 1000)   return ['₹' + (v/1000).toFixed(1) + 'K', n];
-                        return ['₹' + v.toFixed(2), n];
-                      }}
-                      labelFormatter={label => {
-                        const row = chartData.find(d => d.month === label);
-                        return row?.top_instrument
-                          ? `${label} · Top: ${row.top_instrument}`
-                          : label;
-                      }}
-                    />
+                    <Tooltip formatter={v => {
+                      if (v >= 100000) return '₹' + (v/100000).toFixed(1) + 'L';
+                      if (v >= 1000)   return '₹' + (v/1000).toFixed(1) + 'K';
+                      return '₹' + v.toFixed(2);
+                    }} />
                     <Legend wrapperStyle={{ fontSize: 10 }} iconSize={10} />
-                    <Bar dataKey="eq_cash"    name="Eq Cash"    stackId="s" fill="rgba(59,130,246,0.35)" />
-                    <Bar dataKey="eq_futures" name="Eq Futures" stackId="s" fill="#3B82F6" />
-                    <Bar dataKey="eq_options" name="Eq Options" stackId="s" fill="#3B82F6" />
-                    <Bar dataKey="comm_fut"   name="Comm Fut"   stackId="s" fill="#10B981" />
-                    <Bar dataKey="comm_opt"   name="Comm Opt"   stackId="s" fill="#059669" radius={[4,4,0,0]} />
+                    <Bar dataKey="eq_cash"    name="Eq Cash"    stackId="s" fill="#b5d4f4" />
+                    <Bar dataKey="eq_futures" name="Eq Futures" stackId="s" fill="#378add" />
+                    <Bar dataKey="eq_options" name="Eq Options" stackId="s" fill="#185fa5" />
+                    <Bar dataKey="comm_fut"   name="Comm Fut"   stackId="s" fill="#9FE1CB" />
+                    <Bar dataKey="comm_opt"   name="Comm Opt"   stackId="s" fill="#1D9E75" radius={[4,4,0,0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -330,7 +322,7 @@ const Client360 = () => {
                       }} />
                       <Tooltip formatter={v => ['₹' + v.toLocaleString('en-IN')]} />
                       <Line type="monotone" dataKey="avg_balance" name="Opening balance"
-                        stroke="#3B82F6" fill="rgba(59,130,246,0.12)" strokeWidth={2} dot={{ r: 3 }} />
+                        stroke="#185fa5" fill="rgba(24,95,165,0.08)" strokeWidth={2} dot={{ r: 3 }} />
                     </LineChart>
                   </ResponsiveContainer>
                 </div>
@@ -350,9 +342,9 @@ const Client360 = () => {
                       }} />
                       <Tooltip formatter={(v, n) => n === 'MTF interest' ? ['₹' + v] : [FMT(v), n]} />
                       <Legend wrapperStyle={{ fontSize: 10 }} iconSize={10} />
-                      <Bar  yAxisId="left"  dataKey="mtf_interest"  name="MTF interest"  fill="#10B981" />
+                      <Bar  yAxisId="left"  dataKey="mtf_interest"  name="MTF interest"  fill="#9FE1CB" />
                       <Line yAxisId="right" dataKey="holding_value" name="Holding value"
-                        type="monotone" stroke="#F59E0B" strokeWidth={1.5} dot={{ r: 3 }} />
+                        type="monotone" stroke="#854f0b" strokeWidth={1.5} dot={{ r: 3 }} />
                     </ComposedChart>
                   </ResponsiveContainer>
                 </div>

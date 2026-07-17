@@ -1,205 +1,106 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 
+const tb = t => { if(!t) return 'b-ri'; const l=t.toLowerCase(); if(l.includes('nri')||l.includes('nre')||l.includes('nro')) return 'b-nri'; if(l.includes('hv')) return 'b-hv'; return 'b-ri'; };
+const sc = s => s>=70?'h':s>=50?'m':'l';
+const fmt = v => { const n=parseFloat(v)||0; if(n>=10000000) return '₹'+(n/10000000).toFixed(1)+'Cr'; if(n>=100000) return '₹'+(n/100000).toFixed(1)+'L'; if(n>=1000) return '₹'+(n/1000).toFixed(0)+'K'; return v?'₹'+n:'—'; };
+
 const AllClients = () => {
-  const [clients, setClients]   = useState([]);
-  const [total, setTotal]       = useState(0);
-  const [loading, setLoading]   = useState(true);
-  const [search, setSearch]     = useState('');
-  const [typeFilter, setTypeFilter]   = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
-  const [planFilter, setPlanFilter]   = useState('');
-  const [rmFilter, setRmFilter]       = useState('');
-  const [page, setPage]         = useState(1);
-  const limit = 50;
+  const [clients, setClients] = useState([]);
+  const [stats, setStats]     = useState({});
+  const [search, setSearch]   = useState('');
+  const [typeF, setTypeF]     = useState('');
+  const [planF, setPlanF]     = useState('');
+  const [statusF, setStatusF] = useState('');
+  const [activityF, setActivity] = useState('');
+  const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
   useEffect(() => {
-    setPage(1);
-  }, [search, typeFilter, statusFilter, planFilter, rmFilter]);
+    const params = new URLSearchParams();
+    if (typeF)     params.append('type', typeF);
+    if (planF)     params.append('plan', planF);
+    if (statusF)   params.append('status', statusF);
+    if (activityF) params.append('activity', activityF);
+    if (search)    params.append('search', search);
+    params.append('limit', '100');
 
-  useEffect(() => {
-    fetchClients();
-  }, [page, search, typeFilter, statusFilter, planFilter, rmFilter]); // eslint-disable-line
+    Promise.all([api.get(`/clients?${params}`), api.get('/dashboard/company')])
+      .then(([c, s]) => { setClients(c.data?.clients || c.data || []); setStats(s.data || {}); })
+      .catch(console.error).finally(() => setLoading(false));
+  }, [typeF, planF, statusF, activityF]);
 
-  const fetchClients = async () => {
+  const handleSearch = () => {
     setLoading(true);
-    try {
-      const params = new URLSearchParams({
-        page,
-        limit,
-        search,
-        ...(typeFilter   && { type:   typeFilter }),
-        ...(statusFilter && { status: statusFilter }),
-        ...(planFilter   && { plan:   planFilter }),
-        ...(rmFilter     && { rm:     rmFilter }),
-      });
-      const res = await api.get(`/clients?${params}`);
-      setClients(res.data.clients || []);
-      setTotal(res.data.total || 0);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
+    const params = new URLSearchParams({ search, limit: 100 });
+    if (typeF)   params.append('type', typeF);
+    if (planF)   params.append('plan', planF);
+    api.get(`/clients?${params}`).then(r => setClients(r.data?.clients || r.data || [])).catch(console.error).finally(() => setLoading(false));
   };
 
-  const clearFilters = () => {
-    setSearch('');
-    setTypeFilter('');
-    setStatusFilter('');
-    setPlanFilter('');
-    setRmFilter('');
-    setPage(1);
+  const statusBadge = c => {
+    if (c.mapping_date) return <span className="badge b-act">Active</span>;
+    if (c.lead_state)   return <span className="badge b-lead">Lead</span>;
+    if (!c.is_active)   return <span className="badge b-dor">Dormant</span>;
+    return <span className="badge b-act">Active</span>;
   };
-
-  const hasFilters = search || typeFilter || statusFilter || planFilter || rmFilter;
-  const totalPages = Math.ceil(total / limit);
 
   return (
     <div>
-      <div className="ph">
-        <h2>All Clients {total > 0 && <span style={{ fontSize: '14px', fontWeight: '400', color: 'var(--tx2)' }}>— {total.toLocaleString()} clients</span>}</h2>
-        <p>Complete client universe</p>
+      <div className="ph"><h2>All {(stats.total_clients||0).toLocaleString('en-IN')} clients</h2><p>Complete client universe — mapped, unmapped, paying, zero-brokerage</p></div>
+      <div className="cards">
+        <div className="card ci"><div className="clbl">Total clients</div><div className="cval">{(stats.total_clients||0).toLocaleString('en-IN')}</div></div>
+        <div className="card cs"><div className="clbl">Mapped to RM</div><div className="cval">{stats.mapped_clients||0}</div><div className="csub">{stats.total_clients?((stats.mapped_clients||0)/stats.total_clients*100).toFixed(1):0}% of base</div></div>
+        <div className="card cw"><div className="clbl">Unmapped</div><div className="cval">{(stats.total_clients||0)-(stats.mapped_clients||0)}</div></div>
+        <div className="card cp"><div className="clbl">In lead pipeline</div><div className="cval">{stats.active_leads||0}</div></div>
       </div>
-
-      {/* Filters */}
-      <div className="panel" style={{ marginBottom: '14px' }}>
-        <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 1fr 1fr auto', gap: '10px', alignItems: 'end' }}>
-          <div className="fgrp">
-            <label>Search</label>
-            <input
-              type="text"
-              placeholder="UCC or client name..."
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-            />
-          </div>
-          <div className="fgrp">
-            <label>Client Type</label>
-            <select value={typeFilter} onChange={e => setTypeFilter(e.target.value)}>
-              <option value="">All</option>
-              <option value="RI">RI</option>
-              <option value="NRI">NRI</option>
-              <option value="NRE">NRE</option>
-              <option value="NRO">NRO</option>
-              <option value="NRE-HV">NRE-HV</option>
-              <option value="NRO-HV">NRO-HV</option>
-              <option value="FN">FN</option>
-            </select>
-          </div>
-          <div className="fgrp">
-            <label>Status</label>
-            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-              <option value="">All</option>
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-              <option value="mapped">Mapped</option>
-              <option value="unmapped">Unmapped</option>
-            </select>
-          </div>
-          <div className="fgrp">
-            <label>Plan</label>
-            <select value={planFilter} onChange={e => setPlanFilter(e.target.value)}>
-              <option value="">All</option>
-              <option value="zero">Zero brokerage</option>
-              <option value="paying">Paying brokerage</option>
-            </select>
-          </div>
-          <div className="fgrp">
-            <label>Mapped RM</label>
-            <select value={rmFilter} onChange={e => setRmFilter(e.target.value)}>
-              <option value="">All</option>
-              <option value="unmapped">Unmapped</option>
-            </select>
-          </div>
-          {hasFilters && (
-            <button className="btn sm" onClick={clearFilters} style={{ marginBottom: '1px' }}>
-              Clear
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Table */}
       <div className="panel">
-        {loading ? (
-          <div style={{ padding: '40px', textAlign: 'center', color: 'var(--tx3)' }}>Loading...</div>
-        ) : clients.length === 0 ? (
-          <div style={{ padding: '40px', textAlign: 'center', color: 'var(--tx3)', fontSize: '13px' }}>
-            No clients found {hasFilters && '— try clearing filters'}
+        <div className="phd">
+          <div className="ptitle" style={{marginBottom:0}}>🔍 Filter</div>
+          <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
+            <select style={{width:'110px'}} value={typeF} onChange={e=>setTypeF(e.target.value)}>
+              <option value="">All types</option><option value="nri">NRI</option><option value="hv">HV</option><option value="ri">RI</option>
+            </select>
+            <select style={{width:'120px'}} value={planF} onChange={e=>setPlanF(e.target.value)}>
+              <option value="">All plans</option><option value="paying">Paying</option><option value="zero-brokerage">Zero-brk</option>
+            </select>
+            <select style={{width:'110px'}} value={statusF} onChange={e=>setStatusF(e.target.value)}>
+              <option value="">All status</option><option value="mapped">Mapped</option><option value="unmapped">Unmapped</option><option value="lead">Lead</option>
+            </select>
+            <select style={{width:'130px'}} value={activityF} onChange={e=>setActivity(e.target.value)}>
+              <option value="">All activity</option><option value="active_30d">Active 30d</option><option value="dormant_3mo">Dormant 3mo+</option><option value="never_traded">Never traded</option>
+            </select>
+            <input style={{width:'160px'}} placeholder="UCC or name…" value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSearch()} />
+            <button className="btn sm bp" onClick={handleSearch}>🔍 Search</button>
+            <button className="btn sm">⬇ Export</button>
           </div>
-        ) : (
-          <div className="tw"><table>
-            <thead><tr>
-              <th>UCC</th>
-              <th>Name</th>
-              <th>Type</th>
-              <th>Plan</th>
-              <th>Mapped RM</th>
-              <th>Status</th>
-              <th>Action</th>
-            </tr></thead>
-            <tbody>
-              {clients.map(c => (
-                <tr key={c.ucc}>
-                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{c.ucc}</td>
-                  <td style={{ fontWeight: '500' }}>{c.name}</td>
-                  <td>
-                    <span className={`badge ${c.client_type?.toLowerCase().includes('nri') || c.client_type?.toLowerCase().includes('nre') || c.client_type?.toLowerCase().includes('nro') ? 'b-nri' : c.client_type?.toLowerCase().includes('hv') ? 'b-hv' : 'b-ri'}`}>
-                      {c.client_type}
-                    </span>
-                  </td>
-                  <td style={{ fontSize: '12px', color: 'var(--tx2)' }}>{c.plan || '-'}</td>
-                  <td style={{ fontSize: '12px' }}>{c.rm_name || <span style={{ color: 'var(--tx3)' }}>Unmapped</span>}</td>
-                  <td>
-                    <span className={`badge ${c.is_active ? 'b-act' : 'b-dor'}`}>
-                      {c.status || (c.is_active ? 'Active' : 'Inactive')}
-                    </span>
-                  </td>
-                  <td>
-                    <button
-                      className="btn sm"
-                      onClick={() => navigate('/client-360', { state: { ucc: c.ucc } })}
-                    >
-                      View 360
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table></div>
-        )}
-
-        {/* Pagination */}
-        {totalPages > 1 && (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '14px', fontSize: '13px' }}>
-            <span style={{ color: 'var(--tx2)' }}>
-              Showing {((page - 1) * limit) + 1}–{Math.min(page * limit, total)} of {total.toLocaleString()} clients
-            </span>
-            <div style={{ display: 'flex', gap: '6px' }}>
-              <button className="btn sm" disabled={page === 1} onClick={() => setPage(p => p - 1)}>
-                Prev
-              </button>
-              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                const p = page <= 3 ? i + 1 : page - 2 + i;
-                if (p < 1 || p > totalPages) return null;
-                return (
-                  <button key={p} className={`btn sm ${p === page ? 'bp' : ''}`} onClick={() => setPage(p)}>
-                    {p}
-                  </button>
-                );
-              })}
-              <button className="btn sm" disabled={page === totalPages} onClick={() => setPage(p => p + 1)}>
-                Next
-              </button>
-            </div>
-          </div>
-        )}
+        </div>
+        <div className="tw"><table>
+          <thead><tr><th>UCC</th><th>Name</th><th>Type</th><th>Plan</th><th>Status</th><th>Last trade</th><th>MTD TO</th><th>MTD Rev</th><th>AI Score</th><th>RM</th></tr></thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan="10" style={{padding:'30px',textAlign:'center',color:'var(--tx3)'}}>Loading clients...</td></tr>
+            ) : clients.length===0 ? (
+              <tr><td colSpan="10" style={{padding:'30px',textAlign:'center',color:'var(--tx3)'}}>No clients found</td></tr>
+            ) : clients.map((c,i) => (
+              <tr key={i}>
+                <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:c.ucc}})}>{c.ucc}</span></td>
+                <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:c.ucc}})}>{c.name}</span></td>
+                <td><span className={`badge ${tb(c.client_type)}`}>{c.client_type}</span></td>
+                <td><span className={`badge ${c.plan==='paying'?'b-pay':'b-zero'}`}>{c.plan==='paying'?'Paying':'Zero-brk'}</span></td>
+                <td>{statusBadge(c)}</td>
+                <td>{c.last_trade_date?new Date(c.last_trade_date).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'2-digit'}):'—'}</td>
+                <td>{fmt(c.mtd_turnover)}</td>
+                <td>{fmt(c.mtd_revenue)}</td>
+                <td><span className={`ais ${sc(c.lead_score)}`}>{Math.round(c.lead_score||0)}</span></td>
+                <td>{c.rm_name||'—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table></div>
       </div>
     </div>
   );
 };
-
 export default AllClients;

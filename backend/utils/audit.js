@@ -5,8 +5,13 @@ const audit = async (req, action, details = '', target_ucc = null, status = 'suc
     const user_id  = req.user?.id || null;
     const ip       = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || null;
     await pool.query(`
+<<<<<<< HEAD
       INSERT INTO audit_log (action, module, performed_by, target_ucc, details, ip_address, status)
       VALUES ($1, $2, $3, $4, $5, $6, $7)
+=======
+      INSERT INTO audit_log (action, module, performed_by, target_ucc, details, ip_address, status, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW() AT TIME ZONE 'Asia/Kolkata')
+>>>>>>> master
     `, [action, module, user_id, target_ucc, details, ip, status]);
   } catch (err) {
     console.warn('Audit log error:', err.message);

@@ -1,203 +1,63 @@
-import React, { useState, useEffect } from 'react';
-import api from '../api';
+import React, { useState } from 'react';
 
 const ApiIntegrations = () => {
-  const [settings, setSettings] = useState({
-    click_to_call_url: '', click_to_call_key: '', caller_id: '', mobile_fetch_url: '',
-    whatsapp_url: '', whatsapp_key: '', whatsapp_sender: '', whatsapp_namespace: '',
-    email_url: '', email_key: '', email_from: '', smtp_host: '',
-    anthropic_key: '', anthropic_model: 'claude-sonnet-4-6', digest_time: '07:30'
-  });
-  const [loading, setLoading] = useState(true);
-  const [saveMsg, setSaveMsg] = useState('');
+  const [saving, setSaving] = useState({});
 
-  useEffect(() => {
-    // Fix: use /admin-settings not /admin-settings/integrations
-    api.get('/admin-settings')
-      .then(res => {
-        const s = res.data.data || {};
-        setSettings(prev => ({
-          ...prev,
-          click_to_call_url:   s.click_to_call_url   || '',
-          click_to_call_key:   s.click_to_call_key   || '',
-          caller_id:           s.caller_id            || '',
-          mobile_fetch_url:    s.mobile_fetch_url     || '',
-          whatsapp_url:        s.whatsapp_url         || '',
-          whatsapp_key:        s.whatsapp_key         || '',
-          whatsapp_sender:     s.whatsapp_sender      || '',
-          whatsapp_namespace:  s.whatsapp_namespace   || '',
-          email_url:           s.email_url            || '',
-          email_key:           s.email_key            || '',
-          email_from:          s.email_from           || '',
-          smtp_host:           s.smtp_host            || '',
-          anthropic_key:       s.anthropic_key        || '',
-          anthropic_model:     s.anthropic_model      || 'claude-sonnet-4-6',
-          digest_time:         s.digest_time          || '07:30',
-        }));
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
-
-  const set = (key, value) => setSettings(prev => ({ ...prev, [key]: value }));
-
-  const saveSection = async (keys) => {
-    try {
-      const payload = {};
-      keys.forEach(k => { payload[k] = settings[k]; });
-      await api.put('/admin-settings', payload);
-      setSaveMsg('Saved successfully');
-      setTimeout(() => setSaveMsg(''), 3000);
-    } catch {
-      setSaveMsg('Save failed');
-      setTimeout(() => setSaveMsg(''), 3000);
-    }
+  const save = (k) => {
+    setSaving({...saving,[k]:true});
+    setTimeout(()=>setSaving(s=>({...s,[k]:false})),1500);
   };
-
-  const inputStyle    = { padding: '7px 10px', border: '0.5px solid rgba(0,0,0,0.2)', borderRadius: '6px', fontSize: '12.5px', width: '100%', boxSizing: 'border-box' };
-  const labelStyle    = { display: 'block', fontSize: '10px', fontWeight: '600', color: '#555', marginBottom: '3px', textTransform: 'uppercase', letterSpacing: '0.4px' };
-  const panelStyle    = { background: 'white', borderRadius: '10px', padding: '20px', border: '0.5px solid rgba(0,0,0,0.1)', marginBottom: '14px' };
-  const btnPrimary    = { padding: '7px 14px', background: '#1B3F7A', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '12px', marginRight: '8px' };
-  const btnSecondary  = { padding: '7px 14px', background: 'white', color: '#1B3F7A', border: '0.5px solid #223872', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' };
-
-  if (loading) return <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>Loading...</div>;
 
   return (
     <div>
-      <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#111' }}>API Integrations</h2>
-      <p style={{ fontSize: '13px', color: '#555', marginTop: '3px' }}>Vendor-agnostic — configure endpoint + key for your chosen provider</p>
-
-      <div style={{ background: '#e8f3ff', padding: '10px 14px', borderRadius: '8px', color: '#3B82F6', fontSize: '12.5px', margin: '14px 0' }}>
-        🔒 Mobile numbers and email addresses are NEVER stored in this system. They are fetched at runtime via the APIs below, used for the interaction, and discarded immediately.
-      </div>
-
-      {saveMsg && (
-        <div style={{ padding: '10px 14px', borderRadius: '8px', marginBottom: '14px', fontSize: '13px',
-          background: saveMsg.includes('failed') ? '#fcebeb' : '#eaf3de',
-          color:      saveMsg.includes('failed') ? '#EF4444' : '#10B981' }}>
-          {saveMsg}
-        </div>
-      )}
-
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-
-        {/* Click-to-call */}
-        <div style={panelStyle}>
-          <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>📞 Click-to-call</div>
-          <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>Compatible with Doocti, Exotel, Ozonetel, MCUBE, or any REST provider</p>
-          <div style={{ display: 'grid', gap: '10px', marginBottom: '12px' }}>
-            {[
-              ['API Endpoint URL',          'click_to_call_url', 'url',      'https://api-naviasp.doocti.com/api/v2/call'],
-              ['API Key',                   'click_to_call_key', 'password', 'Bearer token…'],
-              ['Caller ID',                 'caller_id',         'text',     '8244784278'],
-              ['Mobile Fetch API Endpoint', 'mobile_fetch_url',  'url',      'Leave blank — Sharepro used automatically'],
-            ].map(([label, key, type, ph]) => (
-              <div key={key}>
-                <label style={labelStyle}>{label}</label>
-                <input type={type} value={settings[key] || ''} onChange={e => set(key, e.target.value)}
-                  placeholder={ph} style={inputStyle} />
-              </div>
-            ))}
+      <div className="ph"><h2>API integrations</h2><p>Vendor-agnostic — configure endpoint + key for your chosen provider</p></div>
+      <div className="alert a-i">🔒 Mobile numbers and email addresses are NEVER stored in this system. They are fetched at runtime via the APIs below, used for the interaction, and discarded immediately.</div>
+      <div className="tc2">
+        <div className="panel">
+          <div className="ptitle">📞 Click-to-call</div>
+          <p style={{fontSize:"12px",color:"var(--tx2)",marginBottom:"10px"}}>Compatible with Exotel, Ozonetel, MCUBE, or any REST provider</p>
+          <div className="fgrid fg1">
+            <div className="fgrp"><label>API endpoint URL</label><input type="url" placeholder="https://api.provider.com/v1/calls" /></div>
+            <div className="fgrp"><label>API key</label><input type="password" placeholder="sk-…" /></div>
+            <div className="fgrp"><label>Caller ID (1600 series)</label><input placeholder="1600XXXXXXX" /></div>
+            <div className="fgrp"><label>Mobile fetch API endpoint</label><input type="url" placeholder="https://api.navia.in/client/mobile/{ucc}" /></div>
           </div>
-          <button style={btnPrimary} onClick={() => saveSection(['click_to_call_url','click_to_call_key','caller_id','mobile_fetch_url'])}>Save</button>
-          <button style={btnSecondary} onClick={async () => {
-            try {
-              const res = await api.get('/calls/test');
-              alert(res.data.message);
-            } catch (err) {
-              alert('Test failed: ' + (err.response?.data?.message || err.message));
-            }
-          }}>Test</button>
+          <div className="brow"><button className="btn bp" onClick={()=>save("ctc")}>{saving.ctc?"Saving…":"💾 Save"}</button><button className="btn">🔌 Test</button></div>
         </div>
-
-        {/* WhatsApp */}
-        <div style={panelStyle}>
-          <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>💬 WhatsApp Business API</div>
-          <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>Compatible with Gupshup, Kaleyra, Interakt, or any WABA BSP</p>
-          <div style={{ display: 'grid', gap: '10px', marginBottom: '12px' }}>
-            {[
-              ['BSP API Endpoint',       'whatsapp_url',       'url',      'https://api.gupshup.io/sm/api/v1/msg'],
-              ['API Key / Bearer Token', 'whatsapp_key',       'password', '…'],
-              ['Sender WhatsApp Number', 'whatsapp_sender',    'text',     '+91XXXXXXXXXX'],
-              ['Template Namespace',     'whatsapp_namespace', 'text',     'navia_crm_msgs'],
-            ].map(([label, key, type, ph]) => (
-              <div key={key}>
-                <label style={labelStyle}>{label}</label>
-                <input type={type} value={settings[key] || ''} onChange={e => set(key, e.target.value)}
-                  placeholder={ph} style={inputStyle} />
-              </div>
-            ))}
+        <div className="panel">
+          <div className="ptitle">💬 WhatsApp Business API</div>
+          <p style={{fontSize:"12px",color:"var(--tx2)",marginBottom:"10px"}}>Compatible with Gupshup, Kaleyra, Interakt, or any WABA BSP</p>
+          <div className="fgrid fg1">
+            <div className="fgrp"><label>BSP API endpoint</label><input type="url" placeholder="https://api.gupshup.io/sm/api/v1/msg" /></div>
+            <div className="fgrp"><label>API key / bearer token</label><input type="password" placeholder="…" /></div>
+            <div className="fgrp"><label>Sender WhatsApp number</label><input placeholder="+91XXXXXXXXXX" /></div>
+            <div className="fgrp"><label>Template namespace</label><input placeholder="navia_crm_msgs" /></div>
           </div>
-          <button style={btnPrimary} onClick={() => saveSection(['whatsapp_url','whatsapp_key','whatsapp_sender','whatsapp_namespace'])}>Save</button>
-          <button style={btnSecondary} onClick={() => alert('Test WhatsApp API')}>Test</button>
+          <div className="brow"><button className="btn bp" onClick={()=>save("wa")}>{saving.wa?"Saving…":"💾 Save"}</button><button className="btn">🔌 Test</button></div>
         </div>
-
-        {/* Email */}
-        <div style={panelStyle}>
-          <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>📧 Email & Mobile Fetch API</div>
-          <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>Fetches client email and mobile at runtime. Not stored.</p>
-          <div style={{ display: 'grid', gap: '10px', marginBottom: '12px' }}>
-            {[
-              ['Email Fetch API Endpoint', 'email_url',  'url',      'https://api.navia.in/client/email/{ucc}'],
-              ['API Key',                  'email_key',  'password', '…'],
-              ['Lead Email Sender',        'email_from', 'email',    'leads@navia.in'],
-              ['SMTP Host (for sending)',  'smtp_host',  'text',     'smtp.navia.in'],
-            ].map(([label, key, type, ph]) => (
-              <div key={key}>
-                <label style={labelStyle}>{label}</label>
-                <input type={type} value={settings[key] || ''} onChange={e => set(key, e.target.value)}
-                  placeholder={ph} style={inputStyle} />
-              </div>
-            ))}
+        <div className="panel">
+          <div className="ptitle">✉️ Email &amp; mobile fetch API</div>
+          <p style={{fontSize:"12px",color:"var(--tx2)",marginBottom:"10px"}}>Fetches client email and mobile at runtime. Not stored.</p>
+          <div className="fgrid fg1">
+            <div className="fgrp"><label>Email fetch API endpoint</label><input type="url" placeholder="https://api.navia.in/client/email/{ucc}" /></div>
+            <div className="fgrp"><label>API key</label><input type="password" placeholder="…" /></div>
+            <div className="fgrp"><label>Common lead email sender</label><input type="email" placeholder="leads@navia.in" /></div>
+            <div className="fgrp"><label>SMTP host (for sending)</label><input placeholder="smtp.navia.in" /></div>
           </div>
-          <button style={btnPrimary} onClick={() => saveSection(['email_url','email_key','email_from','smtp_host'])}>Save</button>
-          <button style={btnSecondary} onClick={async () => {
-  try {
-    const res = await api.get('/email/test');
-    alert(res.data.message);
-  } catch (err) {
-    alert('Test failed: ' + (err.response?.data?.message || err.message));
-  }
-}}>Test</button>
+          <div className="brow"><button className="btn bp" onClick={()=>save("email")}>{saving.email?"Saving…":"💾 Save"}</button><button className="btn">🔌 Test</button></div>
         </div>
-
-        {/* Claude AI */}
-        <div style={panelStyle}>
-          <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>🤖 Claude AI (Anthropic)</div>
-          <p style={{ fontSize: '12px', color: '#888', marginBottom: '12px' }}>Powers AI scoring, daily digests, churn alerts, cross-sell recommendations</p>
-          <div style={{ display: 'grid', gap: '10px', marginBottom: '12px' }}>
-            <div>
-              <label style={labelStyle}>Anthropic API Key</label>
-              <input type="password" value={settings.anthropic_key || ''} onChange={e => set('anthropic_key', e.target.value)}
-                placeholder="sk-ant-…" style={inputStyle} />
-            </div>
-            <div>
-              <label style={labelStyle}>Model</label>
-              <select value={settings.anthropic_model || 'llama3-8b-8192'} 
-  onChange={e => set('anthropic_model', e.target.value)} style={inputStyle}>
-  <optgroup label="Groq (Free)">
-    <option value="llama3-8b-8192">llama3-8b-8192 (Fast, Free)</option>
-    <option value="llama3-70b-8192">llama3-70b-8192 (Powerful, Free)</option>
-    <option value="mixtral-8x7b-32768">mixtral-8x7b-32768 (Free)</option>
-  </optgroup>
-  <optgroup label="Anthropic Claude (Paid)">
-    <option value="claude-sonnet-4-6">claude-sonnet-4-6</option>
-    <option value="claude-opus-4-6">claude-opus-4-6</option>
-  </optgroup>
-</select>
-            </div>
-            <div>
-              <label style={labelStyle}>Daily Digest Send Time</label>
-              <input type="time" value={settings.digest_time || '07:30'} onChange={e => set('digest_time', e.target.value)} style={inputStyle} />
-            </div>
+        <div className="panel">
+          <div className="ptitle">🤖 Claude AI (Anthropic)</div>
+          <p style={{fontSize:"12px",color:"var(--tx2)",marginBottom:"10px"}}>Powers AI scoring, Client 360 analysis, daily digests, churn alerts, cross-sell recommendations</p>
+          <div className="fgrid fg1">
+            <div className="fgrp"><label>Anthropic API key</label><input type="password" placeholder="sk-ant-…" /></div>
+            <div className="fgrp"><label>Model</label><select><option>claude-sonnet-4-6</option><option>claude-opus-4-6</option></select></div>
+            <div className="fgrp"><label>Daily digest send time</label><input type="time" defaultValue="07:30" /></div>
           </div>
-          <button style={btnPrimary} onClick={() => saveSection(['anthropic_key','anthropic_model','digest_time'])}>Save</button>
-          <button style={btnSecondary} onClick={() => alert('Test Anthropic connection')}>Test</button>
+          <div className="brow"><button className="btn bp" onClick={()=>save("ai")}>{saving.ai?"Saving…":"💾 Save"}</button><button className="btn">🔌 Test</button></div>
         </div>
-
       </div>
     </div>
   );
 };
-
 export default ApiIntegrations;

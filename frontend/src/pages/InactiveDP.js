@@ -1,144 +1,121 @@
-import React, { useEffect, useState } from 'react';
-import api from '../api';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import React from 'react';
+import { BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 
-const InactiveDP = () => {
-  const [bands, setBands]   = useState([]);
-  const [loading, setLoading] = useState(true);
+const BAND_DATA = [
+  {band:"30–90 days", withDP:820, noDP:2840},
+  {band:"90–180 days",withDP:640, noDP:1980},
+  {band:"180–365 days",withDP:480,noDP:1240},
+  {band:"365+ days",  withDP:220, noDP:890},
+  {band:"Never traded",withDP:380,noDP:3828},
+];
+const TYPE_PIE = [
+  {name:"RI",color:"#d3d1c7",value:1840},{name:"RI-HV",color:"#FAC775",value:480},
+  {name:"NRE/NRO",color:"#185fa5",value:340},{name:"NRE-HV/NRO-HV",color:"#9FE1CB",value:140},{name:"FN",color:"#AFA9EC",value:40},
+];
+const HOLD_DATA = [{range:"<₹50K",c:480},{range:"₹50K–₹2L",c:820},{range:"₹2L–₹5L",c:640},{range:"₹5L–₹10L",c:420},{range:"₹10L–₹25L",c:280},{range:">₹25L",c:200}];
+const PRIORITY = [
+  {ucc:"NV11201",name:"Subramaniam R",type:"RI-HV",last:"Nov 2025",days:196,hold:"₹8.4L",stocks:12,age:"4.2 yrs",rm:"—"},
+  {ucc:"NV22408",name:"Fatima Sheikh", type:"NRE",  last:"Dec 2025",days:162,hold:"₹6.1L",stocks:8, age:"2.8 yrs",rm:"—"},
+  {ucc:"NV33812",name:"Mohan Pillai",  type:"RI",   last:"Jan 2026",days:142,hold:"₹4.8L",stocks:6, age:"6.1 yrs",rm:"Arjun"},
+  {ucc:"NV44201",name:"Anitha Krishnan",type:"RI-HV",last:"Oct 2025",days:228,hold:"₹11.2L",stocks:18,age:"3.4 yrs",rm:"—"},
+  {ucc:"NV55318",name:"Prakash Nair",  type:"NRO",  last:"Feb 2026",days:112,hold:"₹3.2L",stocks:5, age:"1.9 yrs",rm:"—"},
+];
 
-  // Prototype exact data for ch-inact-type
-  const clientTypes = [
-    { name: 'RI',           value: 1840, color: '#94A3B8' },
-    { name: 'RI-HV',        value: 480,  color: '#F59E0B' },
-    { name: 'NRE/NRO',      value: 340,  color: '#3B82F6' },
-    { name: 'NRE-HV/NRO-HV',value: 140,  color: '#10B981' },
-    { name: 'FN',           value: 40,   color: '#8B5CF6' },
-  ];
-
-  // Prototype exact data for ch-inact-holdval
-  const holdValBrackets = [
-    { bracket: '<₹50K',       clients: 480, fill: '#94A3B8' },
-    { bracket: '₹50K–₹2L',   clients: 820, fill: '#F59E0B' },
-    { bracket: '₹2L–₹5L',    clients: 640, fill: '#10B981' },
-    { bracket: '₹5L–₹10L',   clients: 420, fill: '#3B82F6' },
-    { bracket: '₹10L–₹25L',  clients: 280, fill: '#F59E0B' },
-    { bracket: '>₹25L',       clients: 200, fill: '#EF4444' },
-  ];
-
-  useEffect(() => {
-    api.get('/reports/inactive-bands')
-      .then(res => setBands(res.data))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
-
-  // Map bands into stacked format: with_holdings + no_holdings
-  const bandData = bands.map(b => ({
-    band:        b.band,
-    with_holdings: parseInt(b.with_holdings) || 0,
-    no_holdings:   (parseInt(b.clients) || 0) - (parseInt(b.with_holdings) || 0),
-  }));
-
-  if (loading) return <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>Loading...</div>;
-
-  return (
-    <div>
-      <div className="ph">
-        <h2>Inactive & DP Holdings</h2>
-        <p>Clients inactive in trading with DP securities still held — reactivation priority list</p>
-      </div>
-
-      {/* Summary cards */}
-      <div className="cards">
-        <div className="card cd">
-          <div className="clbl">Total Inactive Clients</div>
-          <div className="cval">{bands.reduce((s, b) => s + parseInt(b.clients || 0), 0).toLocaleString()}</div>
-        </div>
-        <div className="card cw">
-          <div className="clbl">With DP Holdings</div>
-          <div className="cval">{bands.reduce((s, b) => s + parseInt(b.with_holdings || 0), 0).toLocaleString()}</div>
-          <div className="csub">Still hold securities with Navia</div>
-        </div>
-      </div>
-
-      <div className="tc2">
-        {/* ch-inact-band: Stacked bar — with holdings + no holdings by dormancy band */}
-        <div className="panel">
-          <div className="ptitle">Inactive Clients by Dormancy Band</div>
-          {bandData.length === 0 ? (
-            <div style={{ padding: '30px', textAlign: 'center', color: '#888', fontSize: '13px' }}>No inactive clients found</div>
-          ) : (
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={bandData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-                <XAxis dataKey="band" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 10 }} />
-                <Tooltip />
-                <Legend wrapperStyle={{ fontSize: 10 }} iconSize={10} />
-                <Bar dataKey="with_holdings" name="With DP holdings"        stackId="s" fill="#3B82F6" />
-                <Bar dataKey="no_holdings"   name="No holdings or balance"   stackId="s" fill="#94A3B8" radius={[3,3,0,0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-
-        {/* ch-inact-type: Doughnut — inactive by client type */}
-        <div className="panel">
-          <div className="ptitle">Inactive Clients by Type</div>
-          <ResponsiveContainer width="100%" height={220}>
-            <PieChart>
-              <Pie data={clientTypes} cx="50%" cy="50%" innerRadius={55} outerRadius={85}
-                dataKey="value" label={({ name }) => name}>
-                {clientTypes.map((e, i) => <Cell key={i} fill={e.color} />)}
-              </Pie>
-              <Tooltip />
-              <Legend wrapperStyle={{ fontSize: 11 }} />
-            </PieChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      {/* ch-inact-holdval: Bar — inactive with DP by holding value bracket */}
+const InactiveDP = () => (
+  <div>
+    <div className="ph"><h2>Inactive accounts &amp; DP holdings</h2><p>Accounts with no trades — segmented by inactivity duration and whether they hold securities in DP.</p></div>
+    <div className="alert a-w">⚠️ Clients with DP holdings are significantly more valuable to reactivate — they have assets already custodied with you. An options or equity trade from these clients is one conversation away.</div>
+    <div className="cards">
+      <div className="card cd"><div className="clbl">Total inactive accounts</div><div className="cval">14,591</div><div className="csub">No trade in last 30 days</div></div>
+      <div className="card cw"><div className="clbl">Inactive with DP holdings</div><div className="cval">2,840</div><div className="csub">Hold securities — highest priority</div></div>
+      <div className="card cp"><div className="clbl">Holding value (inactive DP)</div><div className="cval">₹284Cr</div><div className="csub">Avg ₹1.0L per inactive DP client</div></div>
+    </div>
+    <div className="tc2">
       <div className="panel">
-        <div className="ptitle">Inactive Clients with DP Holdings — by Holding Value Bracket</div>
+        <div className="ptitle">📊 Inactive accounts by duration band</div>
         <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={holdValBrackets} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <BarChart data={BAND_DATA} margin={{top:8,right:8,bottom:8,left:8}}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-            <XAxis dataKey="bracket" tick={{ fontSize: 10 }} />
-            <YAxis tick={{ fontSize: 10 }} />
-            <Tooltip formatter={v => [v + ' clients']} />
-            <Bar dataKey="clients" name="Inactive clients with DP holdings" radius={[3,3,0,0]}>
-              {holdValBrackets.map((b, i) => <Cell key={i} fill={b.fill} />)}
-            </Bar>
+            <XAxis dataKey="band" tick={{fontSize:9}} />
+            <YAxis tick={{fontSize:10}} />
+            <Tooltip />
+            <Legend wrapperStyle={{fontSize:11}} iconSize={10} />
+            <Bar dataKey="withDP" name="With DP holdings"      fill="#185fa5" stackId="s" />
+            <Bar dataKey="noDP"   name="No holdings or balance" fill="#d3d1c7" stackId="s" radius={[4,4,0,0]} />
           </BarChart>
         </ResponsiveContainer>
-        <div style={{ fontSize: '11px', color: 'var(--tx2)', marginTop: '8px' }}>
-          Priority: ₹5L+ brackets (blue/amber/red) — highest reactivation revenue potential from DP holdings.
-        </div>
       </div>
-
-      {/* Summary table */}
       <div className="panel">
-        <div className="ptitle">Dormancy Summary</div>
-        <div className="tw"><table>
-          <thead><tr>
-            <th>Band</th><th style={{ textAlign: 'right' }}>Total Clients</th><th style={{ textAlign: 'right' }}>With DP Holdings</th>
-          </tr></thead>
-          <tbody>
-            {bands.length === 0 ? (
-              <tr><td colSpan="3" style={{ textAlign: 'center', color: '#888', padding: '20px' }}>No inactive clients</td></tr>
-            ) : bands.map((b, i) => (
-              <tr key={i}>
-                <td style={{ fontWeight: '500' }}>{b.band}</td>
-                <td style={{ textAlign: 'right' }}>{b.clients}</td>
-                <td style={{ textAlign: 'right', color: b.with_holdings > 0 ? 'var(--dc)' : 'var(--tx3)', fontWeight: b.with_holdings > 0 ? '600' : '400' }}>{b.with_holdings}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table></div>
+        <div className="ptitle">📊 Inactive with DP holdings — by client type</div>
+        <ResponsiveContainer width="100%" height={200}>
+          <PieChart>
+            <Pie data={TYPE_PIE} dataKey="value" cx="40%" cy="50%" outerRadius={75} innerRadius={40}>
+              {TYPE_PIE.map((e,i)=><Cell key={i} fill={e.color} />)}
+            </Pie>
+            <Tooltip />
+            <Legend layout="vertical" align="right" verticalAlign="middle" iconSize={10} wrapperStyle={{fontSize:11}} />
+          </PieChart>
+        </ResponsiveContainer>
       </div>
     </div>
-  );
-};
-
+    <div className="panel">
+      <div className="ptitle">💼 Inactive accounts WITH DP holdings — priority reactivation list</div>
+      <p style={{fontSize:"12px",color:"var(--tx2)",marginBottom:"10px"}}>These clients have securities custodied with Navia but are not trading. They are the highest-value reactivation targets.</p>
+      <div className="brow">
+        <select style={{width:"140px"}}><option>All durations</option><option>30–90 days inactive</option><option>90–180 days</option><option>180+ days</option></select>
+        <select style={{width:"120px"}}><option>All types</option><option>NRE/NRO</option><option>RI-HV</option><option>RI</option></select>
+        <button className="btn bp">🤖 Auto-assign as leads</button>
+        <button className="btn">⬇ Export list</button>
+      </div>
+      <div className="tw"><table>
+        <thead><tr><th>UCC</th><th>Name</th><th>Type</th><th>Last trade</th><th>Inactive (days)</th><th>Holding value</th><th>No. of stocks</th><th>Account age</th><th>RM</th><th>Action</th></tr></thead>
+        <tbody>
+          {PRIORITY.map((r,i)=>(
+            <tr key={i}>
+              <td><span className="lc">{r.ucc}</span></td>
+              <td>{r.name}</td>
+              <td><span className={`badge ${r.type.includes("NR")?"b-nri":r.type.includes("HV")?"b-hv":"b-ri"}`}>{r.type}</span></td>
+              <td>{r.last}</td><td>{r.days}</td>
+              <td style={{fontWeight:"500",color:"var(--sc)"}}>{r.hold}</td>
+              <td>{r.stocks}</td><td>{r.age}</td><td>{r.rm}</td>
+              <td><button className={`btn sm ${r.rm==="—"?"bp":""}`}>{r.rm==="—"?"Assign lead":"Contact"}</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table></div>
+    </div>
+    <div className="panel">
+      <div className="ptitle">📊 DP holding value distribution — inactive clients with holdings</div>
+      <ResponsiveContainer width="100%" height={180}>
+        <BarChart data={HOLD_DATA} margin={{top:8,right:8,bottom:8,left:8}}>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+          <XAxis dataKey="range" tick={{fontSize:9}} />
+          <YAxis tick={{fontSize:10}} />
+          <Tooltip />
+          <Bar dataKey="c" name="Inactive clients with DP holdings" fill="#185fa5" radius={[4,4,0,0]} />
+        </BarChart>
+      </ResponsiveContainer>
+      <p style={{fontSize:"11px",color:"var(--tx3)",marginTop:"6px"}}>Clients with holdings &gt;₹2L are the most actionable reactivation targets.</p>
+    </div>
+    <div className="panel">
+      <div className="ptitle">📅 Never-traded accounts — opened but no trade recorded</div>
+      <div className="tc2" style={{marginBottom:0}}>
+        <div>
+          <div className="cards" style={{marginBottom:0}}>
+            <div className="card cd"><div className="clbl">Never traded</div><div className="cval">4,820</div><div className="csub">Account opened, zero trades ever</div></div>
+            <div className="card cw"><div className="clbl">With DP holdings</div><div className="cval">380</div><div className="csub">Transferred in stocks, never traded</div></div>
+            <div className="card cp"><div className="clbl">Opened &lt;90 days ago</div><div className="cval">2,140</div><div className="csub">Still in activation window</div></div>
+          </div>
+        </div>
+        <div>
+          <div className="alert a-i">💡 Never-traded clients who funded their account are the highest-conversion reactivation target. The 380 who transferred DP holdings are the highest-priority — they moved assets to you and then stopped.</div>
+          <div className="brow" style={{marginTop:"8px"}}>
+            <button className="btn bp">🤖 Generate outreach list (never-traded with DP holdings)</button>
+            <button className="btn">⬇ Export</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+);
 export default InactiveDP;

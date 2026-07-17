@@ -1,97 +1,57 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+
+const tb = t => t?.toLowerCase().includes('nri')?'b-nri':t?.toLowerCase().includes('hv')?'b-hv':'b-ri';
+const sc = s => s>=70?'h':s>=50?'m':'l';
+const fmt = v => { const n=parseFloat(v)||0; if(n>=100000) return '₹'+(n/100000).toFixed(1)+'L'; if(n>=1000) return '₹'+(n/1000).toFixed(0)+'K'; return v?'₹'+n:'—'; };
 
 const DormantClients = () => {
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
   const navigate = useNavigate();
 
-  useEffect(() => { loadClients(); }, []);
+  useEffect(() => {
+    api.get('/clients/my/clients?dormant=true').then(r => setClients(r.data||[])).catch(console.error).finally(() => setLoading(false));
+  }, []);
 
-  const loadClients = async () => {
-    setLoading(true);
-    try {
-      const res = await api.get('/clients/my/clients');
-      // Dormant = no trade in last 30 days
-      const dormant = (res.data || []).filter(c => {
-        if (!c.last_trade_date) return true;
-        const days = Math.floor((Date.now() - new Date(c.last_trade_date)) / 86400000);
-        return days > 30;
-      });
-      setClients(dormant);
-    } catch (err) {
-      console.error(err);
-    } finally { setLoading(false); }
-  };
-
-  const getDaysSince = (date) => {
-    if (!date) return '—';
-    const days = Math.floor((Date.now() - new Date(date)) / 86400000);
-    return `${days} days ago`;
-  };
-
-  const th = { textAlign: 'left', padding: '10px 14px', fontSize: '11px', fontWeight: '600', color: '#888', textTransform: 'uppercase', borderBottom: '1px solid #eee', background: '#fafafa' };
-  const td = { padding: '12px 14px', fontSize: '13px', borderBottom: '1px solid #f5f5f5' };
+  const dormantCount = clients.filter(c => !c.is_active).length;
+  const highRisk     = clients.filter(c => (c.churn_risk_score||0) >= 70).length;
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
-        <button onClick={() => navigate(-1)}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#1B3F7A', fontSize: '13px', fontWeight: '500' }}>
-          ← Back
-        </button>
-      </div>
-      <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#111' }}>Dormant Clients</h2>
-      <p style={{ color: '#666', marginTop: '4px', marginBottom: '20px', fontSize: '13px' }}>
-        Clients with no trading activity in the last 30+ days
-      </p>
-
-      <div style={{ background: 'white', borderRadius: '12px', border: '1px solid #eee', overflow: 'hidden' }}>
-        <div style={{ padding: '14px 18px', borderBottom: '1px solid #eee', fontSize: '14px', fontWeight: '600', display: 'flex', justifyContent: 'space-between' }}>
-          <span>🌙 Dormant Clients</span>
-          <span style={{ background: '#faeeda', color: '#F59E0B', padding: '2px 10px', borderRadius: '10px', fontSize: '12px', fontWeight: '600' }}>
-            {clients.length} clients
-          </span>
-        </div>
-        {loading ? (
-          <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>Loading...</div>
-        ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-            <thead>
-              <tr>
-                <th style={th}>UCC</th>
-                <th style={th}>Client Name</th>
-                <th style={th}>Type</th>
-                <th style={th}>Last Trade</th>
-                <th style={th}>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {clients.length === 0 ? (
-                <tr><td colSpan="5" style={{ padding: '30px', textAlign: 'center', color: '#888' }}>No dormant clients</td></tr>
-              ) : (
-                clients.map(c => (
-                  <tr key={c.ucc}>
-                    <td style={{ ...td, color: '#555' }}>{c.ucc}</td>
-                    <td style={{ ...td, fontWeight: '600' }}>{c.name}</td>
-                    <td style={td}>{c.client_type}</td>
-                    <td style={{ ...td, color: '#F59E0B' }}>{getDaysSince(c.last_trade_date)}</td>
-                    <td style={td}>
-                      <button onClick={() => navigate('/client-360', { state: { ucc: c.ucc } })}
-                        style={{ padding: '4px 10px', background: '#1B3F7A', color: 'white', border: 'none', borderRadius: '5px', cursor: 'pointer', fontSize: '12px' }}>
-                        View 360
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        )}
+      <div className="ph"><h2>Dormant mapped clients</h2><p>Clients with no trade &gt;3 months who previously traded at least monthly</p></div>
+      {highRisk > 0 && (
+        <div className="alert a-d">⚠️ {highRisk} clients at high churn risk. Contact this week to prevent revenue loss.</div>
+      )}
+      <div className="panel">
+        <div className="tw"><table>
+          <thead><tr><th>UCC</th><th>Name</th><th>Type</th><th>Last trade</th><th>Dormant (mo)</th><th>Peak avg brokerage</th><th>Churn risk</th><th>Action</th></tr></thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan="8" style={{padding:'30px',textAlign:'center',color:'var(--tx3)'}}>Loading dormant clients...</td></tr>
+            ) : clients.length===0 ? (
+              <tr><td colSpan="8" style={{padding:'30px',textAlign:'center',color:'var(--tx3)'}}>No dormant clients — great work!</td></tr>
+            ) : clients.map((c,i) => {
+              const lastTrade = c.last_trade_date ? new Date(c.last_trade_date) : null;
+              const monthsDormant = lastTrade ? Math.floor((new Date()-lastTrade)/(1000*60*60*24*30)) : '—';
+              return (
+                <tr key={i}>
+                  <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:c.ucc}})}>{c.ucc}</span></td>
+                  <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:c.ucc}})}>{c.name}</span></td>
+                  <td><span className={`badge ${tb(c.client_type)}`}>{c.client_type}</span></td>
+                  <td>{lastTrade?lastTrade.toLocaleDateString('en-IN',{month:'short',year:'numeric'}):'—'}</td>
+                  <td>{monthsDormant}</td>
+                  <td>{fmt(c.peak_revenue)}/mo</td>
+                  <td><span className={`ais ${sc(c.churn_risk_score)}`}>{Math.round(c.churn_risk_score||0)}</span></td>
+                  <td><button className="btn sm" onClick={() => navigate('/contact-log')}>Contact now</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table></div>
       </div>
     </div>
   );
 };
-
 export default DormantClients;

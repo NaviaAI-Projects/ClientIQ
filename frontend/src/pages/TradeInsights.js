@@ -26,10 +26,8 @@ const FMT = v => {
   const prefix = n < 0 ? '–₹' : '₹';
   const abs = Math.abs(n);
   if (abs >= 100000) return prefix + (abs/100000).toFixed(1) + 'L';
-  if (abs >= 1000)   return prefix + (abs/1000).toFixed(1) + 'K';
-  if (abs >= 1)      return prefix + Math.round(abs).toLocaleString('en-IN');
-  if (abs > 0)       return prefix + abs.toFixed(2); // sub-rupee: show paise
-  return prefix + '0';
+  if (abs >= 1000)   return prefix + (abs/1000).toFixed(0) + 'K';
+  return prefix + abs.toLocaleString('en-IN');
 };
 
 const FMTP = v => {
@@ -367,7 +365,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <XAxis dataKey="day" tick={{ fontSize: 10, fontFamily: 'monospace' }} tickFormatter={v => `D${v}`} />
                     <YAxis tick={{ fontSize: 10, fontFamily: 'monospace' }} tickFormatter={v => '₹' + (v/1000).toFixed(0) + 'K'} />
                     <Tooltip formatter={v => [FMT(v), 'Cumulative P&L']} contentStyle={{ fontSize: '12px' }} />
-                    <ReferenceLine y={0} stroke="rgba(0,0,0,0.06)" />
+                    <ReferenceLine y={0} stroke="rgba(0,0,0,0.1)" />
                     <Line type="monotone" dataKey="pnl" stroke={summary.net_pnl >= 0 ? C.green : C.red} fill={summary.net_pnl >= 0 ? C.green2 : C.red2} dot={false} strokeWidth={2} />
                   </LineChart>
                 </ResponsiveContainer>
@@ -382,7 +380,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <XAxis dataKey="week" tick={{ fontSize: 9, fontFamily: 'monospace' }} />
                     <YAxis tick={{ fontSize: 10, fontFamily: 'monospace' }} tickFormatter={v => '₹' + (v/1000).toFixed(0) + 'K'} />
                     <Tooltip formatter={v => [FMT(v), 'P&L']} contentStyle={{ fontSize: '12px' }} />
-                    <ReferenceLine y={0} stroke="rgba(0,0,0,0.06)" />
+                    <ReferenceLine y={0} stroke="rgba(0,0,0,0.1)" />
                     <Bar dataKey="pnl" radius={[4,4,0,0]}>
                       {(summary.weekly_pnl || []).map((e, i) => (
                         <Cell key={i} fill={e.pnl >= 0 ? 'rgba(38,201,126,0.75)' : 'rgba(240,57,78,0.75)'} />
@@ -470,15 +468,9 @@ const TradeInsights = ({ ucc, clientName, token }) => {
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px', marginBottom: '18px' }}>
             <Card label="Options win rate"      value={options_stats.win_rate + '%'}      sub={`${options_stats.wins}W · ${options_stats.losses}L over ${data.trade_days} days`}   borderColor={C.blue}   valueColor={C.blue} />
-            <Card label="Call vs Put split"
-              value={options_stats.call_pct > 0 ? options_stats.call_pct + '% Calls' : 'No data'}
-              sub={options_stats.call_pct > 0 ? `${options_stats.call_pct >= 50 ? 'Bullish' : 'Bearish'} bias · ${100-options_stats.call_pct}% Puts` : 'No options trades found'}
-              borderColor={C.amber} valueColor={C.amber} />
+            <Card label="Call vs Put split"     value={options_stats.call_pct + '% Calls'} sub={`${options_stats.call_pct >= 50 ? 'Bullish' : 'Bearish'} bias · ${100-options_stats.call_pct}% Puts`} borderColor={C.amber} valueColor={C.amber} />
             <Card label="Best strike type"      value={options_stats.best_strike || 'ATM'} sub={`${options_stats.best_strike_wr}% win rate · your best outcome`}                   borderColor={C.green}  valueColor={C.green} />
-            <Card label="Avg holding duration"
-              value={options_stats.avg_hold_hrs > 0 ? options_stats.avg_hold_hrs + ' hrs' : 'No data'}
-              sub={options_stats.avg_hold_hrs > 0 ? (options_stats.avg_hold_hrs < 2 ? 'Scalping style' : options_stats.avg_hold_hrs < 4 ? 'Intraday trading' : 'Positional trading') : 'Buy/sell pairs not found'}
-              borderColor={C.purple} valueColor={C.purple} />
+            <Card label="Avg holding duration"  value={options_stats.avg_hold_hrs + ' hrs'} sub="Mostly intraday options"                                                           borderColor={C.purple} valueColor={C.purple} />
           </div>
 
           {/* Strike selection table */}
@@ -493,11 +485,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {(options_stats.strike_table || []).length === 0 ? (
-                    <tr><td colSpan="6" style={{ padding: '24px', textAlign: 'center', color: 'var(--tx3)', fontSize: '13px' }}>
-                      No strike price data available — requires options trades with strike price information
-                    </td></tr>
-                  ) : (options_stats.strike_table || []).map((r, i) => (
+                  {(options_stats.strike_table || []).map((r, i) => (
                     <tr key={i} style={{ background: r.best ? C.blue2 : 'transparent' }}>
                       <td style={{ padding: '11px 13px', fontWeight: '700' }}>{r.type}{r.best ? ' ★' : ''}</td>
                       <td style={{ padding: '11px 13px' }}>{r.trades}</td>
@@ -633,7 +621,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <XAxis dataKey="time" tick={{ fontSize: 9, fontFamily: 'monospace' }} />
                     <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v} />
                     <Tooltip formatter={v => [FMT(v), 'Avg P&L']} contentStyle={{ fontSize: '12px' }} />
-                    <ReferenceLine y={0} stroke="rgba(0,0,0,0.06)" />
+                    <ReferenceLine y={0} stroke="rgba(0,0,0,0.1)" />
                     <Line type="monotone" dataKey="avg_pnl" stroke={C.purple} fill={C.purp2} strokeWidth={2} dot={{ r: 3 }} />
                   </LineChart>
                 </ResponsiveContainer>
@@ -693,7 +681,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + (v/1000).toFixed(0) + 'K'} />
                     <Tooltip formatter={v => [FMT(v)]} contentStyle={{ fontSize: '12px' }} />
                     <Legend wrapperStyle={{ fontSize: '11px' }} />
-                    <ReferenceLine y={0} stroke="rgba(0,0,0,0.06)" />
+                    <ReferenceLine y={0} stroke="rgba(0,0,0,0.1)" />
                     <Bar dataKey="gross_profit" name="Gross profit" stackId="s" fill="rgba(38,201,126,0.7)" radius={[3,3,0,0]} />
                     <Bar dataKey="gross_loss"   name="Gross loss"   stackId="s" fill="rgba(240,57,78,0.7)" />
                   </BarChart>
@@ -709,9 +697,9 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               <div style={{ fontSize: '12px', color: 'var(--tx3)', fontFamily: 'monospace', marginBottom: '16px' }}>Statistical observation based on {data.trade_days}-day trade history · Not investment advice</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
                 {[
-                  { label: 'Avg lots after a loss',  value: (patterns.lots_after_loss || 0).toFixed(1), sub: patterns.lots_after_win > 0 ? `+${Math.round((patterns.lots_after_loss / patterns.lots_after_win - 1) * 100)}% above after-win average` : 'No win comparison yet', color: C.red },
+                  { label: 'Avg lots after a loss',  value: (patterns.lots_after_loss || 0).toFixed(1), sub: '+34% above your average', color: C.red },
                   { label: 'Win rate after a loss',   value: (patterns.wr_after_loss || 0) + '%',        sub: `vs your normal ${patterns.wr_after_win || 0}%`, color: C.amber },
-                  { label: 'Est. P&L drag',           value: patterns.est_pnl_drag > 0 ? ('–' + (patterns.est_pnl_drag >= 1000 ? '₹' + Math.round(patterns.est_pnl_drag/1000) + 'K' : '₹' + patterns.est_pnl_drag)) : '—', sub: `over ${data.trade_days} days`, color: C.red },
+                  { label: 'Est. P&L drag',           value: '–₹18K',                                   sub: `over ${data.trade_days} days`, color: C.red },
                 ].map((s, i) => (
                   <div key={i} style={{ background: 'var(--bg)', borderRadius: '10px', padding: '14px', border: '1px solid rgba(0,0,0,0.08)', textAlign: 'center' }}>
                     <div style={{ fontSize: '11px', color: 'var(--tx3)', fontFamily: 'monospace', marginBottom: '6px' }}>{s.label}</div>

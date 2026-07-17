@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend, LineChart, Line } from 'recharts';
 import api from '../api';
 
-const N = { navy:'#1B3F7A', red:'#EF4444', bg:'#f5f4f0', card:'#fff', border:'rgba(0,0,0,0.10)', tx:'#111', tx2:'#555', tx3:'#999', ic:'#3B82F6', ibg:'#e6f1fb', sc:'#10B981', sbg:'#eaf3de', wc:'#F59E0B', wbg:'#faeeda', dc:'#EF4444', dbg:'#fcebeb' };
+const N = { navy:'#223872', red:'#ED4D37', bg:'#f5f4f0', card:'#fff', border:'rgba(0,0,0,0.10)', tx:'#111', tx2:'#555', tx3:'#999', ic:'#185fa5', ibg:'#e6f1fb', sc:'#3b6d11', sbg:'#eaf3de', wc:'#854f0b', wbg:'#faeeda', dc:'#a32d2d', dbg:'#fcebeb' };
 
 const fmt = (v) => {
   const n = parseFloat(v) || 0;

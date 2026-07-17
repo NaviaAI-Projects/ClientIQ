@@ -1,131 +1,89 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 
 const InteractionLog = () => {
   const [logs, setLogs]       = useState([]);
+  const [type, setType]       = useState('');
+  const [scope, setScope]     = useState('');
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter]   = useState('all');
   const navigate = useNavigate();
 
-  useEffect(() => { loadLogs(); }, []);
+  useEffect(() => {
+    api.get('/contact-logs?limit=50').then(r => setLogs(r.data||[])).catch(console.error).finally(() => setLoading(false));
+  }, []);
 
-  const loadLogs = async () => {
-    setLoading(true);
-    try {
-      const res = await api.get('/contact-logs');
-      setLogs(res.data || []);
-    } catch (err) {
-      console.error(err);
-    } finally { setLoading(false); }
+  const filtered = logs.filter(l => {
+    if (type  && l.type !== type) return false;
+    return true;
+  });
+
+  const calls    = logs.filter(l => l.type?.toLowerCase().includes('call')).length;
+  const emails   = logs.filter(l => l.type?.toLowerCase().includes('email')).length;
+  const unique   = new Set(logs.map(l => l.ucc)).size;
+  const leadsCtd = new Set(logs.filter(l => l.is_lead).map(l => l.ucc)).size;
+
+  const chanIcon = t => {
+    if (!t) return '📝';
+    const tl = t.toLowerCase();
+    if (tl.includes('call')) return '📞';
+    if (tl.includes('email')) return '✉️';
+    if (tl.includes('whatsapp')) return '💬';
+    if (tl.includes('meeting')) return '🤝';
+    return '📝';
   };
-
-  const getTypeIcon = (type) => {
-    const icons = { call: '📞', whatsapp: '💬', email: '📧', meeting: '🤝', other: '📝' };
-    return icons[type] || '📝';
+  const outColor = o => {
+    if (!o) return 'inherit';
+    if (o.toLowerCase().includes('interested') || o.toLowerCase().includes('sent') || o.toLowerCase().includes('delivered') || o.toLowerCase().includes('connected')) return 'var(--sc)';
+    if (o.toLowerCase().includes('no answer') || o.toLowerCase().includes('not interested')) return 'var(--dc)';
+    return 'inherit';
   };
-
-  const getOutcomeBadge = (outcome) => {
-    const map = {
-      sent:         { bg: '#eaf3de', color: '#10B981' },
-      interested:   { bg: '#e8f3ff', color: '#3B82F6' },
-      converted:    { bg: '#eaf3de', color: '#10B981' },
-      not_interested: { bg: '#fcebeb', color: '#EF4444' },
-      initiated:    { bg: '#faeeda', color: '#F59E0B' },
-      callback:     { bg: '#f5f0ff', color: '#5b21b6' },
-    };
-    return map[outcome] || { bg: '#f5f5f5', color: '#888' };
-  };
-
-  const filtered = filter === 'all' ? logs : logs.filter(l => l.interaction_type === filter);
-
-  const th = { textAlign: 'left', padding: '10px 14px', fontSize: '11px', fontWeight: '600', color: '#888', textTransform: 'uppercase', borderBottom: '1px solid #eee', background: '#fafafa' };
-  const td = { padding: '12px 14px', fontSize: '13px', borderBottom: '1px solid #f5f5f5' };
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '4px' }}>
-        <button onClick={() => navigate(-1)}
-          style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#1B3F7A', fontSize: '13px', fontWeight: '500' }}>
-          ← Back
-        </button>
+      <div className="ph"><h2>Interaction log</h2><p>All logged interactions with leads and mapped clients — calls, emails, WhatsApp, meetings</p></div>
+      <div className="cards">
+        <div className="card ci"><div className="clbl">Total interactions MTD</div><div className="cval">{logs.length}</div></div>
+        <div className="card cs"><div className="clbl">Unique clients contacted</div><div className="cval">{unique}</div></div>
+        <div className="card cw"><div className="clbl">Leads contacted</div><div className="cval">{leadsCtd}</div></div>
+        <div className="card cp"><div className="clbl">Avg interactions/client</div><div className="cval">{unique>0?(logs.length/unique).toFixed(1):'0'}</div></div>
       </div>
-      <h2 style={{ fontSize: '18px', fontWeight: '600', color: '#111' }}>Interaction Log</h2>
-      <p style={{ color: '#666', marginTop: '4px', marginBottom: '20px', fontSize: '13px' }}>
-        Complete history of all client interactions
-      </p>
-
-      {/* Filter tabs */}
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
-        {['all', 'call', 'whatsapp', 'email', 'meeting'].map(f => (
-          <button key={f} onClick={() => setFilter(f)}
-            style={{ padding: '5px 14px', borderRadius: '20px', border: '1px solid', cursor: 'pointer', fontSize: '12px', fontWeight: '500',
-              borderColor: filter === f ? '#1B3F7A' : '#ddd',
-              background: filter === f ? '#1B3F7A' : 'white',
-              color: filter === f ? 'white' : '#555' }}>
-            {f === 'all' ? 'All' : `${getTypeIcon(f)} ${f.charAt(0).toUpperCase() + f.slice(1)}`}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ background: 'white', borderRadius: '12px', border: '1px solid #eee', overflow: 'hidden' }}>
-        <div style={{ padding: '14px 18px', borderBottom: '1px solid #eee', fontSize: '14px', fontWeight: '600', display: 'flex', justifyContent: 'space-between' }}>
-          <span>📋 All Interactions</span>
-          <span style={{ background: '#f5f5f5', color: '#555', padding: '2px 10px', borderRadius: '10px', fontSize: '12px' }}>
-            {filtered.length} records
-          </span>
+      <div className="panel">
+        <div className="phd">
+          <div className="ptitle" style={{marginBottom:0}}>📋 All interactions</div>
+          <div style={{display:'flex',gap:'8px'}}>
+            <select style={{width:'120px'}} value={type} onChange={e=>setType(e.target.value)}>
+              <option value="">All types</option><option>Call</option><option>Email</option><option>WhatsApp</option><option>Meeting</option>
+            </select>
+            <select style={{width:'160px'}} value={scope} onChange={e=>setScope(e.target.value)}>
+              <option value="">Leads &amp; clients</option><option>Leads only</option><option>Mapped clients</option>
+            </select>
+            <button className="btn sm">⬇ Export</button>
+          </div>
         </div>
-        {loading ? (
-          <div style={{ padding: '40px', textAlign: 'center', color: '#888' }}>Loading...</div>
-        ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
-            <thead>
-              <tr>
-                <th style={th}>Date</th>
-                <th style={th}>Client</th>
-                <th style={th}>Type</th>
-                <th style={th}>Notes</th>
-                <th style={th}>Outcome</th>
+        <div className="tw"><table>
+          <thead><tr><th>Date/time</th><th>UCC</th><th>Client</th><th>Type</th><th>Channel</th><th>Outcome</th><th>Dur</th><th>Notes</th></tr></thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan="8" style={{padding:'30px',textAlign:'center',color:'var(--tx3)'}}>Loading interactions...</td></tr>
+            ) : filtered.length===0 ? (
+              <tr><td colSpan="8" style={{padding:'30px',textAlign:'center',color:'var(--tx3)'}}>No interactions logged yet</td></tr>
+            ) : filtered.map((l,i) => (
+              <tr key={i}>
+                <td style={{fontSize:'12px'}}>{l.interaction_date?new Date(l.interaction_date).toLocaleString('en-IN',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'}):'—'}</td>
+                <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:l.ucc}})}>{l.ucc}</span></td>
+                <td>{l.client_name||l.name||'—'}</td>
+                <td>{l.type||'—'}</td>
+                <td>{l.channel||l.type||'—'}</td>
+                <td style={{color:outColor(l.outcome)}}>{l.outcome||'—'}</td>
+                <td>{l.duration_minutes?l.duration_minutes+'m':'—'}</td>
+                <td style={{fontSize:'12px',color:'var(--tx2)',maxWidth:'200px'}}>{l.notes||'—'}</td>
               </tr>
-            </thead>
-            <tbody>
-              {filtered.length === 0 ? (
-                <tr><td colSpan="5" style={{ padding: '30px', textAlign: 'center', color: '#888' }}>No interactions found</td></tr>
-              ) : (
-                filtered.map((log, i) => {
-                  const badge = getOutcomeBadge(log.outcome);
-                  return (
-                    <tr key={i}>
-                      <td style={{ ...td, color: '#888', fontSize: '12px' }}>
-                        {log.created_at ? new Date(new Date(log.created_at).getTime() + (5.5 * 60 * 60 * 1000)).toLocaleString('en-IN', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hour12:true }) : '—'}
-                      </td>
-                      <td style={{ ...td, fontWeight: '600' }}>{log.client_name || log.ucc}</td>
-                      <td style={td}>
-                        <span style={{ fontSize: '13px' }}>{getTypeIcon(log.interaction_type)}</span>
-                        <span style={{ marginLeft: '6px', fontSize: '12px', color: '#555', textTransform: 'capitalize' }}>{log.interaction_type}</span>
-                      </td>
-                      <td style={{ ...td, color: '#555', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {log.notes || '—'}
-                      </td>
-                      <td style={td}>
-                        {log.outcome && (
-                          <span style={{ background: badge.bg, color: badge.color, padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600' }}>
-                            {log.outcome}
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        )}
+            ))}
+          </tbody>
+        </table></div>
       </div>
     </div>
   );
 };
-
-
-
 export default InteractionLog;

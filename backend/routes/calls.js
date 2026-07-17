@@ -115,6 +115,7 @@ router.post('/click-to-call', auth, async (req, res) => {
 
     // 4. Log interaction
     try {
+<<<<<<< HEAD
   await pool.query(
     `INSERT INTO interactions
      (ucc, rm_id, interaction_type, notes, outcome, call_ref_id, call_status, interaction_date, created_at)
@@ -129,6 +130,18 @@ router.post('/click-to-call', auth, async (req, res) => {
 } catch (e) {
   console.log('Interaction log failed:', e.message);
 }
+=======
+      await pool.query(
+        `INSERT INTO interactions
+         (ucc, rm_id, interaction_type, notes, outcome, interaction_date)
+         VALUES ($1, $2, 'CLICK_TO_CALL', $3, 'INITIATED', NOW())`,
+        [ucc, req.user.id,
+         `Call initiated to client: ${destinationNumber}`]
+      );
+    } catch (e) {
+      console.log('Interaction log failed:', e.message);
+    }
+>>>>>>> master
 
     res.json({
       success: true,
@@ -156,6 +169,7 @@ router.get('/test', auth, async (req, res) => {
   });
 });
 
+<<<<<<< HEAD
 // ══════════════════════════════════════════════
 // POST /api/calls/webhook
 // Smartflo calls this when call ends
@@ -219,4 +233,6 @@ console.log(`Rows updated: ${result.rowCount}`);
     res.status(200).json({ success: true }); // Always return 200 to Smartflo
   }
 });
+=======
+>>>>>>> master
 module.exports = router;

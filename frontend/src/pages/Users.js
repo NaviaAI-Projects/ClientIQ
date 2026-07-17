@@ -66,7 +66,7 @@ const TEMPLATES = {
 const roleColors = {
   admin:       { bg: '#FDEDEA', color: '#D43A24' },
   supervisor:  { bg: '#FEF4E6', color: '#D98A0E' },
-  rm:          { bg: '#EDEFF6', color: '#1B3F7A' },
+  rm:          { bg: '#EDEFF6', color: '#223872' },
   team_leader: { bg: '#E6F7F0', color: '#08905C' },
 };
 
@@ -230,7 +230,7 @@ const Users = () => {
       {message && (
         <div style={{ padding: '10px 16px', borderRadius: '8px', marginBottom: '16px', fontSize: '13px',
           background: message === 'success' ? '#eaf3de' : '#fcebeb',
-          color: message === 'success' ? '#10B981' : '#EF4444' }}>
+          color: message === 'success' ? '#3b6d11' : '#a32d2d' }}>
           {message === 'success' ? '✓ User created successfully!' : message}
         </div>
       )}
@@ -282,7 +282,7 @@ const Users = () => {
             </div>
           </div>
           <button type="submit" disabled={saving}
-            style={{ padding: '9px 20px', background: saving ? '#94a3b8' : '#1B3F7A', color: 'white', border: 'none', borderRadius: '7px', cursor: saving ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: '600' }}>
+            style={{ padding: '9px 20px', background: saving ? '#94a3b8' : '#223872', color: 'white', border: 'none', borderRadius: '7px', cursor: saving ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: '600' }}>
             {saving ? 'Creating...' : '+ Add user'}
           </button>
         </form>
@@ -318,19 +318,19 @@ const Users = () => {
                     <td style={cell}><RoleBadge role={user.role} /></td>
                     <td style={cell}>
                       {tmpl && (
-                        <span style={{ background: '#EEF5FF', color: '#3B82F6', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', marginRight: '8px' }}>
+                        <span style={{ background: '#EEF5FF', color: '#185fa5', padding: '2px 8px', borderRadius: '4px', fontSize: '11px', fontWeight: '600', marginRight: '8px' }}>
                           {tmpl.label}
                         </span>
                       )}
                       <span style={{ fontSize: '12px', color: '#888' }}>{desc}</span>
                     </td>
-                    <td style={{ ...cell, fontWeight: '600', color: clients ? '#1B3F7A' : '#ccc' }}>
+                    <td style={{ ...cell, fontWeight: '600', color: clients ? '#223872' : '#ccc' }}>
                       {clients || '—'}
                     </td>
                     <td style={cell}>
                       <span style={{ padding: '3px 10px', borderRadius: '20px', fontSize: '11px', fontWeight: '600',
                         background: user.is_active ? '#eaf3de' : '#fcebeb',
-                        color: user.is_active ? '#10B981' : '#EF4444' }}>
+                        color: user.is_active ? '#3b6d11' : '#a32d2d' }}>
                         {user.is_active ? 'Active' : 'Inactive'}
                       </span>
                     </td>
@@ -413,7 +413,7 @@ const Users = () => {
                     </select>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'flex-end' }}>
-                    <div style={{ background: '#EEF5FF', color: '#3B82F6', padding: '10px 14px', borderRadius: '8px', fontSize: '12.5px', width: '100%', lineHeight: '1.4' }}>
+                    <div style={{ background: '#EEF5FF', color: '#185fa5', padding: '10px 14px', borderRadius: '8px', fontSize: '12.5px', width: '100%', lineHeight: '1.4' }}>
                       {TEMPLATES[editTemplate]?.desc}
                     </div>
                   </div>
@@ -444,7 +444,7 @@ const Users = () => {
             {/* Modal actions */}
             <div style={{ display: 'flex', gap: '10px' }}>
               <button onClick={saveModal} disabled={modalSaving}
-                style={{ padding: '10px 24px', background: modalSaving ? '#94a3b8' : '#1B3F7A', color: 'white', border: 'none', borderRadius: '7px', cursor: modalSaving ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: '600' }}>
+                style={{ padding: '10px 24px', background: modalSaving ? '#94a3b8' : '#223872', color: 'white', border: 'none', borderRadius: '7px', cursor: modalSaving ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: '600' }}>
                 {modalSaving ? 'Saving...' : '💾 Save access profile'}
               </button>
               <button onClick={() => setModal(null)}

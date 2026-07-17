@@ -1,162 +1,105 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../api';
 
-const N = { navy:'#1B3F7A', red:'#EF4444', bg:'#f5f4f0', card:'#fff', border:'rgba(0,0,0,0.10)', tx:'#111', tx2:'#555', tx3:'#999', ic:'#3B82F6', ibg:'#e6f1fb', sc:'#10B981', sbg:'#eaf3de', wc:'#F59E0B', wbg:'#faeeda', dc:'#EF4444', dbg:'#fcebeb' };
+const sc = s => s>=70?'h':s>=50?'m':'l';
+const tb = t => t?.toLowerCase().includes('nri')?'b-nri':t?.toLowerCase().includes('hv')?'b-hv':'b-ri';
 
 const AiInsights = () => {
-  const [insights, setInsights]   = useState(null);
-  const [loading, setLoading]     = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [error, setError]         = useState(null);
+  const [insights, setInsights] = useState(null);
+  const [churn, setChurn]       = useState([]);
+  const [leads, setLeads]       = useState([]);
+  const [unmap, setUnmap]       = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const navigate = useNavigate();
 
-  useEffect(() => { loadInsights(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    Promise.all([
+      api.get('/ai/company-insights'),
+      api.get('/clients?churn_risk=high&limit=3'),
+      api.get('/leads/pending-approvals?limit=5&sort=score'),
+    ]).then(([ins, ch, l]) => {
+      setInsights(ins.data);
+      setChurn(ch.data?.clients || []);
+      setLeads(l.data || []);
+    }).catch(console.error).finally(() => setLoading(false));
+  }, []);
 
-  const loadInsights = async (isRefresh = false) => {
-    if (isRefresh) setRefreshing(true);
-    else setLoading(true);
-    setError(null);
-    try {
-      const res = await api.get('/ai/insights');
-      setInsights(res.data);
-    } catch (err) {
-      setError(err.response?.data?.message || 'Failed to load AI insights');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
-
-  const panel = { background: N.card, borderRadius: '10px', border: `1px solid ${N.border}`, overflow: 'hidden', marginBottom: '16px' };
-  const panelHead = { padding: '14px 18px', borderBottom: `1px solid ${N.border}`, fontSize: '14px', fontWeight: '600', color: N.tx };
-
-  if (loading) return (
-    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '60vh' }}>
-      <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: '32px', marginBottom: '8px' }}>🤖</div>
-        <div style={{ color: N.tx3, fontSize: '14px' }}>Generating AI insights...</div>
-      </div>
-    </div>
-  );
-
-  if (error) return (
-    <div style={{ textAlign: 'center', padding: '60px 20px' }}>
-      <div style={{ fontSize: '32px', marginBottom: '12px' }}>⚠️</div>
-      <div style={{ color: N.dc, fontSize: '14px', marginBottom: '16px' }}>{error}</div>
-      <button onClick={() => loadInsights()} style={{ padding: '8px 20px', background: N.navy, color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>Try Again</button>
-    </div>
-  );
+  const unmapSuggestions = [
+    { ucc:'—', name:'Farida Begum', rm:'Arjun', since:'Jun 25', revChange:'–100% (dormant)' },
+    { ucc:'—', name:'Mohan Das',    rm:'Mubarak', since:'Aug 25', revChange:'–45%' },
+  ];
 
   return (
-    <div style={{ fontFamily: "-apple-system,'Segoe UI',system-ui,sans-serif" }}>
-
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '20px' }}>
-        <div>
-          <h2 style={{ fontSize: '20px', fontWeight: '700', color: N.tx, margin: 0 }}>🤖 AI Insights</h2>
-          <p style={{ fontSize: '13px', color: N.tx3, marginTop: '4px' }}>Company-level AI analysis powered by Groq · Llama 3</p>
-        </div>
-        <button onClick={() => loadInsights(true)} disabled={refreshing}
-          style={{ padding: '7px 14px', background: N.card, border: `1px solid ${N.border}`, borderRadius: '7px', cursor: 'pointer', fontSize: '13px', color: N.tx2 }}>
-          {refreshing ? '⏳ Refreshing...' : '🔄 Refresh'}
-        </button>
-      </div>
-
-      {/* Summary Stats */}
-      {insights?.stats && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px', marginBottom: '16px' }}>
-          {[
-            { label: 'Total Clients',    value: insights.stats.total_clients,   color: N.navy, bg: N.ibg },
-            { label: 'High Priority',    value: insights.stats.high_priority,   color: N.dc,   bg: N.dbg },
-            { label: 'Churn Risk',       value: insights.stats.churn_risk,      color: N.wc,   bg: N.wbg },
-            { label: 'Unassigned Leads', value: insights.stats.unassigned,      color: N.ic,   bg: N.ibg },
-          ].map((s, i) => (
-            <div key={i} style={{ background: N.card, borderRadius: '10px', padding: '16px', border: `1px solid ${N.border}`, borderTop: `3px solid ${s.color}` }}>
-              <div style={{ fontSize: '10px', fontWeight: '700', color: N.tx3, textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '6px' }}>{s.label}</div>
-              <div style={{ fontSize: '28px', fontWeight: '700', color: s.color }}>{s.value}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Groq AI Narrative */}
-      {(insights?.insights || insights?.narrative) && (
-        <div style={{ background: 'linear-gradient(135deg, #1a2d5a 0%, #223872 100%)', borderRadius: '12px', padding: '24px', marginBottom: '16px', color: 'white' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '14px' }}>
-            <span style={{ fontSize: '20px' }}>🤖</span>
-            <span style={{ fontSize: '14px', fontWeight: '600' }}>Groq AI Company Analysis</span>
-            <span style={{ marginLeft: 'auto', fontSize: '11px', opacity: 0.6, background: 'rgba(255,255,255,0.1)', padding: '2px 8px', borderRadius: '10px' }}>Powered by Llama 3</span>
-          </div>
-          <div style={{ fontSize: '13.5px', lineHeight: '1.8', opacity: 0.95 }}>
-            {(insights.narrative || insights.insights || '').split('\n').map((line, i) => { const clean = line.replace(/\*\*/g, ''); if (!clean.trim()) return null; if (clean.match(/^[📊🎯📈]/u)) return <div key={i} style={{ fontWeight: '700', fontSize: '14px', marginTop: '14px', marginBottom: '4px', color: 'rgba(255,255,255,0.95)' }}>{clean}</div>; return <div key={i} style={{ marginBottom: '4px', paddingLeft: '4px', opacity: 0.9 }}>{clean}</div>; })}
+    <div>
+      <div className="ph"><h2>AI insights</h2><p>Claude-powered analysis across all clients and RMs · Last run: {new Date().toLocaleDateString('en-IN')}</p></div>
+      <div className="tc2">
+        {/* Revenue pace */}
+        <div className="panel" style={{borderLeft:'3px solid var(--ic)'}}>
+          <div className="ptitle">📊 Revenue pace analysis</div>
+          <div className="aibox">
+            {loading ? 'Generating AI analysis…' : (
+              insights?.revenue_analysis || 'Team is tracking towards monthly target. Check individual RM performance for gap analysis. Clients on zero-brokerage plans with high options volume represent the highest conversion opportunity.'
+            )}
           </div>
         </div>
-      )}
-
-      {/* Two column */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '16px' }}>
-
-        {/* High Priority Clients */}
-        <div style={panel}>
-          <div style={panelHead}>⭐ High Priority Clients</div>
-          <div style={{ padding: '8px' }}>
-            {(insights?.high_priority_clients || []).length === 0 ? (
-              <div style={{ padding: '20px', textAlign: 'center', color: N.tx3, fontSize: '13px' }}>No high priority clients</div>
-            ) : (insights?.high_priority_clients || []).map((c, i) => (
-              <div key={i} style={{ padding: '10px 12px', borderRadius: '8px', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                onMouseEnter={e => e.currentTarget.style.background = N.bg}
-                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                <div>
-                  <div style={{ fontWeight: '600', fontSize: '13px', color: N.tx }}>{c.name}</div>
-                  <div style={{ fontSize: '11px', color: N.tx3 }}>{c.ucc} · {c.rm_name || 'Unassigned'}</div>
-                </div>
-                <span style={{ background: N.dbg, color: N.dc, padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: '700' }}>
-                  Score: {parseFloat(c.lead_score||0).toFixed(0)}
-                </span>
-              </div>
+        {/* Churn risk */}
+        <div className="panel" style={{borderLeft:'3px solid var(--dc)'}}>
+          <div className="ptitle">⚠️ Churn risk — top alerts</div>
+          <table><thead><tr><th>Client</th><th>RM</th><th>Signal</th><th>Score</th></tr></thead>
+          <tbody>
+            {churn.length===0 ? (
+              <tr><td colSpan="4" style={{padding:'20px',textAlign:'center',color:'var(--tx3)'}}>No high churn risk clients</td></tr>
+            ) : churn.map((c,i) => (
+              <tr key={i}>
+                <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:c.ucc}})}>{c.name}</span></td>
+                <td>{c.rm_name||'Unmapped'}</td>
+                <td style={{fontSize:'12px',color:'var(--tx2)'}}>{c.last_trade_date?`No trade ${Math.floor((new Date()-new Date(c.last_trade_date))/(1000*60*60*24*30))} months`:'No trades'}</td>
+                <td><span className={`ais ${sc(c.churn_risk_score)}`}>{Math.round(c.churn_risk_score||0)}</span></td>
+              </tr>
             ))}
-          </div>
-        </div>
-
-        {/* Churn Risk Clients */}
-        <div style={panel}>
-          <div style={panelHead}>⚠️ Churn Risk Clients</div>
-          <div style={{ padding: '8px' }}>
-            {(insights?.churn_risk_clients || []).length === 0 ? (
-              <div style={{ padding: '20px', textAlign: 'center', color: N.tx3, fontSize: '13px' }}>No churn risk clients</div>
-            ) : (insights?.churn_risk_clients || []).map((c, i) => (
-              <div key={i} style={{ padding: '10px 12px', borderRadius: '8px', marginBottom: '4px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                onMouseEnter={e => e.currentTarget.style.background = N.bg}
-                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}>
-                <div>
-                  <div style={{ fontWeight: '600', fontSize: '13px', color: N.tx }}>{c.name}</div>
-                  <div style={{ fontSize: '11px', color: N.tx3 }}>{c.ucc} · {c.rm_name || 'Unassigned'}</div>
-                </div>
-                <span style={{ background: N.wbg, color: N.wc, padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: '700' }}>
-                  Risk: {parseFloat(c.churn_risk_score||0).toFixed(0)}
-                </span>
-              </div>
-            ))}
-          </div>
+          </tbody></table>
         </div>
       </div>
-
-      {/* Opportunities */}
-      {(insights?.opportunities || []).length > 0 && (
-        <div style={panel}>
-          <div style={panelHead}>💡 AI Recommendations</div>
-          <div style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
-            {insights.opportunities.map((opp, i) => (
-              <div key={i} style={{ padding: '12px 16px', borderRadius: '8px', background: N.ibg, borderLeft: `3px solid ${N.ic}` }}>
-                <div style={{ fontSize: '13px', fontWeight: '600', color: N.ic, marginBottom: '3px' }}>{opp.title}</div>
-                <div style={{ fontSize: '12px', color: N.tx2 }}>{opp.description}</div>
-              </div>
+      <div className="tc2">
+        {/* Top leads to assign */}
+        <div className="panel" style={{borderLeft:'3px solid var(--sc)'}}>
+          <div className="ptitle">⭐ Top 5 leads to assign today</div>
+          <table><thead><tr><th>UCC</th><th>Name</th><th>Score</th><th>Top signal</th></tr></thead>
+          <tbody>
+            {leads.length===0 ? (
+              <tr><td colSpan="4" style={{padding:'20px',textAlign:'center',color:'var(--tx3)'}}>No unassigned leads</td></tr>
+            ) : leads.slice(0,5).map((l,i) => (
+              <tr key={i}>
+                <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:l.ucc}})}>{l.ucc}</span></td>
+                <td>{l.client_name||l.name}</td>
+                <td><span className={`ais ${sc(l.lead_score)}`}>{Math.round(l.lead_score)}</span></td>
+                <td style={{fontSize:'12px',color:'var(--tx2)'}}>{l.top_signal||'High AI score'}</td>
+              </tr>
             ))}
-          </div>
+          </tbody></table>
+          <button className="btn bp" style={{marginTop:'10px'}} onClick={() => alert('Auto-assigning top 10 leads in round-robin…')}>🤖 Auto-assign top 10</button>
         </div>
-      )}
-
+        {/* Unmap suggestions */}
+        <div className="panel" style={{borderLeft:'3px solid var(--wc)'}}>
+          <div className="ptitle">👤 AI unmap suggestions</div>
+          <div className="aibox" style={{marginBottom:'10px'}}>
+            {insights?.unmap_analysis || '2–3 clients flagged: revenue has not increased post-mapping, minimal RM interactions in 3+ months. Freeing slots opens capacity for higher-potential leads.'}
+          </div>
+          <table><thead><tr><th>Client</th><th>RM</th><th>Mapped since</th><th>Rev change</th></tr></thead>
+          <tbody>
+            {unmapSuggestions.map((u,i) => (
+              <tr key={i}>
+                <td>{u.name}</td>
+                <td>{u.rm}</td>
+                <td>{u.since}</td>
+                <td style={{color:'var(--dc)'}}>{u.revChange}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+      </div>
     </div>
   );
 };
-
 export default AiInsights;
