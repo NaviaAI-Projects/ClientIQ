@@ -821,6 +821,8 @@ router.get('/inactive', auth, async (req, res) => {
 // ── UNMAPPED CLIENT POOL ────────────────────────────────────────
 router.get('/unmapped-pool', auth, async (req, res) => {
   try {
+    const search = (req.query.search || '').trim();
+    const term   = search ? '%' + search + '%' : null;   // UCC / name search across the whole pool
     const cards = await pool.query(`
       SELECT
         (SELECT COUNT(*) FROM lead_pool WHERE status='unassigned' AND lead_score > 80)::int                         AS score_gt80,
@@ -853,9 +855,10 @@ router.get('/unmapped-pool', auth, async (req, res) => {
       LEFT JOIN mtd ON mtd.ucc = lp.ucc
       LEFT JOIN hold ON hold.ucc = lp.ucc
       WHERE lp.status = 'unassigned'
+        AND ($1::text IS NULL OR lp.ucc ILIKE $1 OR COALESCE(lp.client_name, c.name) ILIKE $1)
       ORDER BY lp.lead_score DESC NULLS LAST
       LIMIT 50
-    `);
+    `, [term]);
 
     const signalsOf = (r) => {
       const s = [];
