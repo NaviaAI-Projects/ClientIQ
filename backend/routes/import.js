@@ -104,6 +104,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
   }
 
   let processed = 0, failed = 0;
+  let dataDate  = null;   // real data/trade date parsed from the file (for the audit log Trade Date column)
   const errors  = [];
   const dbClient = await pool.connect();
 
@@ -175,6 +176,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
         if (!ucc || !tradeDate) { failed++; continue; }
         if (!knownUCCs.has(ucc)) { failed++; continue; }
+        if (!dataDate || tradeDate > dataDate) dataDate = tradeDate;  // capture the trade file's date
 
         const clientName  = String(row['Client Name'] || '').trim();
         const symbol      = String(row['Trading Symbol'] || '').trim();
@@ -624,11 +626,12 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       `${overwrite ? 'Replaced' : 'Imported'} ${processed} records, ${failed} failed (${req.file.originalname})`,
       null, failed > 0 ? 'partial' : 'success', 'import');
 
+    await pool.query(`ALTER TABLE import_log ADD COLUMN IF NOT EXISTS trade_date DATE`);
     await pool.query(`
-      INSERT INTO import_log (import_date, file_type, file_name, records_processed, records_failed, status, imported_by, created_at)
-      VALUES (NOW() AT TIME ZONE 'Asia/Kolkata',$1,$2,$3,$4,$5,$6,NOW() AT TIME ZONE 'Asia/Kolkata')
+      INSERT INTO import_log (import_date, file_type, file_name, records_processed, records_failed, status, imported_by, trade_date, created_at)
+      VALUES (NOW() AT TIME ZONE 'Asia/Kolkata',$1,$2,$3,$4,$5,$6,$7,NOW() AT TIME ZONE 'Asia/Kolkata')
     `, [file_type, req.file.originalname, processed, failed,
-        failed === 0 ? 'success' : (processed > 0 ? 'partial' : 'failed'), req.user.id]);
+        failed === 0 ? 'success' : (processed > 0 ? 'partial' : 'failed'), req.user.id, dataDate]);
 
     if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
     res.json({ message: 'Import complete', processed, failed, errors: errors.slice(0, 10) });
