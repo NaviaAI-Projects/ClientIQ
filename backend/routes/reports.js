@@ -16,12 +16,13 @@ router.get('/top-clients', auth, async (req, res) => {
         COALESCE(SUM(dt.options_premium_turnover), 0) as total_options
       FROM clients c
       LEFT JOIN daily_trades dt ON TRIM(dt.ucc) = TRIM(c.ucc)
+        AND dt.trade_date BETWEEN $2 AND $3
       LEFT JOIN rm_master rm ON rm.id = c.assigned_rm_id
       LEFT JOIN users u ON LOWER(u.name) = LOWER(rm.rm_name)
       GROUP BY c.ucc, c.name, c.client_type, u.name
       ORDER BY total_turnover DESC, total_brokerage DESC
       LIMIT $1
-    `, [limit]);
+    `, [limit, fromDate, toDate]);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -65,10 +66,11 @@ router.get('/rm-performance', auth, async (req, res) => {
       LEFT JOIN rm_master rm ON LOWER(rm.rm_name) = LOWER(u.name)
       LEFT JOIN clients c ON c.assigned_rm_id = rm.id AND c.is_mapped = true
       LEFT JOIN daily_trades dt ON dt.ucc = c.ucc
+        AND dt.trade_date BETWEEN $1 AND $2
       WHERE u.role = 'rm' AND u.is_active = true
       GROUP BY u.id, u.name
       ORDER BY total_turnover DESC
-    `);
+    `, [fromDate, toDate]);
     res.json(result.rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
@@ -157,16 +159,22 @@ router.get('/client-activity-trend', auth, async (req, res) => {
 // Concentration risk — top N clients % of revenue
 router.get('/concentration', auth, async (req, res) => {
   try {
+    // Concentration is measured on TURNOVER, not brokerage — Navia is a zero-brokerage
+    // broker (total brokerage ≈ ₹1k), so a brokerage basis would be noise. Turnover is the
+    // real driver of float/MTF/clearing revenue and the meaningful concentration metric.
     const result = await pool.query(`
-      SELECT ucc, SUM(brokerage_earned) AS total_brokerage
-      FROM daily_trades GROUP BY ucc ORDER BY total_brokerage DESC
+      SELECT ucc, SUM(
+        COALESCE(eq_cash_turnover,0) + COALESCE(eq_fo_turnover,0) +
+        COALESCE(options_premium_turnover,0) + COALESCE(commodity_fo_turnover,0)
+      ) AS total_turnover
+      FROM daily_trades GROUP BY ucc ORDER BY total_turnover DESC
     `);
-    const total = result.rows.reduce((s, r) => s + parseFloat(r.total_brokerage), 0);
+    const total = result.rows.reduce((s, r) => s + parseFloat(r.total_turnover), 0);
     const brackets = [10, 25, 50, 100, 200, 500];
     const concentration = brackets.map(n => ({
       label: `Top ${n}`,
       pct: total > 0
-        ? Math.round(result.rows.slice(0, n).reduce((s, r) => s + parseFloat(r.total_brokerage), 0) / total * 100)
+        ? Math.round(result.rows.slice(0, n).reduce((s, r) => s + parseFloat(r.total_turnover), 0) / total * 100)
         : 0
     }));
     res.json(concentration);
@@ -237,7 +245,7 @@ router.get('/churn-risk', auth, async (req, res) => {
       JOIN ai_scores a ON c.ucc = a.ucc
       LEFT JOIN users u ON c.assigned_rm_id = u.id
       WHERE a.score_date = (SELECT MAX(score_date) FROM ai_scores WHERE ucc = c.ucc)
-        AND a.churn_risk_score >= 60
+        AND a.churn_risk_score >= 6
       ORDER BY a.churn_risk_score DESC
       LIMIT 100
     `);
@@ -433,12 +441,20 @@ router.get('/revenue-ramp', auth, async (req, res) => {
 // ── rm-impact ─────────────────────────────────────────────────
 router.get('/rm-impact', auth, async (req, res) => {
   try {
+    // pre_ = client activity BEFORE the RM was assigned (dt.trade_date < mapped_date);
+    // post_ = activity AFTER assignment. Real split from each client's mapped_date — no placeholders.
     const result = await pool.query(`
       SELECT
         u.name AS rm_name,
         COUNT(DISTINCT c.ucc) AS total_clients,
-        COALESCE(SUM(dt.brokerage_earned), 0) AS total_brokerage,
-        COALESCE(SUM(dt.options_premium_turnover + dt.eq_fo_turnover), 0) AS total_options_to,
+        COALESCE(SUM(CASE WHEN c.mapped_date IS NOT NULL AND dt.trade_date >= c.mapped_date
+                          THEN dt.brokerage_earned ELSE 0 END), 0) AS post_brokerage,
+        COALESCE(SUM(CASE WHEN c.mapped_date IS NOT NULL AND dt.trade_date <  c.mapped_date
+                          THEN dt.brokerage_earned ELSE 0 END), 0) AS pre_brokerage,
+        COALESCE(SUM(CASE WHEN c.mapped_date IS NOT NULL AND dt.trade_date >= c.mapped_date
+                          THEN COALESCE(dt.options_premium_turnover,0) + COALESCE(dt.eq_fo_turnover,0) ELSE 0 END), 0) AS post_options_to,
+        COALESCE(SUM(CASE WHEN c.mapped_date IS NOT NULL AND dt.trade_date <  c.mapped_date
+                          THEN COALESCE(dt.options_premium_turnover,0) + COALESCE(dt.eq_fo_turnover,0) ELSE 0 END), 0) AS pre_options_to,
         COUNT(DISTINCT dt.trade_date) AS active_days
       FROM users u
       JOIN rm_master rm ON LOWER(rm.rm_name) = LOWER(u.name)
@@ -446,15 +462,15 @@ router.get('/rm-impact', auth, async (req, res) => {
       LEFT JOIN daily_trades dt ON dt.ucc = c.ucc
       WHERE u.role IN ('rm', 'team_leader') AND u.is_active = true AND c.is_mapped = true
       GROUP BY u.name
-      ORDER BY total_brokerage DESC
+      ORDER BY post_brokerage DESC
     `);
     res.json(result.rows.map(r => ({
       name:          r.rm_name,
       total_clients: parseInt(r.total_clients) || 0,
-      post_rev:      Math.round(parseFloat(r.total_brokerage) || 0),
-      pre_rev:       0,
-      post_vol:      parseFloat(((parseFloat(r.total_options_to) || 0) / 10000000).toFixed(2)),
-      pre_vol:       0,
+      post_rev:      Math.round(parseFloat(r.post_brokerage) || 0),
+      pre_rev:       Math.round(parseFloat(r.pre_brokerage) || 0),
+      post_vol:      parseFloat(((parseFloat(r.post_options_to) || 0) / 10000000).toFixed(2)),
+      pre_vol:       parseFloat(((parseFloat(r.pre_options_to)  || 0) / 10000000).toFixed(2)),
       active_days:   parseInt(r.active_days) || 0
     })));
   } catch (err) {
@@ -501,10 +517,19 @@ router.get('/client-analytics', auth, async (req, res) => {
 router.get('/daily-mis', auth, async (req, res) => {
   try {
     const { days = 17 } = req.query;
+    // Real float-income estimate from the latest ledger snapshot, and MTF by month — no placeholders.
+    const fdRow  = await pool.query(`SELECT COALESCE(fd_rate,6.5) AS fd_rate FROM pipeline_settings ORDER BY id DESC LIMIT 1`);
+    const fdRate = parseFloat(fdRow.rows[0]?.fd_rate ?? 6.5);
+    const ledRow = await pool.query(`SELECT COALESCE(SUM(opening_balance),0)::float AS bal FROM daily_ledger WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)`);
+    const dailyFloat = Math.round(Number(ledRow.rows[0]?.bal || 0) * (fdRate / 100) / 365);
+    const mtfRows = await pool.query(`SELECT month_year, COALESCE(SUM(interest_earned),0)::float AS interest, COUNT(DISTINCT ucc)::int AS clients FROM mtf_monthly GROUP BY month_year`);
+    const mtfByMonth = {}; mtfRows.rows.forEach(r => { mtfByMonth[r.month_year] = { interest: Number(r.interest), clients: r.clients }; });
+
     const result = await pool.query(`
       SELECT
         TO_CHAR(trade_date, 'DD Mon') AS date,
         trade_date,
+        TO_CHAR(trade_date, 'YYYY-MM') AS ym,
         EXTRACT(DOW FROM trade_date) AS dow,
         COALESCE(SUM(options_premium_turnover * 0.0005), 0) AS options_clearing,
         COALESCE(SUM(brokerage_earned), 0) AS equity_brokerage,
@@ -520,19 +545,22 @@ router.get('/daily-mis', auth, async (req, res) => {
     `, [parseInt(days), parseInt(days)]);
 
     // Get daily MTF client count from mtf_monthly (approximation)
-    const rows = result.rows.map(r => ({
-      date:             r.date,
-      is_expiry:        parseInt(r.dow) === 4,
-      options_clearing: Math.round(parseFloat(r.options_clearing) || 0),
-      equity_brokerage: Math.round(parseFloat(r.equity_brokerage) || 0),
-      mtf_interest:     0,
-      float_income:     41000,
-      eq_options_cr:    parseFloat(parseFloat(r.eq_options_cr).toFixed(1))   || 0,
-      comm_options_cr:  parseFloat(parseFloat(r.comm_options_cr).toFixed(1)) || 0,
-      fo_clients:       parseInt(r.fo_clients)     || 0,
-      equity_clients:   parseInt(r.equity_clients) || 0,
-      mtf_clients:      0,
-    }));
+    const rows = result.rows.map(r => {
+      const mm = mtfByMonth[r.ym] || { interest: 0, clients: 0 };
+      return {
+        date:             r.date,
+        is_expiry:        parseInt(r.dow) === 4,
+        options_clearing: Math.round(parseFloat(r.options_clearing) || 0),
+        equity_brokerage: Math.round(parseFloat(r.equity_brokerage) || 0),
+        mtf_interest:     Math.round(mm.interest / 30),   // daily approximation of that month's MTF interest
+        float_income:     dailyFloat,                     // from real ledger balance × fd_rate/365
+        eq_options_cr:    parseFloat(parseFloat(r.eq_options_cr).toFixed(1))   || 0,
+        comm_options_cr:  parseFloat(parseFloat(r.comm_options_cr).toFixed(1)) || 0,
+        fo_clients:       parseInt(r.fo_clients)     || 0,
+        equity_clients:   parseInt(r.equity_clients) || 0,
+        mtf_clients:      mm.clients,
+      };
+    });
 
     res.json({ income: rows, volume: rows });
   } catch (err) {
@@ -594,7 +622,7 @@ router.get('/ai-unmap-suggestions', auth, async (req, res) => {
       JOIN rm_master rm ON c.assigned_rm_id = rm.id
       JOIN ai_scores a ON c.ucc = a.ucc
       WHERE c.is_mapped = true
-        AND a.churn_risk_score >= 70
+        AND a.churn_risk_score >= 7
         AND a.score_date = (SELECT MAX(score_date) FROM ai_scores WHERE ucc = c.ucc)
       ORDER BY a.churn_risk_score DESC
       LIMIT 20

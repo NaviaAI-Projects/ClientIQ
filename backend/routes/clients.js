@@ -112,7 +112,7 @@ router.get('/:ucc/chart-data', auth, async (req, res) => {
           SUM(commodity_fo_turnover) AS comm_fut
         FROM daily_trades
         WHERE ucc = $1
-          AND trade_date >= NOW() - INTERVAL '6 months'
+          AND trade_date >= NOW() - INTERVAL '3 months'
         GROUP BY DATE_TRUNC('month', trade_date), TO_CHAR(trade_date, 'Mon''YY')
         ORDER BY month_start ASC
       `, [ucc]),
@@ -124,7 +124,7 @@ router.get('/:ucc/chart-data', auth, async (req, res) => {
           AVG(opening_balance) AS avg_balance
         FROM daily_ledger
         WHERE ucc = $1
-          AND ledger_date >= NOW() - INTERVAL '6 months'
+          AND ledger_date >= NOW() - INTERVAL '3 months'
         GROUP BY DATE_TRUNC('month', ledger_date), TO_CHAR(ledger_date, 'Mon''YY')
         ORDER BY month_start ASC
       `, [ucc]),
@@ -135,7 +135,7 @@ router.get('/:ucc/chart-data', auth, async (req, res) => {
           interest_earned AS mtf_interest
         FROM mtf_monthly
         WHERE ucc = $1
-          AND month_year >= TO_CHAR(NOW() - INTERVAL '6 months', 'YYYY-MM')
+          AND month_year >= TO_CHAR(NOW() - INTERVAL '3 months', 'YYYY-MM')
         ORDER BY month_year ASC
       `, [ucc])
     ]);

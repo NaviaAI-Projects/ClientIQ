@@ -355,6 +355,30 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             <Card label="Active trading days"    value={`${data.trade_days} / ${days}`}  sub={`${Math.round(data.trade_days/days*100)}% of available days`}                    borderColor={C.purple} valueColor={C.purple} />
           </div>
 
+          {/* CNC vs MIS split — sourced from the RMS trade file's Product Type (#28) */}
+          {data.cnc_mis && (data.cnc_mis.cnc + data.cnc_mis.mis + data.cnc_mis.other) > 0 && (
+            <div style={{ marginBottom: '18px' }}>
+              <Panel title="CNC vs MIS" sub="Delivery vs intraday turnover — from RMS trade file Product Type">
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '12px', padding: '6px 0' }}>
+                  <div>
+                    <div style={{ fontSize: '11px', color: 'var(--tx3)' }}>CNC · Delivery</div>
+                    <div style={{ fontSize: '19px', fontWeight: '800', color: C.blue }}>{FMT(data.cnc_mis.cnc)}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--tx3)' }}>{data.cnc_mis.cnc_trades.toLocaleString('en-IN')} trades</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '11px', color: 'var(--tx3)' }}>MIS · Intraday</div>
+                    <div style={{ fontSize: '19px', fontWeight: '800', color: C.amber }}>{FMT(data.cnc_mis.mis)}</div>
+                    <div style={{ fontSize: '11px', color: 'var(--tx3)' }}>{data.cnc_mis.mis_trades.toLocaleString('en-IN')} trades</div>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '11px', color: 'var(--tx3)' }}>Other (NRML/CO/BO)</div>
+                    <div style={{ fontSize: '19px', fontWeight: '800', color: C.purple }}>{FMT(data.cnc_mis.other)}</div>
+                  </div>
+                </div>
+              </Panel>
+            </div>
+          )}
+
           {/* Charts g2 */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
             <Panel title="Cumulative P&L trend" sub="Running total by trading day">
@@ -469,8 +493,8 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px', marginBottom: '18px' }}>
             <Card label="Options win rate"      value={options_stats.win_rate + '%'}      sub={`${options_stats.wins}W · ${options_stats.losses}L over ${data.trade_days} days`}   borderColor={C.blue}   valueColor={C.blue} />
             <Card label="Call vs Put split"     value={options_stats.call_pct + '% Calls'} sub={`${options_stats.call_pct >= 50 ? 'Bullish' : 'Bearish'} bias · ${100-options_stats.call_pct}% Puts`} borderColor={C.amber} valueColor={C.amber} />
-            <Card label="Best strike type"      value={options_stats.best_strike || 'ATM'} sub={`${options_stats.best_strike_wr}% win rate · your best outcome`}                   borderColor={C.green}  valueColor={C.green} />
-            <Card label="Avg holding duration"  value={options_stats.avg_hold_hrs + ' hrs'} sub="Mostly intraday options"                                                           borderColor={C.purple} valueColor={C.purple} />
+            <Card label="Most-traded instrument" value={options_stats.best_strike || '—'} sub="By turnover"                                                                          borderColor={C.green}  valueColor={C.green} />
+            <Card label="Avg holding duration"  value={options_stats.avg_hold_hrs != null ? options_stats.avg_hold_hrs + ' hrs' : '—'} sub={options_stats.avg_hold_hrs != null ? 'Mostly intraday options' : 'Not available from feed'} borderColor={C.purple} valueColor={C.purple} />
           </div>
 
           {/* Strike selection table */}
@@ -489,7 +513,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <tr key={i} style={{ background: r.best ? C.blue2 : 'transparent' }}>
                       <td style={{ padding: '11px 13px', fontWeight: '700' }}>{r.type}{r.best ? ' ★' : ''}</td>
                       <td style={{ padding: '11px 13px' }}>{r.trades}</td>
-                      <td style={{ padding: '11px 13px', minWidth: '120px' }}><MiniBar pct={r.win_rate} color={r.win_rate >= 60 ? C.green : r.win_rate >= 50 ? C.amber : C.red} /></td>
+                      <td style={{ padding: '11px 13px', minWidth: '120px' }}>{r.win_rate != null ? <MiniBar pct={r.win_rate} color={r.win_rate >= 60 ? C.green : r.win_rate >= 50 ? C.amber : C.red} /> : '—'}</td>
                       <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: r.avg_pnl >= 0 ? C.green : C.red }}>{FMTP(r.avg_pnl)}</td>
                       <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: r.total_pnl >= 0 ? C.green : C.red }}>{FMTP(r.total_pnl)}</td>
                       <td style={{ padding: '11px 13px' }}><Badge text={r.verdict} type={r.verdict === 'Best' ? 'g' : r.verdict === 'Watch' ? 'r' : r.verdict === 'Good' ? 'b' : 'a'} /></td>
@@ -517,8 +541,8 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               </div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '12px' }}>
                 {[
-                  { label: 'Call trades win rate', value: Math.min(75, options_stats.win_rate + 3) + '%', color: C.blue },
-                  { label: 'Put trades win rate',  value: Math.max(35, options_stats.win_rate - 5) + '%', color: C.purple },
+                  { label: 'Call turnover share', value: (options_stats.call_pct ?? 0) + '%', color: C.blue },
+                  { label: 'Put turnover share',  value: (100 - (options_stats.call_pct ?? 0)) + '%', color: C.purple },
                 ].map((s, i) => (
                   <div key={i} style={{ padding: '10px 12px', background: 'rgba(0,0,0,0.03)', borderRadius: '8px', border: '1px solid rgba(0,0,0,0.06)' }}>
                     <div style={{ fontSize: '11px', color: 'var(--tx3)', fontFamily: 'monospace', marginBottom: '4px' }}>{s.label}</div>
@@ -548,10 +572,10 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               </div>
               <div style={{ display: 'flex', gap: '10px', marginTop: '12px', flexWrap: 'wrap' }}>
                 <div style={{ padding: '6px 14px', borderRadius: '8px', background: C.amber2, border: '1px solid rgba(245,166,35,.2)', fontSize: '12px', fontWeight: '600', color: C.amber }}>
-                  Expiry win rate {options_stats.expiry_wr}%
+                  Expiry win rate {options_stats.expiry_wr != null ? options_stats.expiry_wr + '%' : '—'}
                 </div>
                 <div style={{ padding: '6px 14px', borderRadius: '8px', background: C.blue2, border: '1px solid rgba(74,143,245,.2)', fontSize: '12px', fontWeight: '600', color: C.blue }}>
-                  Non-expiry win rate {options_stats.normal_wr}%
+                  Non-expiry win rate {options_stats.normal_wr != null ? options_stats.normal_wr + '%' : '—'}
                 </div>
               </div>
             </Panel>
@@ -574,7 +598,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                       <td style={{ padding: '11px 13px' }}><ITag name={r.instrument} type={r.total_pnl >= 0 ? 'best' : 'worst'} /></td>
                       <td style={{ padding: '11px 13px' }}>{r.trades}</td>
                       <td style={{ padding: '11px 13px' }}>{r.lots}</td>
-                      <td style={{ padding: '11px 13px' }}><Badge text={r.win_rate + '%'} type={r.win_rate >= 60 ? 'g' : r.win_rate >= 50 ? 'a' : 'r'} /></td>
+                      <td style={{ padding: '11px 13px' }}><Badge text={r.win_rate != null ? r.win_rate + '%' : '—'} type={r.win_rate >= 60 ? 'g' : r.win_rate >= 50 ? 'a' : 'r'} /></td>
                       <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: r.avg_pnl >= 0 ? C.green : C.red }}>{FMTP(r.avg_pnl)}</td>
                       <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '700', color: r.total_pnl >= 0 ? C.green : C.red }}>{FMTP(r.total_pnl)}</td>
                       <td style={{ padding: '11px 13px', fontSize: '12px', color: r.bias === 'Calls' ? C.blue : C.purple }}>{r.bias}</td>
@@ -697,9 +721,9 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               <div style={{ fontSize: '12px', color: 'var(--tx3)', fontFamily: 'monospace', marginBottom: '16px' }}>Statistical observation based on {data.trade_days}-day trade history · Not investment advice</div>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
                 {[
-                  { label: 'Avg lots after a loss',  value: (patterns.lots_after_loss || 0).toFixed(1), sub: '+34% above your average', color: C.red },
-                  { label: 'Win rate after a loss',   value: (patterns.wr_after_loss || 0) + '%',        sub: `vs your normal ${patterns.wr_after_win || 0}%`, color: C.amber },
-                  { label: 'Est. P&L drag',           value: '–₹18K',                                   sub: `over ${data.trade_days} days`, color: C.red },
+                  { label: 'Avg lots after a loss',  value: patterns.lots_after_loss != null ? Number(patterns.lots_after_loss).toFixed(1) : '—', sub: 'Not available from feed', color: C.red },
+                  { label: 'Win rate after a loss',   value: patterns.wr_after_loss != null ? patterns.wr_after_loss + '%' : '—',              sub: 'Needs trade sequencing', color: C.amber },
+                  { label: 'Est. P&L drag',           value: '—',                                                                              sub: 'Not available from feed', color: C.red },
                 ].map((s, i) => (
                   <div key={i} style={{ background: 'var(--bg)', borderRadius: '10px', padding: '14px', border: '1px solid rgba(0,0,0,0.08)', textAlign: 'center' }}>
                     <div style={{ fontSize: '11px', color: 'var(--tx3)', fontFamily: 'monospace', marginBottom: '6px' }}>{s.label}</div>
@@ -739,7 +763,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <tr key={i}>
                       <td style={{ padding: '11px 13px' }}><ITag name={r.instrument} type="best" /></td>
                       <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: C.green }}>{FMTP(r.pnl)}</td>
-                      <td style={{ padding: '11px 13px' }}><Badge text={r.win_rate + '%'} type={r.win_rate >= 60 ? 'g' : 'a'} /></td>
+                      <td style={{ padding: '11px 13px' }}><Badge text={r.win_rate != null ? r.win_rate + '%' : '—'} type={r.win_rate >= 60 ? 'g' : 'a'} /></td>
                       <td style={{ padding: '11px 13px', color: 'var(--tx2)' }}>{r.trades}</td>
                     </tr>
                   ))}
@@ -762,7 +786,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <tr key={i}>
                       <td style={{ padding: '11px 13px' }}><ITag name={r.instrument} type="worst" /></td>
                       <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: C.red }}>–{FMT(Math.abs(r.pnl))}</td>
-                      <td style={{ padding: '11px 13px' }}><Badge text={r.win_rate + '%'} type={r.win_rate >= 50 ? 'a' : 'r'} /></td>
+                      <td style={{ padding: '11px 13px' }}><Badge text={r.win_rate != null ? r.win_rate + '%' : '—'} type={r.win_rate >= 50 ? 'a' : 'r'} /></td>
                       <td style={{ padding: '11px 13px', color: 'var(--tx2)' }}>{r.trades}</td>
                     </tr>
                   ))}

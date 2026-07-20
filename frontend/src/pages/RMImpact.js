@@ -1,103 +1,109 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import api from '../api';
 
-const revData = [
-  {rm:"Arjun",     pre:0,post:82000},
-  {rm:"Mubarak",   pre:0,post:61000},
-  {rm:"Srinivasan",pre:0,post:94000},
-  {rm:"Scott",     pre:0,post:88000},
-];
-const volData = [
-  {rm:"Arjun",     pre:12.4,post:18.2},
-  {rm:"Mubarak",   pre:8.8, post:13.4},
-  {rm:"Srinivasan",pre:15.2,post:22.6},
-  {rm:"Scott",     pre:13.1,post:20.8},
-];
-const TABLE = [
-  {rm:"Arjun",     measured:22, revPre:"—", revPost:"₹82,000",  revChg:<span className="ais l">New</span>, toPre:"₹12.4Cr",toPost:"₹18.2Cr",toChg:"+47%",floatChg:"+22%",unmap:4},
-  {rm:"Mubarak",   measured:18, revPre:"—", revPost:"₹61,000",  revChg:<span className="ais l">New</span>, toPre:"₹8.8Cr", toPost:"₹13.4Cr",toChg:"+52%",floatChg:"+14%",unmap:6},
-  {rm:"Srinivasan",measured:28, revPre:"—", revPost:"₹94,000",  revChg:<span className="ais l">New</span>, toPre:"₹15.2Cr",toPost:"₹22.6Cr",toChg:"+49%",floatChg:"+28%",unmap:3},
-  {rm:"Scott",     measured:26, revPre:"—", revPost:"₹88,000",  revChg:<span className="ais l">New</span>, toPre:"₹13.1Cr",toPost:"₹20.8Cr",toChg:"+59%",floatChg:"+19%",unmap:3},
-];
-const UNMAP = [
-  {ucc:"NV10278",name:"Farida Begum",rm:"Arjun",  since:"Jun 25", toPre:"₹4.2Cr",toPost:"₹0 (dormant)",  revPre:"₹18,000",revPost:"₹0",   rec:<span className="badge b-dor">Unmap</span>},
-  {ucc:"NV40188",name:"Mohan Das",   rm:"Mubarak",since:"Aug 25", toPre:"₹3.1Cr",toPost:"₹1.8Cr (–42%)", revPre:"₹12,000",revPost:"₹7,000",rec:<span className="badge b-dor">Unmap</span>},
-  {ucc:"NV50221",name:"Reena Thomas",rm:"Scott",  since:"Oct 25", toPre:"₹5.8Cr",toPost:"₹5.9Cr (+2%)",  revPre:"₹21,000",revPost:"₹22,000",rec:<span className="badge b-pend">Monitor</span>},
-];
+const RMImpact = () => {
+  const [data, setData]   = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-const RMImpact = () => (
-  <div>
-    <div className="ph"><h2>RM impact analysis</h2><p>Revenue and volume change per client — 3 months before RM mapping vs 3 months after</p></div>
-    <div className="alert a-i">ℹ️ Only clients mapped for at least 3 months are included. Revenue attribution starts from opt-in date. Pre-mapping baseline uses the 3 calendar months before opt-in.</div>
-    <div className="cards">
-      <div className="card cs"><div className="clbl">Clients with revenue increase</div><div className="cval">68%</div><div className="csub">of all mapped clients</div></div>
-      <div className="card ci"><div className="clbl">Avg options TO increase</div><div className="cval">+42%</div><div className="csub">post-mapping vs pre</div></div>
-      <div className="card cw"><div className="clbl">Avg float increase</div><div className="cval">+18%</div><div className="csub">ledger balance change</div></div>
-      <div className="card cd"><div className="clbl">Clients with no improvement</div><div className="cval">32%</div><div className="csub">Unmap candidates</div></div>
-    </div>
-    <div className="tc2">
-      <div className="panel">
-        <div className="ptitle">📊 RM attributed revenue — pre vs post mapping (avg/month)</div>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={revData} margin={{top:8,right:8,bottom:8,left:8}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-            <XAxis dataKey="rm" tick={{fontSize:10}} />
-            <YAxis tick={{fontSize:10}} tickFormatter={v=>v?"₹"+(v/1000).toFixed(0)+"K":"₹0"} />
-            <Tooltip formatter={v=>"₹"+v.toLocaleString("en-IN")} />
-            <Legend wrapperStyle={{fontSize:11}} iconSize={10} />
-            <Bar dataKey="pre"  name="Avg monthly rev 3M pre-mapping (₹)" fill="#d3d1c7" />
-            <Bar dataKey="post" name="Avg monthly rev 3M post-mapping (₹)" fill="#185fa5" radius={[4,4,0,0]} />
-          </BarChart>
-        </ResponsiveContainer>
+  useEffect(() => {
+    api.get('/analytics/rm-impact')
+      .then(res => setData(res.data))
+      .catch(() => setError('Could not load RM impact.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return <div className="ph"><h2>RM impact analysis</h2><p>Loading…</p></div>;
+  if (error)   return <div className="ph"><h2>RM impact analysis</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
+
+  const { meta, cards, per_rm, no_improvement } = data;
+  const dash = (v, suff = '') => (v == null ? '—' : v + suff);
+
+  return (
+    <div>
+      <div className="ph">
+        <h2>RM impact analysis</h2>
+        <p>Revenue and volume change per client — 3 months before RM mapping vs 3 months after</p>
       </div>
+
+      <div className="alert a-i">
+        ℹ️ Only clients mapped for at least 3 months are included. Revenue attribution starts from opt-in date. Pre-mapping baseline uses the 3 calendar months before opt-in.
+      </div>
+
+      {meta.insufficient_history && (
+        <div className="alert a-w" style={{ marginTop: 8 }}>
+          ⚠️ Pre/post-mapping impact can't be computed yet — it needs a stored mapping date and ~3 months of trade history on each side of the mapping. Current trade history is ~{meta.trade_months} month(s). Metrics below populate once mapping dates are tracked and history accumulates. Per-RM client counts are live.
+        </div>
+      )}
+
+      <div className="cards">
+        <div className="card cs"><div className="clbl">Clients with revenue increase</div><div className="cval">{dash(cards.rev_increase_pct, '%')}</div><div className="csub">of all mapped clients</div></div>
+        <div className="card ci"><div className="clbl">Avg options TO increase</div><div className="cval">{dash(cards.to_increase_pct, '%')}</div><div className="csub">post-mapping vs pre</div></div>
+        <div className="card cw"><div className="clbl">Avg float increase</div><div className="cval">{dash(cards.float_increase_pct, '%')}</div><div className="csub">ledger balance change</div></div>
+        <div className="card cd"><div className="clbl">Clients with no improvement</div><div className="cval">{dash(cards.no_improve_pct, '%')}</div><div className="csub">Unmap candidates</div></div>
+      </div>
+
+      <div className="tc2">
+        <div className="panel">
+          <div className="ptitle">📊 RM attributed revenue — pre vs post mapping (avg/month)</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={per_rm.map(r => ({ name: r.rm_name, Pre: r.rev_pre || 0, Post: r.rev_post || 0 }))}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+              <XAxis dataKey="name" tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} />
+              <Tooltip /><Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
+              <Bar dataKey="Pre" fill="#c7cfdb" name="Avg monthly rev 3M pre-mapping (₹)" />
+              <Bar dataKey="Post" fill="#185fa5" name="Avg monthly rev 3M post-mapping (₹)" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Awaiting mapping-date + pre/post history.</p>
+        </div>
+        <div className="panel">
+          <div className="ptitle">📊 Options turnover — pre vs post mapping (₹Cr avg/month)</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={per_rm.map(r => ({ name: r.rm_name, Pre: r.to_pre || 0, Post: r.to_post || 0 }))}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+              <XAxis dataKey="name" tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} />
+              <Tooltip /><Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
+              <Bar dataKey="Pre" fill="#c7cfdb" name="Avg options TO 3M pre (₹Cr)" />
+              <Bar dataKey="Post" fill="#e0803a" name="Avg options TO 3M post (₹Cr)" radius={[3, 3, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Awaiting mapping-date + pre/post history.</p>
+        </div>
+      </div>
+
       <div className="panel">
-        <div className="ptitle">📊 Options turnover — pre vs post mapping (₹Cr avg/month)</div>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={volData} margin={{top:8,right:8,bottom:8,left:8}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-            <XAxis dataKey="rm" tick={{fontSize:10}} />
-            <YAxis tick={{fontSize:10}} />
-            <Tooltip />
-            <Legend wrapperStyle={{fontSize:11}} iconSize={10} />
-            <Bar dataKey="pre"  name="Avg options TO 3M pre (₹Cr)"  fill="#d3d1c7" />
-            <Bar dataKey="post" name="Avg options TO 3M post (₹Cr)" fill="#9FE1CB" radius={[4,4,0,0]} />
-          </BarChart>
-        </ResponsiveContainer>
+        <div className="ptitle">📋 Per-RM summary — impact metrics</div>
+        <div className="tw"><table>
+          <thead><tr><th>RM</th><th>Clients measured</th><th>Avg rev pre (₹/mo)</th><th>Avg rev post (₹/mo)</th><th>Rev change</th><th>Avg options TO pre</th><th>Avg options TO post</th><th>TO change</th><th>Float change</th><th>Unmap candidates</th></tr></thead>
+          <tbody>
+            {per_rm.map(r => (
+              <tr key={r.rm_name}>
+                <td>{r.rm_name}</td>
+                <td>{r.clients_measured} <span style={{ color: 'var(--tx3)', fontSize: 11 }}>(of {r.total_clients})</span></td>
+                <td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>{r.unmap_candidates}</td>
+              </tr>
+            ))}
+            {per_rm.length === 0 && <tr><td colSpan={10} style={{ color: 'var(--tx3)' }}>No RMs.</td></tr>}
+          </tbody>
+        </table></div>
+      </div>
+
+      <div className="panel">
+        <div className="ptitle">➖ Clients showing no revenue improvement (unmap candidates)</div>
+        <div className="tw"><table>
+          <thead><tr><th>UCC</th><th>Client</th><th>RM</th><th>Mapped since</th><th>Options TO pre</th><th>Options TO post</th><th>Rev pre</th><th>Rev post</th><th>AI recommendation</th></tr></thead>
+          <tbody>
+            {no_improvement.map(r => (
+              <tr key={r.ucc}><td>{r.ucc}</td><td>{r.name}</td><td>{r.rm_name}</td><td>{r.mapped_since}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>{r.recommendation}</td></tr>
+            ))}
+            {no_improvement.length === 0 && <tr><td colSpan={9} style={{ color: 'var(--tx3)' }}>No unmap candidates identified (needs pre/post history).</td></tr>}
+          </tbody>
+        </table></div>
       </div>
     </div>
-    <div className="panel">
-      <div className="ptitle">📋 Per-RM summary — impact metrics</div>
-      <div className="tw"><table>
-        <thead><tr><th>RM</th><th>Clients measured</th><th>Avg rev pre</th><th>Avg rev post</th><th>Rev change</th><th>Avg options TO pre</th><th>Avg options TO post</th><th>TO change</th><th>Float change</th><th>Unmap candidates</th></tr></thead>
-        <tbody>
-          {TABLE.map((r,i)=>(
-            <tr key={i}>
-              <td>{r.rm}</td><td>{r.measured}</td><td>{r.revPre}</td><td>{r.revPost}</td><td>{r.revChg}</td>
-              <td>{r.toPre}</td><td>{r.toPost}</td>
-              <td style={{color:"var(--sc)"}}>{r.toChg}</td>
-              <td style={{color:"var(--sc)"}}>{r.floatChg}</td>
-              <td>{r.unmap}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
-    </div>
-    <div className="panel">
-      <div className="ptitle">👤 Clients showing no revenue improvement (unmap candidates)</div>
-      <div className="tw"><table>
-        <thead><tr><th>UCC</th><th>Client</th><th>RM</th><th>Mapped since</th><th>Options TO pre</th><th>Options TO post</th><th>Rev pre</th><th>Rev post</th><th>AI recommendation</th></tr></thead>
-        <tbody>
-          {UNMAP.map((r,i)=>(
-            <tr key={i}>
-              <td><span className="lc">{r.ucc}</span></td>
-              <td>{r.name}</td><td>{r.rm}</td><td>{r.since}</td>
-              <td>{r.toPre}</td><td>{r.toPost}</td>
-              <td>{r.revPre}</td><td>{r.revPost}</td><td>{r.rec}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
-    </div>
-  </div>
-);
+  );
+};
+
 export default RMImpact;

@@ -40,13 +40,13 @@ router.post('/login', async (req, res) => {
     res.json({
       token,
       user: {
-  id: user.id,
-  name: user.name,
-  email: user.email,
-  role: user.role,
-  supervisor_sub_role: user.supervisor_sub_role || null,
-  permissions: user.permissions || null
-}
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        supervisor_sub_role: user.supervisor_sub_role || null,
+        permissions: user.permissions || null
+      }
     });
 
   } catch (err) {
@@ -58,8 +58,8 @@ router.post('/login', async (req, res) => {
 router.get('/me', require('../middleware/auth'), async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, name, email, role, supervisor_sub_role, permissions 
-       FROM users 
+      `SELECT id, name, email, role, supervisor_sub_role, permissions
+       FROM users
        WHERE id = $1`,
       [req.user.id]
     );

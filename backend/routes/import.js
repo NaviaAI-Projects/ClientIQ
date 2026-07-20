@@ -58,9 +58,50 @@ function getSegment(exchg, instrName) {
   return 'EQ_CASH';
 }
 
+const FILE_LABELS = {
+  client_master: 'Client Master', trade: 'Trade File', brokerage: 'Brokerage File',
+  ledger: 'Ledger File', holdings: 'Holdings File', mtf: 'MTF File'
+};
+
 router.post('/upload', auth, upload.single('file'), async (req, res) => {
   const { file_type } = req.body;
+  const overwrite = req.body.overwrite === 'true' || req.body.overwrite === true;
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+
+  // ── Duplicate pre-check ───────────────────────────────────────
+  // Warn (HTTP 409) if this file/data was already imported, unless the user chose to overwrite.
+  // Client Master → conflict on ANY prior client_master import (it's a full-base replace).
+  // Other files   → conflict on same file_type + same file name already imported.
+  if (!overwrite) {
+    try {
+      const dup = file_type === 'client_master'
+        ? await pool.query(
+            `SELECT file_name, created_at, records_processed FROM import_log
+             WHERE file_type = 'client_master' AND status IN ('success','partial')
+             ORDER BY created_at DESC LIMIT 1`)
+        : await pool.query(
+            `SELECT file_name, created_at, records_processed FROM import_log
+             WHERE file_type = $1 AND LOWER(file_name) = LOWER($2) AND status IN ('success','partial')
+             ORDER BY created_at DESC LIMIT 1`,
+            [file_type, req.file.originalname]);
+      if (dup.rows.length > 0) {
+        const p = dup.rows[0];
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        const when = p.created_at ? new Date(p.created_at).toLocaleString('en-IN') : 'earlier';
+        return res.status(409).json({
+          conflict: true,
+          file_type,
+          file_name: req.file.originalname,
+          message: file_type === 'client_master'
+            ? `A Client Master file was already imported (${p.file_name}, ${p.records_processed} records on ${when}). Replacing will update all client records.`
+            : `"${req.file.originalname}" (${FILE_LABELS[file_type] || file_type}) was already uploaded on ${when} — ${p.records_processed} records. Replace the existing data?`,
+          existing: { file_name: p.file_name, imported_at: p.created_at, records: p.records_processed }
+        });
+      }
+    } catch (e) {
+      console.warn('Duplicate pre-check skipped:', e.message); // never block import on a check failure
+    }
+  }
 
   let processed = 0, failed = 0;
   const errors  = [];
@@ -213,6 +254,106 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       // Delete raw trades older than 90 days (per document)
       await dbClient.query(`DELETE FROM trades WHERE trade_date < CURRENT_DATE - INTERVAL '90 days'`);
 
+      // ══ 90-DAY TRADE SUMMARY (points 30/31) ═══════════════════════════════
+      // One summarized row per client per trade date, rebuilt from the raw
+      // `trades` table on every import. Trade Insights reads ONLY from this
+      // table. Realized P&L is stored (per-day matched buy/sell). A compact
+      // per-symbol breakdown is kept in the `symbols` JSONB so instrument-level
+      // panels can be reconstructed without touching raw trades. Rolls off at 90 days.
+      await dbClient.query(`
+        CREATE TABLE IF NOT EXISTS trade_summary_90d (
+          ucc          TEXT      NOT NULL,
+          trade_date   DATE      NOT NULL,
+          total_trades INTEGER   DEFAULT 0,
+          total_qty    NUMERIC   DEFAULT 0,
+          turnover     NUMERIC   DEFAULT 0,
+          eq_cash_to   NUMERIC   DEFAULT 0,
+          eq_fut_to    NUMERIC   DEFAULT 0,
+          comm_to      NUMERIC   DEFAULT 0,
+          options_to   NUMERIC   DEFAULT 0,
+          call_to      NUMERIC   DEFAULT 0,
+          put_to       NUMERIC   DEFAULT 0,
+          cnc_to       NUMERIC   DEFAULT 0,
+          mis_to       NUMERIC   DEFAULT 0,
+          other_to     NUMERIC   DEFAULT 0,
+          cnc_trades   INTEGER   DEFAULT 0,
+          mis_trades   INTEGER   DEFAULT 0,
+          buy_val      NUMERIC   DEFAULT 0,
+          sell_val     NUMERIC   DEFAULT 0,
+          buy_qty      NUMERIC   DEFAULT 0,
+          sell_qty     NUMERIC   DEFAULT 0,
+          realized_pnl NUMERIC   DEFAULT 0,
+          symbols      JSONB     DEFAULT '[]'::jsonb,
+          updated_at   TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (ucc, trade_date)
+        )
+      `);
+      await dbClient.query(`CREATE INDEX IF NOT EXISTS idx_tsum_date ON trade_summary_90d(trade_date)`);
+
+      // Rebuild the summary for every (ucc, trade_date) still present in trades
+      // (bounded to the 90-day window because trades were just purged above).
+      await dbClient.query(`
+        INSERT INTO trade_summary_90d (
+          ucc, trade_date, total_trades, total_qty, turnover,
+          eq_cash_to, eq_fut_to, comm_to, options_to, call_to, put_to,
+          cnc_to, mis_to, other_to, cnc_trades, mis_trades,
+          buy_val, sell_val, buy_qty, sell_qty, realized_pnl, symbols, updated_at)
+        WITH sym AS (
+          SELECT ucc, trade_date, trading_symbol AS s,
+            MAX(UPPER(COALESCE(option_type,''))) AS ot,
+            MAX(COALESCE(product_type,''))       AS pt,
+            MAX(UPPER(COALESCE(exchange,'')))    AS ex,
+            SUM(trade_qty)::float    AS q,
+            COUNT(*)::int            AS n,
+            SUM(traded_value)::float AS to_,
+            SUM(CASE WHEN UPPER(buy_sell) LIKE 'B%' THEN traded_value ELSE 0 END)::float AS bv,
+            SUM(CASE WHEN UPPER(buy_sell) LIKE 'S%' THEN traded_value ELSE 0 END)::float AS sv,
+            SUM(CASE WHEN UPPER(buy_sell) LIKE 'B%' THEN trade_qty    ELSE 0 END)::float AS bq,
+            SUM(CASE WHEN UPPER(buy_sell) LIKE 'S%' THEN trade_qty    ELSE 0 END)::float AS sq
+          FROM trades
+          GROUP BY ucc, trade_date, trading_symbol
+        )
+        SELECT
+          ucc, trade_date,
+          SUM(n)::int AS total_trades,
+          SUM(q)      AS total_qty,
+          SUM(to_)    AS turnover,
+          SUM(CASE WHEN ex IN ('NSE','BSE') THEN to_ ELSE 0 END) AS eq_cash_to,
+          SUM(CASE WHEN ex IN ('NFO','BFO') AND (ot IS NULL OR ot = '') THEN to_ ELSE 0 END) AS eq_fut_to,
+          SUM(CASE WHEN ex = 'MCX' THEN to_ ELSE 0 END) AS comm_to,
+          SUM(CASE WHEN ot IN ('CE','PE') THEN to_ ELSE 0 END) AS options_to,
+          SUM(CASE WHEN ot = 'CE' THEN to_ ELSE 0 END) AS call_to,
+          SUM(CASE WHEN ot = 'PE' THEN to_ ELSE 0 END) AS put_to,
+          SUM(CASE WHEN pt ILIKE '%CNC%' OR pt ILIKE '%DELIV%' THEN to_ ELSE 0 END) AS cnc_to,
+          SUM(CASE WHEN pt ILIKE '%MIS%' OR pt ILIKE '%INTRA%' THEN to_ ELSE 0 END) AS mis_to,
+          SUM(CASE WHEN pt NOT ILIKE '%CNC%' AND pt NOT ILIKE '%DELIV%'
+                    AND pt NOT ILIKE '%MIS%' AND pt NOT ILIKE '%INTRA%' THEN to_ ELSE 0 END) AS other_to,
+          SUM(CASE WHEN pt ILIKE '%CNC%' OR pt ILIKE '%DELIV%' THEN n ELSE 0 END)::int AS cnc_trades,
+          SUM(CASE WHEN pt ILIKE '%MIS%' OR pt ILIKE '%INTRA%' THEN n ELSE 0 END)::int AS mis_trades,
+          SUM(bv) AS buy_val, SUM(sv) AS sell_val, SUM(bq) AS buy_qty, SUM(sq) AS sell_qty,
+          SUM(CASE WHEN bq > 0 AND sq > 0
+                   THEN ((sv / NULLIF(sq,0)) - (bv / NULLIF(bq,0))) * LEAST(bq, sq)
+                   ELSE 0 END) AS realized_pnl,
+          jsonb_agg(jsonb_build_object(
+            's', s, 'ot', ot, 'pt', pt, 'ex', ex,
+            'bv', bv, 'sv', sv, 'bq', bq, 'sq', sq, 'to', to_, 'n', n)) AS symbols,
+          NOW()
+        FROM sym
+        GROUP BY ucc, trade_date
+        ON CONFLICT (ucc, trade_date) DO UPDATE SET
+          total_trades = EXCLUDED.total_trades, total_qty = EXCLUDED.total_qty, turnover = EXCLUDED.turnover,
+          eq_cash_to = EXCLUDED.eq_cash_to, eq_fut_to = EXCLUDED.eq_fut_to, comm_to = EXCLUDED.comm_to,
+          options_to = EXCLUDED.options_to, call_to = EXCLUDED.call_to, put_to = EXCLUDED.put_to,
+          cnc_to = EXCLUDED.cnc_to, mis_to = EXCLUDED.mis_to, other_to = EXCLUDED.other_to,
+          cnc_trades = EXCLUDED.cnc_trades, mis_trades = EXCLUDED.mis_trades,
+          buy_val = EXCLUDED.buy_val, sell_val = EXCLUDED.sell_val,
+          buy_qty = EXCLUDED.buy_qty, sell_qty = EXCLUDED.sell_qty,
+          realized_pnl = EXCLUDED.realized_pnl, symbols = EXCLUDED.symbols, updated_at = NOW()
+      `);
+
+      // Roll the summary window: drop rows for dates that have aged out of the 90-day window.
+      await dbClient.query(`DELETE FROM trade_summary_90d WHERE trade_date < CURRENT_DATE - INTERVAL '90 days'`);
+
       // Compute top_instrument per UCC per day
       const dailyGroups = Object.values(grouped);
       dailyGroups.forEach(g => {
@@ -256,10 +397,6 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
             top_instrument          = EXCLUDED.top_instrument,
             top_instrument_type     = EXCLUDED.top_instrument_type,
             call_put_ratio          = EXCLUDED.call_put_ratio
-            eq_cash_turnover         = EXCLUDED.eq_cash_turnover,
-            eq_fo_turnover           = EXCLUDED.eq_fo_turnover,
-            commodity_fo_turnover    = EXCLUDED.commodity_fo_turnover,
-            options_premium_turnover = EXCLUDED.options_premium_turnover
         `, params);
       }
 
@@ -378,9 +515,20 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       const today    = new Date().toISOString().split('T')[0];
       const holdings = {};
 
-      // Read raw file — pipe-delimited, no headers
-      const rawContent = fs.readFileSync(req.file.path, 'utf8');
-      const lines = rawContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      // Holdings may arrive as a plain pipe-delimited text file, OR as a spreadsheet
+      // (.ods / .xlsx) whose single column holds the pipe-delimited strings.
+      const fname = (req.file.originalname || req.file.path || '').toLowerCase();
+      let lines;
+      if (fname.endsWith('.ods') || fname.endsWith('.xlsx') || fname.endsWith('.xls')) {
+        const rowsArr = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+        lines = rowsArr
+          .map(r => (Array.isArray(r) ? String(r[0] ?? '') : String(r ?? '')).trim())
+          .filter(l => l.includes('|'));
+      } else {
+        // Read raw file — pipe-delimited, no headers
+        const rawContent = fs.readFileSync(req.file.path, 'utf8');
+        lines = rawContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      }
 
       for (const line of lines) {
         const parts = line.split('|');
@@ -445,7 +593,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const values = [], params = [];
         let pi = 1;
         for (const r of batch) {
-          values.push(`($${pi++},$${pi++},$${pi++},$${pi++})`);
+          values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
           params.push(r.ucc, r.monthYear, 0, r.amount, r.fromDate || null, r.toDate || null, r.interestRate || 0);
         }
         await dbClient.query(`
@@ -471,7 +619,10 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     const audit = require('../utils/audit');
 
     // Inside handleUpload after dbClient.query('COMMIT'):
-    await audit(req, 'FILE_IMPORT', `Imported ${processed} records, ${failed} failed`, null, failed > 0 ? 'partial' : 'success', 'import');
+    await audit(req,
+      overwrite ? 'IMPORT_REPLACED' : 'FILE_IMPORT',
+      `${overwrite ? 'Replaced' : 'Imported'} ${processed} records, ${failed} failed (${req.file.originalname})`,
+      null, failed > 0 ? 'partial' : 'success', 'import');
 
     await pool.query(`
       INSERT INTO import_log (import_date, file_type, file_name, records_processed, records_failed, status, imported_by, created_at)

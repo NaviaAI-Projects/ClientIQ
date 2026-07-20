@@ -1,106 +1,111 @@
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useState, useCallback } from 'react';
 import api from '../api';
+import { ClientLink } from '../components/ui';
 
-const tb = t => { if(!t) return 'b-ri'; const l=t.toLowerCase(); if(l.includes('nri')||l.includes('nre')||l.includes('nro')) return 'b-nri'; if(l.includes('hv')) return 'b-hv'; return 'b-ri'; };
-const sc = s => s>=70?'h':s>=50?'m':'l';
-const fmt = v => { const n=parseFloat(v)||0; if(n>=10000000) return '₹'+(n/10000000).toFixed(1)+'Cr'; if(n>=100000) return '₹'+(n/100000).toFixed(1)+'L'; if(n>=1000) return '₹'+(n/1000).toFixed(0)+'K'; return v?'₹'+n:'—'; };
+const rupee = (n) => {
+  const v = Number(n) || 0;
+  if (v === 0) return '—';
+  if (Math.abs(v) >= 1e7) return '₹' + (v / 1e7).toFixed(2) + 'Cr';
+  if (Math.abs(v) >= 1e5) return '₹' + (v / 1e5).toFixed(2) + 'L';
+  return '₹' + Math.round(v).toLocaleString('en-IN');
+};
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const mmY = (d) => { if (!d) return '—'; const dt = new Date(d); return `${MON[dt.getUTCMonth()]} ${dt.getUTCFullYear()}`; };
+const scoreClass = (s) => (s == null ? 'ais l' : s >= 75 ? 'ais h' : s >= 60 ? 'ais m' : 'ais l');
+const statusBadge = (s) => s === 'Active' ? 'b-act' : s === 'Lead' ? 'b-lead' : 'b-dor';
 
 const AllClients = () => {
-  const [clients, setClients] = useState([]);
-  const [stats, setStats]     = useState({});
-  const [search, setSearch]   = useState('');
-  const [typeF, setTypeF]     = useState('');
-  const [planF, setPlanF]     = useState('');
-  const [statusF, setStatusF] = useState('');
-  const [activityF, setActivity] = useState('');
+  const [data, setData]   = useState(null);
   const [loading, setLoading] = useState(true);
-  const navigate = useNavigate();
+  const [error, setError] = useState('');
+  const [page, setPage]   = useState(1);
+  const [f, setF] = useState({ type: '', plan: '', status: '', activity: '', search: '' });
 
-  useEffect(() => {
-    const params = new URLSearchParams();
-    if (typeF)     params.append('type', typeF);
-    if (planF)     params.append('plan', planF);
-    if (statusF)   params.append('status', statusF);
-    if (activityF) params.append('activity', activityF);
-    if (search)    params.append('search', search);
-    params.append('limit', '100');
-
-    Promise.all([api.get(`/clients?${params}`), api.get('/dashboard/company')])
-      .then(([c, s]) => { setClients(c.data?.clients || c.data || []); setStats(s.data || {}); })
-      .catch(console.error).finally(() => setLoading(false));
-  }, [typeF, planF, statusF, activityF]);
-
-  const handleSearch = () => {
+  const fetchData = useCallback(() => {
     setLoading(true);
-    const params = new URLSearchParams({ search, limit: 100 });
-    if (typeF)   params.append('type', typeF);
-    if (planF)   params.append('plan', planF);
-    api.get(`/clients?${params}`).then(r => setClients(r.data?.clients || r.data || [])).catch(console.error).finally(() => setLoading(false));
-  };
+    const params = new URLSearchParams({ page, limit: 50, ...f });
+    api.get('/analytics/all-clients?' + params.toString())
+      .then(res => setData(res.data))
+      .catch(() => setError('Could not load clients.'))
+      .finally(() => setLoading(false));
+  }, [page, f]);
 
-  const statusBadge = c => {
-    if (c.mapping_date) return <span className="badge b-act">Active</span>;
-    if (c.lead_state)   return <span className="badge b-lead">Lead</span>;
-    if (!c.is_active)   return <span className="badge b-dor">Dormant</span>;
-    return <span className="badge b-act">Active</span>;
-  };
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  const setFilter = (k, v) => { setPage(1); setF(prev => ({ ...prev, [k]: v })); };
+
+  const cards = data?.cards;
+  const clients = data?.clients || [];
+  const total = data?.total || 0;
+  const pages = Math.max(1, Math.ceil(total / 50));
 
   return (
     <div>
-      <div className="ph"><h2>All {(stats.total_clients||0).toLocaleString('en-IN')} clients</h2><p>Complete client universe — mapped, unmapped, paying, zero-brokerage</p></div>
-      <div className="cards">
-        <div className="card ci"><div className="clbl">Total clients</div><div className="cval">{(stats.total_clients||0).toLocaleString('en-IN')}</div></div>
-        <div className="card cs"><div className="clbl">Mapped to RM</div><div className="cval">{stats.mapped_clients||0}</div><div className="csub">{stats.total_clients?((stats.mapped_clients||0)/stats.total_clients*100).toFixed(1):0}% of base</div></div>
-        <div className="card cw"><div className="clbl">Unmapped</div><div className="cval">{(stats.total_clients||0)-(stats.mapped_clients||0)}</div></div>
-        <div className="card cp"><div className="clbl">In lead pipeline</div><div className="cval">{stats.active_leads||0}</div></div>
+      <div className="ph">
+        <h2>All {cards ? cards.total.toLocaleString('en-IN') : ''} clients</h2>
+        <p>Complete client universe — mapped, unmapped, paying, zero-brokerage</p>
       </div>
+
+      {cards && (
+        <div className="cards">
+          <div className="card ci"><div className="clbl">Total clients</div><div className="cval">{cards.total.toLocaleString('en-IN')}</div></div>
+          <div className="card cs"><div className="clbl">Mapped to RM</div><div className="cval">{cards.mapped.toLocaleString('en-IN')}</div><div className="csub">{cards.total ? (cards.mapped / cards.total * 100).toFixed(1) : 0}% of base</div></div>
+          <div className="card cw"><div className="clbl">Unmapped</div><div className="cval">{cards.unmapped.toLocaleString('en-IN')}</div></div>
+          <div className="card cp"><div className="clbl">In lead pipeline</div><div className="cval">{cards.in_pipeline.toLocaleString('en-IN')}</div></div>
+        </div>
+      )}
+
       <div className="panel">
-        <div className="phd">
-          <div className="ptitle" style={{marginBottom:0}}>🔍 Filter</div>
-          <div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}>
-            <select style={{width:'110px'}} value={typeF} onChange={e=>setTypeF(e.target.value)}>
-              <option value="">All types</option><option value="nri">NRI</option><option value="hv">HV</option><option value="ri">RI</option>
+        <div className="phd" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <div className="ptitle" style={{ marginBottom: 0 }}>🔎 Filter</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <select style={{ width: 110 }} value={f.type} onChange={e => setFilter('type', e.target.value)}>
+              <option value="">All types</option><option value="NRI">NRI</option><option value="HV">HV</option><option value="RI">RI</option>
             </select>
-            <select style={{width:'120px'}} value={planF} onChange={e=>setPlanF(e.target.value)}>
-              <option value="">All plans</option><option value="paying">Paying</option><option value="zero-brokerage">Zero-brk</option>
+            <select style={{ width: 120 }} value={f.plan} onChange={e => setFilter('plan', e.target.value)}>
+              <option value="">All plans</option><option value="paying">Paying</option><option value="zero">Zero-brk</option>
             </select>
-            <select style={{width:'110px'}} value={statusF} onChange={e=>setStatusF(e.target.value)}>
+            <select style={{ width: 110 }} value={f.status} onChange={e => setFilter('status', e.target.value)}>
               <option value="">All status</option><option value="mapped">Mapped</option><option value="unmapped">Unmapped</option><option value="lead">Lead</option>
             </select>
-            <select style={{width:'130px'}} value={activityF} onChange={e=>setActivity(e.target.value)}>
-              <option value="">All activity</option><option value="active_30d">Active 30d</option><option value="dormant_3mo">Dormant 3mo+</option><option value="never_traded">Never traded</option>
+            <select style={{ width: 130 }} value={f.activity} onChange={e => setFilter('activity', e.target.value)}>
+              <option value="">All activity</option><option value="active">Active 30d</option><option value="dormant">Dormant 3mo+</option><option value="never">Never traded</option>
             </select>
-            <input style={{width:'160px'}} placeholder="UCC or name…" value={search} onChange={e=>setSearch(e.target.value)} onKeyDown={e=>e.key==='Enter'&&handleSearch()} />
-            <button className="btn sm bp" onClick={handleSearch}>🔍 Search</button>
-            <button className="btn sm">⬇ Export</button>
+            <input style={{ width: 170 }} placeholder="UCC or name…" value={f.search} onChange={e => setFilter('search', e.target.value)} />
+            <button className="btn sm">⬇️ Export</button>
           </div>
         </div>
         <div className="tw"><table>
           <thead><tr><th>UCC</th><th>Name</th><th>Type</th><th>Plan</th><th>Status</th><th>Last trade</th><th>MTD TO</th><th>MTD Rev</th><th>AI Score</th><th>RM</th></tr></thead>
           <tbody>
-            {loading ? (
-              <tr><td colSpan="10" style={{padding:'30px',textAlign:'center',color:'var(--tx3)'}}>Loading clients...</td></tr>
-            ) : clients.length===0 ? (
-              <tr><td colSpan="10" style={{padding:'30px',textAlign:'center',color:'var(--tx3)'}}>No clients found</td></tr>
-            ) : clients.map((c,i) => (
-              <tr key={i}>
-                <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:c.ucc}})}>{c.ucc}</span></td>
-                <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:c.ucc}})}>{c.name}</span></td>
-                <td><span className={`badge ${tb(c.client_type)}`}>{c.client_type}</span></td>
-                <td><span className={`badge ${c.plan==='paying'?'b-pay':'b-zero'}`}>{c.plan==='paying'?'Paying':'Zero-brk'}</span></td>
-                <td>{statusBadge(c)}</td>
-                <td>{c.last_trade_date?new Date(c.last_trade_date).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'2-digit'}):'—'}</td>
-                <td>{fmt(c.mtd_turnover)}</td>
-                <td>{fmt(c.mtd_revenue)}</td>
-                <td><span className={`ais ${sc(c.lead_score)}`}>{Math.round(c.lead_score||0)}</span></td>
-                <td>{c.rm_name||'—'}</td>
+            {loading && <tr><td colSpan={10} style={{ color: 'var(--tx3)' }}>Loading…</td></tr>}
+            {error && !loading && <tr><td colSpan={10} style={{ color: 'var(--dc)' }}>{error}</td></tr>}
+            {!loading && !error && clients.map(r => (
+              <tr key={r.ucc}>
+                <td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
+                <td><span className="badge b-ri">{r.client_type}</span></td>
+                <td><span className="badge b-zero">{/paying/i.test(r.plan) ? 'Paying' : 'Zero-brk'}</span></td>
+                <td><span className={`badge ${statusBadge(r.status)}`}>{r.status}</span></td>
+                <td>{mmY(r.last_trade)}</td>
+                <td>{rupee(r.mtd_to)}</td>
+                <td>{rupee(r.mtd_rev)}</td>
+                <td><span className={scoreClass(r.lead_score)}>{r.lead_score == null ? '—' : r.lead_score}</span></td>
+                <td>{r.rm_name}</td>
               </tr>
             ))}
+            {!loading && !error && clients.length === 0 && <tr><td colSpan={10} style={{ color: 'var(--tx3)' }}>No clients match.</td></tr>}
           </tbody>
         </table></div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 10, fontSize: 12, color: 'var(--tx2)' }}>
+          <span>{total.toLocaleString('en-IN')} clients · page {page} of {pages}</span>
+          <span style={{ display: 'flex', gap: 6 }}>
+            <button className="btn sm" disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>← Prev</button>
+            <button className="btn sm" disabled={page >= pages} onClick={() => setPage(p => p + 1)}>Next →</button>
+          </span>
+        </div>
       </div>
     </div>
   );
 };
+
 export default AllClients;

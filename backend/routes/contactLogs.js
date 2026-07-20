@@ -3,46 +3,108 @@ const router  = express.Router();
 const pool    = require('../db');
 const auth    = require('../middleware/auth');
 
-// GET interactions — exclude automated system duplicates
+// Map a raw interaction_type to a friendly label the frontend understands.
+// (Contact Log / Interaction Log read `type`, `channel`, `duration_minutes`, `interaction_date`, `is_lead`.)
+const TYPE_CASE = `
+  CASE
+    WHEN UPPER(i.interaction_type) LIKE '%CLICK%'    THEN 'Click-to-call'
+    WHEN UPPER(i.interaction_type) LIKE '%WHATSAPP%' THEN 'WhatsApp'
+    WHEN UPPER(i.interaction_type) LIKE '%EMAIL%'    THEN 'Email'
+    WHEN UPPER(i.interaction_type) LIKE '%MEET%'     THEN 'Meeting'
+    WHEN UPPER(i.interaction_type) LIKE '%CALL%'     THEN 'Call'
+    WHEN i.interaction_type IS NULL OR i.interaction_type = '' THEN 'Note'
+    ELSE i.interaction_type
+  END`;
+
+// GET /api/contact-logs — interactions for the logged-in RM.
+// Optional query: ?ucc=<UCC>  (single client)   ?limit=<n>   (default 50)
 router.get('/', auth, async (req, res) => {
   try {
-    const result = await pool.query(`
-      SELECT DISTINCT ON (ucc, interaction_type, DATE(created_at),
-             COALESCE(SUBSTRING(notes FROM 'Subject: (.+)'), notes))
-        id, ucc, interaction_type, notes, outcome, follow_up_date, created_at,
-        COALESCE(client_name, (SELECT name FROM clients WHERE ucc = interactions.ucc LIMIT 1)) as client_name
-      FROM interactions
-      WHERE rm_id = $1
-        AND notes NOT LIKE '%from alert@navia.co.in%'
-        AND notes NOT LIKE '%sent to 9%'
-      ORDER BY ucc, interaction_type, DATE(created_at),
-               COALESCE(SUBSTRING(notes FROM 'Subject: (.+)'), notes),
-               created_at DESC
-    `, [req.user.id]);
+    const { ucc } = req.query;
+    const limit   = Math.min(parseInt(req.query.limit) || 50, 200);
 
-    res.json(result.rows);
+    const params = [req.user.id];
+    let uccFilter = '';
+    if (ucc) { params.push(ucc); uccFilter = `AND i.ucc = $${params.length}`; }
+    params.push(limit);
+    const limitIdx = params.length;
+
+    const result = await pool.query(`
+      SELECT DISTINCT ON (i.ucc, i.interaction_type, DATE(COALESCE(i.interaction_date, i.created_at)),
+             COALESCE(SUBSTRING(i.notes FROM 'Subject: (.+)'), i.notes))
+        i.id, i.ucc,
+        COALESCE(i.client_name, c.name) AS client_name,
+        COALESCE(i.client_name, c.name) AS name,
+        ${TYPE_CASE} AS type,
+        ${TYPE_CASE} AS channel,
+        i.interaction_type AS raw_type,
+        i.outcome,
+        i.notes,
+        i.follow_up_date,
+        COALESCE(i.interaction_date, i.created_at) AS interaction_date,
+        CASE WHEN i.duration_seconds IS NULL THEN NULL
+             ELSE ROUND(i.duration_seconds / 60.0)::int END AS duration_minutes,
+        i.duration_seconds,
+        (c.is_mapped IS NOT TRUE) AS is_lead
+      FROM interactions i
+      LEFT JOIN clients c ON i.ucc = c.ucc
+      WHERE i.rm_id = $1
+        ${uccFilter}
+        AND (i.notes IS NULL OR (i.notes NOT LIKE '%from alert@navia.co.in%' AND i.notes NOT LIKE '%sent to 9%'))
+      ORDER BY i.ucc, i.interaction_type,
+               DATE(COALESCE(i.interaction_date, i.created_at)),
+               COALESCE(SUBSTRING(i.notes FROM 'Subject: (.+)'), i.notes),
+               COALESCE(i.interaction_date, i.created_at) DESC
+      LIMIT $${limitIdx}
+    `, params);
+
+    // DISTINCT ON forces its own ordering; re-sort newest-first for display.
+    const rows = result.rows.sort((a, b) =>
+      new Date(b.interaction_date) - new Date(a.interaction_date));
+
+    res.json(rows);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Server Error' });
+    console.error('contact-logs GET error:', err.message);
+    res.status(500).json({ message: 'Server Error', error: err.message });
   }
 });
 
-// POST new interaction
+// POST /api/contact-logs — log an interaction.
+// Accepts either {type,...} (Contact Log page) or {interaction_type,...} (other callers).
 router.post('/', auth, async (req, res) => {
-  const { ucc, interaction_type, outcome, notes, follow_up_date } = req.body;
+  const {
+    ucc, type, interaction_type, channel, outcome, notes,
+    duration, duration_seconds, datetime, follow_up_date
+  } = req.body;
+
+  const finalType = type || interaction_type || channel || 'Note';
+
+  // Duration may arrive as minutes (`duration`) or seconds (`duration_seconds`).
+  let durSecs = null;
+  if (duration_seconds != null && duration_seconds !== '') durSecs = parseInt(duration_seconds);
+  else if (duration != null && duration !== '')            durSecs = Math.round(parseFloat(duration) * 60);
+  if (durSecs != null && Number.isNaN(durSecs)) durSecs = null;
+
+  // interaction_date from the form's datetime, else now.
+  let interactionDate = null;
+  if (datetime) { const d = new Date(datetime); if (!isNaN(d)) interactionDate = d.toISOString(); }
+
   try {
     const clientRes  = await pool.query('SELECT name FROM clients WHERE ucc = $1 LIMIT 1', [ucc]);
     const clientName = clientRes.rows[0]?.name || null;
 
     const result = await pool.query(`
-      INSERT INTO interactions (ucc, rm_id, interaction_type, outcome, notes, follow_up_date, client_name, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      INSERT INTO interactions
+        (ucc, rm_id, interaction_type, outcome, notes, duration_seconds,
+         follow_up_date, client_name, interaction_date, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()), NOW())
       RETURNING *
-    `, [ucc, req.user.id, interaction_type, outcome, notes, follow_up_date || null, clientName]);
+    `, [ucc, req.user.id, finalType, outcome, notes, durSecs,
+        follow_up_date || null, clientName, interactionDate]);
 
     res.json({ success: true, data: result.rows[0] });
   } catch (err) {
-    console.error(err);
+    console.error('contact-logs POST error:', err.message);
     res.status(500).json({ message: err.message });
   }
 });

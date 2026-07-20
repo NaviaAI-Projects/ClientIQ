@@ -33,6 +33,8 @@ const ImportData = () => {
   const [bulkRunning, setBulkRunning] = useState(false);
   const [rescoring, setRescoring]   = useState(false);
   const [statusMsg, setStatusMsg]   = useState(null);
+  const [rescoreMsg, setRescoreMsg] = useState(null);
+  const [conflict, setConflict]     = useState(null);
   const [logFilter, setLogFilter]   = useState('');
   const [showAll, setShowAll]       = useState(false);
   const [dragOver, setDragOver]     = useState(false);
@@ -49,28 +51,35 @@ const ImportData = () => {
   const getLastImport = type =>
     logs.find(l => l.file_type === type && ['success','partial'].includes(l.status)) || null;
 
-  const uploadFile = async (file, fileType) => {
+  const uploadFile = async (file, fileType, overwrite = false) => {
     const fd = new FormData();
     fd.append('file', file);
     if (fileType) fd.append('file_type', fileType);
+    if (overwrite) fd.append('overwrite', 'true');
     const res = await api.post('/import/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
     return res.data;
   };
 
-  const handleCardUpload = async (fileType, file) => {
-    if (!file) return;
+  // Single-card upload. overwrite=true is used after the user confirms a duplicate replace.
+  const doUpload = async (fileType, file, overwrite = false) => {
     setUploading(u => ({ ...u, [fileType]: true }));
     setResults(r => ({ ...r, [fileType]: null }));
     try {
-      const data = await uploadFile(file, fileType);
+      const data = await uploadFile(file, fileType, overwrite);
       setResults(r => ({ ...r, [fileType]: { success: true, ...data } }));
       fetchLogs();
     } catch (err) {
-      setResults(r => ({ ...r, [fileType]: { success: false, message: err.response?.data?.message || 'Upload failed' } }));
+      if (err.response?.status === 409 && err.response?.data?.conflict) {
+        const d = err.response.data;
+        setConflict({ mode: 'single', fileType, file, message: d.message, importedAt: d.existing?.imported_at, records: d.existing?.records });
+      } else {
+        setResults(r => ({ ...r, [fileType]: { success: false, message: err.response?.data?.message || 'Upload failed' } }));
+      }
     } finally {
       setUploading(u => ({ ...u, [fileType]: false }));
     }
   };
+  const handleCardUpload = (fileType, file) => { if (file) doUpload(fileType, file, false); };
 
   const addToQueue = (files) => {
     const newItems = [], unrecognised = [];
@@ -87,37 +96,72 @@ const ImportData = () => {
     setQueued(q => [...q, ...newItems]);
   };
 
-  const runBulkUpload = async () => {
+  const runBulkUpload = async (overwriteAll = false) => {
     if (queued.length === 0) return;
     setBulkRunning(true);
     const ordered = [...queued].sort((a, b) => FILE_CONFIGS[a.type].step - FILE_CONFIGS[b.type].step);
+    const conflicts = [];
+    let errors = 0;
     for (const item of ordered) {
       setQueued(q => q.map(x => x.id === item.id ? { ...x, status: 'uploading' } : x));
       try {
-        const data = await uploadFile(item.file, item.type);
+        const data = await uploadFile(item.file, item.type, overwriteAll);
         setQueued(q => q.map(x => x.id === item.id ? { ...x, status: 'done', result: { success: true, ...data } } : x));
       } catch (err) {
-        setQueued(q => q.map(x => x.id === item.id ? { ...x, status: 'error', result: { success: false, message: err.response?.data?.message || 'Failed' } } : x));
+        if (err.response?.status === 409 && err.response?.data?.conflict) {
+          conflicts.push({ item, existing: err.response.data.existing });
+          setQueued(q => q.map(x => x.id === item.id ? { ...x, status: 'conflict', result: { success: false, message: 'Already uploaded' } } : x));
+        } else {
+          errors++;
+          setQueued(q => q.map(x => x.id === item.id ? { ...x, status: 'error', result: { success: false, message: err.response?.data?.message || 'Failed' } } : x));
+        }
       }
     }
     setBulkRunning(false);
     fetchLogs();
-    const done = queued.length, errors = queued.filter(q => q.status === 'error').length;
+    // Duplicates found → ask before overwriting (unless the user already chose Replace all).
+    if (conflicts.length > 0 && !overwriteAll) {
+      setConflict({
+        mode: 'bulk',
+        files: conflicts.map(c => ({
+          label:      FILE_CONFIGS[c.item.type]?.label || c.item.type,
+          importedAt: c.existing?.imported_at,
+          records:    c.existing?.records
+        }))
+      });
+      return;
+    }
+    const done = ordered.length;
     setStatusMsg({ success: errors === 0, text: `Bulk import complete — ${done} files processed${errors > 0 ? `, ${errors} failed` : ''}` });
     setTimeout(() => setStatusMsg(null), 5000);
   };
+
+  // Duplicate-conflict resolvers
+  const doReplaceSingle = () => {
+    if (!conflict || conflict.mode !== 'single') return;
+    const { fileType, file } = conflict;
+    setConflict(null);
+    doUpload(fileType, file, true);
+  };
+  const doReplaceBulk = () => { setConflict(null); runBulkUpload(true); };
 
   const runRescore = async () => {
     setRescoring(true);
     try {
       const res = await api.post('/ai/rescore');
-      setStatusMsg({ success: true, text: `AI rescoring complete — ${res.data.processed} clients scored` });
+      setRescoreMsg({ success: true, title: 'AI rescoring complete', text: `${res.data.processed} clients scored successfully.` });
     } catch (err) {
-      setStatusMsg({ success: false, text: err.response?.data?.message || 'Rescoring failed' });
+      setRescoreMsg({ success: false, title: 'Rescoring failed', text: err.response?.data?.message || 'Rescoring failed' });
     } finally {
       setRescoring(false);
-      setTimeout(() => setStatusMsg(null), 5000);
     }
+  };
+
+  const fmtImportDate = d => {
+    if (!d) return 'earlier';
+    const dt = new Date(d);
+    return isNaN(dt) ? 'earlier'
+      : dt.toLocaleString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   };
 
   const pendingCount   = queued.filter(q => q.status === 'pending').length;
@@ -132,9 +176,86 @@ const ImportData = () => {
         <p>Upload all 6 Symphony files together or one by one — type is auto-detected from the filename</p>
       </div>
 
+      {/* Upload status — top banner (unchanged from your original) */}
       {statusMsg && (
         <div className={`alert ${statusMsg.success ? 'a-s' : 'a-d'}`} style={{ marginBottom: '14px' }}>
           {statusMsg.text}
+        </div>
+      )}
+
+      {/* AI Rescore confirmation — pop-up (only here, as requested) */}
+      {rescoreMsg && (
+        <div
+          onClick={() => setRescoreMsg(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(10,18,38,0.45)',
+                   display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2000 }}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: '14px', padding: '30px 34px',
+                     maxWidth: '440px', width: '90%', textAlign: 'center',
+                     boxShadow: '0 16px 48px rgba(10,18,38,0.28)' }}>
+            <div style={{ fontSize: '44px', lineHeight: 1, marginBottom: '12px' }}>
+              {rescoreMsg.success ? '✅' : '⚠️'}
+            </div>
+            <div style={{ fontSize: '17px', fontWeight: 800, marginBottom: '8px',
+                          color: rescoreMsg.success ? '#2E7D32' : '#C8313B' }}>
+              {rescoreMsg.title || (rescoreMsg.success ? 'Success' : 'Attention')}
+            </div>
+            <div style={{ fontSize: '13.5px', color: '#42506A', lineHeight: 1.6, marginBottom: '22px' }}>
+              {rescoreMsg.text}
+            </div>
+            <button className="btn bp" style={{ minWidth: '130px' }} onClick={() => setRescoreMsg(null)}>
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Duplicate-file warning — pop-up with Replace / Cancel */}
+      {conflict && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(10,18,38,0.45)',
+                   display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 2100 }}>
+          <div
+            style={{ background: '#fff', borderRadius: '14px', padding: '28px 32px',
+                     maxWidth: '460px', width: '90%', textAlign: 'center',
+                     boxShadow: '0 16px 48px rgba(10,18,38,0.28)' }}>
+            <div style={{ fontSize: '42px', lineHeight: 1, marginBottom: '12px' }}>⚠️</div>
+            <div style={{ fontSize: '17px', fontWeight: 800, marginBottom: '8px', color: '#854F0B' }}>
+              Already uploaded
+            </div>
+            {conflict.mode === 'bulk' ? (
+              <div style={{ fontSize: '13.5px', color: '#42506A', lineHeight: 1.6, marginBottom: '22px', textAlign: 'left' }}>
+                <div style={{ marginBottom: '8px' }}>These files were already uploaded. Replace the existing data?</div>
+                {conflict.files.map((f, i) => (
+                  <div key={i} style={{ padding: '6px 0', borderBottom: '0.5px solid #E6EBF2' }}>
+                    <strong>{f.label}</strong> — uploaded {fmtImportDate(f.importedAt)}
+                    {f.records != null ? ` · ${f.records} records` : ''}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div style={{ fontSize: '13.5px', color: '#42506A', lineHeight: 1.6, marginBottom: '22px' }}>
+                {conflict.message}
+                {conflict.importedAt && (
+                  <div style={{ marginTop: '10px', fontWeight: 700, color: '#1B3F7A' }}>
+                    Already uploaded on {fmtImportDate(conflict.importedAt)}
+                  </div>
+                )}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'center' }}>
+              <button className="btn" style={{ minWidth: '120px' }} onClick={() => setConflict(null)}>
+                Cancel
+              </button>
+              <button
+                className="btn bp"
+                style={{ minWidth: '120px' }}
+                onClick={conflict.mode === 'bulk' ? doReplaceBulk : doReplaceSingle}>
+                {conflict.mode === 'bulk' ? 'Replace all' : 'Replace'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -236,7 +357,7 @@ const ImportData = () => {
 
             <button
               className="btn bp"
-              onClick={runBulkUpload}
+              onClick={() => runBulkUpload()}
               disabled={bulkRunning || pendingCount === 0}
               style={{ width: '100%', padding: '11px', fontSize: '14px' }}
             >

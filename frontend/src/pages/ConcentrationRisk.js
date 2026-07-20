@@ -1,136 +1,249 @@
-import React from 'react';
-import { BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import React, { useEffect, useState } from 'react';
+import {
+  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+} from 'recharts';
+import api from '../api';
+import { InfoBtn, ViewToggle, DateRange, rangeParams, ClientLink } from '../components/ui';
 
-const revConc  = [{name:"Top 10",pct:16},{name:"Top 25",pct:24},{name:"Top 50",pct:38},{name:"Top 100",pct:52},{name:"Top 200",pct:64},{name:"Top 500",pct:78},{name:"Rest",pct:100}];
-const floatConc= [{name:"Top 10",pct:18},{name:"Top 25",pct:28},{name:"Top 50",pct:42},{name:"Top 100",pct:57},{name:"Top 200",pct:70},{name:"Rest",pct:100}];
-const MO8 = ["Oct'25","Nov'25","Dec'25","Jan'26","Feb'26","Mar'26","Apr'26","May'26"];
-const trendData= MO8.map((m,i)=>({ month:m, top10:[19,18,17,18,17,16,17,16][i], top50:[43,42,41,40,40,39,39,38][i], target:35 }));
-const SEG_PIE  = [{name:"Eq Options clearing (40%)",value:40,color:"#185fa5"},{name:"Equity brokerage (30%)",value:30,color:"#9FE1CB"},{name:"Float income (20%)",value:20,color:"#AFA9EC"},{name:"MTF interest (10%)",value:10,color:"#FAC775"}];
-const TOP20 = [
-  {rank:1,ucc:"NV10234",name:"Priya Krishnan",  type:"RI-HV", to:"₹4.8Cr",rev:"₹22,000",pct:"0.77%",cum:"0.77%", rm:"Arjun",     flag:""},
-  {rank:2,ucc:"NV50089",name:"David Mathew",    type:"RI-HV", to:"₹4.1Cr",rev:"₹18,400",pct:"0.65%",cum:"1.42%", rm:"—",         flag:<span className="badge b-pend">Unmapped</span>},
-  {rank:3,ucc:"NV10045",name:"Kavitha Sharma",  type:"NRE-HV",to:"₹3.9Cr",rev:"₹5,400", pct:"0.19%",cum:"1.61%", rm:"Mubarak",   flag:<span className="badge b-lead">Zero-brk</span>},
-  {rank:4,ucc:"NV60214",name:"Meenakshi Pillai",type:"NRE",   to:"₹3.2Cr",rev:"₹4,100", pct:"0.14%",cum:"1.75%", rm:"Srinivasan",flag:""},
-  {rank:5,ucc:"NV80112",name:"Vasantha Rajan",  type:"RI",    to:"₹2.9Cr",rev:"₹3,700", pct:"0.13%",cum:"1.88%", rm:"—",         flag:<span className="badge b-pend">Unmapped</span>},
-];
-const MTF_TOP = [
-  {rank:1,ucc:"NV10234",name:"Priya Krishnan", bal:"₹82L",pct:"9.3%",int:"₹1,460",status:<span className="badge b-act">OK</span>},
-  {rank:2,ucc:"NV10021",name:"Rajan Pillai",   bal:"₹68L",pct:"7.7%",int:"₹1,210",status:<span className="badge b-act">OK</span>},
-  {rank:3,ucc:"NV40112",name:"Sunita Kapoor",  bal:"₹64L",pct:"7.3%",int:"₹1,140",status:<span className="badge b-pend">Watch</span>},
-  {rank:4,ucc:"NV30088",name:"Kaveri Nair",    bal:"₹58L",pct:"6.6%",int:"₹1,030",status:<span className="badge b-act">OK</span>},
-  {rank:5,ucc:"NV20156",name:"Deepa Iyer",     bal:"₹47L",pct:"5.3%",int:"₹840",  status:<span className="badge b-act">OK</span>},
-];
-const FLOAT_TOP = [
-  {rank:1,name:"David Mathew",   type:"RI-HV",  bal:"₹42L",pct:"1.8%",cum:"1.8%", act:<span className="badge b-act">Active</span>, util:<span className="badge b-act">High</span>},
-  {rank:2,name:"Priya Krishnan", type:"RI-HV",  bal:"₹38L",pct:"1.6%",cum:"3.4%", act:<span className="badge b-act">Active</span>, util:<span className="badge b-act">High</span>},
-  {rank:3,name:"Ramesh Babu",    type:"RI",     bal:"₹31L",pct:"1.3%",cum:"4.7%", act:<span className="badge b-pend">Low</span>,  util:<span className="badge b-pend">Idle</span>},
-  {rank:4,name:"Rajan Pillai",   type:"NRE",    bal:"₹28L",pct:"1.2%",cum:"5.9%", act:<span className="badge b-act">Active</span>, util:<span className="badge b-act">High</span>},
-  {rank:5,name:"Krishnadas V",   type:"RI-HV",  bal:"₹24L",pct:"1.0%",cum:"6.9%", act:<span className="badge b-pend">Low</span>,  util:<span className="badge b-pend">Idle</span>},
-];
+const rupee = (n) => {
+  const v = Number(n) || 0;
+  if (Math.abs(v) >= 1e7) return '₹' + (v / 1e7).toFixed(2) + 'Cr';
+  if (Math.abs(v) >= 1e5) return '₹' + (v / 1e5).toFixed(2) + 'L';
+  return '₹' + Math.round(v).toLocaleString('en-IN');
+};
+const pct1 = (n) => (Number(n) || 0).toFixed(1) + '%';
+const pct2 = (n) => (Number(n) || 0).toFixed(2) + '%';
+const cr = (n) => +((Number(n) || 0) / 1e7).toFixed(2);
+const SEG_COLORS = ['#185fa5', '#9FE1CB', '#AFA9EC', '#FAC775'];
 
-const ConcentrationRisk = () => (
-  <div>
-    <div className="ph"><h2>Concentration risk</h2><p>Revenue, float, MTF, options volume and client-type concentration — identify over-dependence before it becomes a problem</p></div>
-    <div className="alert a-w">⚠️ Top 50 clients contribute <strong>38% of total options clearing revenue</strong>. Top 10 clients contribute <strong>16%</strong>. Monitor for sudden inactivity in high-concentration accounts.</div>
-    <div className="cards">
-      <div className="card cd"><div className="clbl">Top 10 clients — % of revenue</div><div className="cval">16%</div><div className="csub">₹4.5L of ₹28.4L MTD</div></div>
-      <div className="card cw"><div className="clbl">Top 50 clients — % of revenue</div><div className="cval">38%</div><div className="csub">₹10.8L of ₹28.4L MTD</div></div>
-      <div className="card ci"><div className="clbl">Top 10 — % of float</div><div className="cval">18%</div><div className="csub">₹41.6Cr of ₹231Cr total</div></div>
-      <div className="card cp"><div className="clbl">Top 5 — % of MTF book</div><div className="cval">42%</div><div className="csub">₹3.7Cr of ₹8.81Cr book</div></div>
-    </div>
-    <div className="tc2">
-      <div className="panel">
-        <div className="ptitle">📊 Revenue concentration — cumulative client contribution</div>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={revConc} margin={{top:8,right:8,bottom:8,left:8}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-            <XAxis dataKey="name" tick={{fontSize:10}} />
-            <YAxis tick={{fontSize:10}} tickFormatter={v=>v+"%"} domain={[0,100]} />
-            <Tooltip formatter={v=>v+"%"} />
-            <Bar dataKey="pct" name="Cumulative % of options revenue" fill="#185fa5" radius={[4,4,0,0]} />
-          </BarChart>
-        </ResponsiveContainer>
-        <p style={{fontSize:"11px",color:"var(--tx3)",marginTop:"6px"}}>Pareto view: top N clients vs % of total options clearing revenue. Healthy = top 100 below 60%.</p>
+const ConcentrationRisk = () => {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [range, setRange]     = useState({ key: 'month' });
+
+  useEffect(() => {
+    if (range.key === 'custom' && !(range.from && range.to)) return;
+    setLoading(true);
+    api.get('/analytics/concentration', { params: rangeParams(range) })
+      .then(res => setData(res.data))
+      .catch(() => setError('Could not load concentration data.'))
+      .finally(() => setLoading(false));
+  }, [range]);
+
+  if (loading && !data) return <div className="ph"><h2>Concentration risk</h2><p>Loading…</p></div>;
+  if (error)   return <div className="ph"><h2>Concentration risk</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
+
+  const { meta, kpis, totals, rev_buckets, float_buckets, monthly_trend, segment_mix, top_clients, float_top, mtf_top } = data;
+
+  const revBucketData   = rev_buckets.map(b => ({ name: b.label, v: +Number(b.cum_pct).toFixed(1) }));
+  const floatBucketData = float_buckets.map(b => ({ name: b.label, v: +Number(b.cum_pct).toFixed(1) }));
+  const trendData       = monthly_trend.map(m => ({ ...m, target: 35 }));
+  const segPie          = segment_mix.filter(s => s.value > 0);
+
+  return (
+    <div>
+      <div className="ph">
+        <h2>Concentration risk</h2>
+        <p>Revenue, float, MTF, options volume and client-type concentration — identify over-dependence before it becomes a problem{meta && meta.as_of ? ` · As of ${meta.as_of}` : ''}</p>
       </div>
-      <div className="panel">
-        <div className="ptitle">📊 Float concentration — top clients by ledger balance</div>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={floatConc} margin={{top:8,right:8,bottom:8,left:8}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-            <XAxis dataKey="name" tick={{fontSize:10}} />
-            <YAxis tick={{fontSize:10}} tickFormatter={v=>v+"%"} domain={[0,100]} />
-            <Tooltip formatter={v=>v+"%"} />
-            <Bar dataKey="pct" name="% of total float" fill="#FAC775" radius={[4,4,0,0]} />
-          </BarChart>
-        </ResponsiveContainer>
+
+      <DateRange value={range} onChange={setRange} bounds={meta && meta.range ? { min: meta.range.data_min, max: meta.range.data_max } : undefined} active={meta && meta.range} />
+      {loading && <div style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 8 }}>Updating…</div>}
+
+      <div className="alert a-w">
+        ⚠️ Top 50 clients contribute <strong>{pct1(kpis.top50_turnover_pct)} of total options clearing revenue</strong>. Top 10 clients contribute <strong>{pct1(kpis.top10_turnover_pct)}</strong>. Monitor for sudden inactivity in high-concentration accounts.
       </div>
-    </div>
-    <div className="panel">
-      <div className="ptitle">📈 Monthly concentration trend — are we moving in the right direction?</div>
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={trendData} margin={{top:8,right:8,bottom:8,left:8}}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-          <XAxis dataKey="month" tick={{fontSize:10}} />
-          <YAxis tick={{fontSize:10}} tickFormatter={v=>v+"%"} domain={[0,50]} />
-          <Tooltip formatter={v=>v+"%"} />
-          <Legend wrapperStyle={{fontSize:11}} iconSize={10} />
-          <Line type="monotone" dataKey="top10" name="Top 10 clients % of revenue" stroke="#a32d2d" strokeWidth={2} dot={{r:4}} fill="rgba(163,45,45,.07)" />
-          <Line type="monotone" dataKey="top50" name="Top 50 clients % of revenue" stroke="#185fa5" strokeWidth={2} dot={{r:4}} fill="rgba(24,95,165,.06)" />
-          <Line type="monotone" dataKey="target" name="Target — top 50 below 35%" stroke="#3b6d11" strokeDasharray="6 4" dot={false} strokeWidth={1.5} />
-        </LineChart>
-      </ResponsiveContainer>
-      <p style={{fontSize:"11px",color:"var(--tx3)",marginTop:"8px"}}>Target: top-50 client revenue concentration below 35%. Current: 38% — declining from 43% in Oct &apos;25.</p>
-    </div>
-    <div className="panel">
-      <div className="ptitle">📋 Top 20 clients by options revenue — concentration watch</div>
-      <div className="tw"><table>
-        <thead><tr><th>Rank</th><th>UCC</th><th>Name</th><th>Type</th><th>Options TO (MTD)</th><th>Revenue (MTD)</th><th>% of total rev</th><th>Cum %</th><th>RM</th><th>Risk flag</th></tr></thead>
-        <tbody>
-          {TOP20.map((r,i)=>(
-            <tr key={i}>
-              <td>{r.rank}</td><td><span className="lc">{r.ucc}</span></td><td>{r.name}</td>
-              <td><span className="badge b-nri">{r.type}</span></td>
-              <td>{r.to}</td><td>{r.rev}</td><td>{r.pct}</td><td>{r.cum}</td><td>{r.rm}</td><td>{r.flag}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
-    </div>
-    <div className="tc2">
+      <p style={{ fontSize: 11, color: 'var(--tx3)', margin: '0 0 12px' }}>Revenue concentration is measured on options-premium turnover until brokerage revenue is imported.</p>
+
+      <div className="cards">
+        <div className="card cd"><div className="clbl">Top 10 clients — % of revenue</div><div className="cval">{pct1(kpis.top10_turnover_pct)}</div><div className="csub">{rupee(totals.top10_turnover_amt)} of {rupee(totals.turnover_total)} MTD</div></div>
+        <div className="card cw"><div className="clbl">Top 50 clients — % of revenue</div><div className="cval">{pct1(kpis.top50_turnover_pct)}</div><div className="csub">{rupee(totals.top50_turnover_amt)} of {rupee(totals.turnover_total)} MTD</div></div>
+        <div className="card ci"><div className="clbl">Top 10 — % of float</div><div className="cval">{pct1(kpis.top10_float_pct)}</div><div className="csub">{rupee(totals.top10_float_amt)} of {rupee(totals.float_total)} total</div></div>
+        <div className="card cp"><div className="clbl">Top 5 — % of MTF book</div><div className="cval">{pct1(kpis.top5_mtf_pct)}</div><div className="csub">{rupee(totals.top5_mtf_amt)} of {rupee(totals.mtf_total)} book</div></div>
+      </div>
+
+      <div className="tc2">
+        <div className="panel">
+          <div className="ptitle">📊 Revenue concentration — cumulative client contribution<InfoBtn text="Pareto view: cumulative % of total options-clearing revenue contributed by successive top-N client buckets. Healthy = top 100 clients below 60%." /></div>
+          <ViewToggle
+            chart={
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={revBucketData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+              <XAxis dataKey="name" tick={{ fontSize: 9 }} />
+              <YAxis tick={{ fontSize: 10 }} tickFormatter={v => v + '%'} domain={[0, 100]} />
+              <Tooltip formatter={v => v + '%'} />
+              <Bar dataKey="v" fill="#185fa5" radius={[4, 4, 0, 0]} name="Cumulative % of options revenue" />
+            </BarChart>
+          </ResponsiveContainer>
+            }
+            table={
+              <table>
+                <thead><tr><th>Client bucket</th><th>Cumulative % of options revenue</th></tr></thead>
+                <tbody>
+                  {revBucketData.map(r => (
+                    <tr key={r.name}><td>{r.name}</td><td>{r.v}%</td></tr>
+                  ))}
+                  {revBucketData.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
+                </tbody>
+              </table>
+            }
+          />
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Pareto view: top N clients vs % of total options clearing revenue. Healthy = top 100 below 60%.</p>
+        </div>
+        <div className="panel">
+          <div className="ptitle">📊 Float concentration — top clients by ledger balance<InfoBtn text="Cumulative % of total client float (ledger balance) held by successive top-N client buckets. Higher curve means float is concentrated in few accounts." /></div>
+          <ViewToggle
+            chart={
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={floatBucketData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+              <XAxis dataKey="name" tick={{ fontSize: 9 }} />
+              <YAxis tick={{ fontSize: 10 }} tickFormatter={v => v + '%'} domain={[0, 100]} />
+              <Tooltip formatter={v => v + '%'} />
+              <Bar dataKey="v" fill="#9FE1CB" radius={[4, 4, 0, 0]} name="% of total float" />
+            </BarChart>
+          </ResponsiveContainer>
+            }
+            table={
+              <table>
+                <thead><tr><th>Client bucket</th><th>Cumulative % of total float</th></tr></thead>
+                <tbody>
+                  {floatBucketData.map(r => (
+                    <tr key={r.name}><td>{r.name}</td><td>{r.v}%</td></tr>
+                  ))}
+                  {floatBucketData.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
+                </tbody>
+              </table>
+            }
+          />
+        </div>
+      </div>
+
       <div className="panel">
-        <div className="ptitle">💰 MTF book concentration — top 10 exposures</div>
+        <div className="ptitle">📈 Monthly concentration trend — are we moving in the right direction?<InfoBtn text="Month-by-month share of revenue held by the top 10 and top 50 clients, against a 35% target line for top-50 concentration. Lower is healthier." /></div>
+        <ViewToggle
+          chart={
+        <ResponsiveContainer width="100%" height={220}>
+          <LineChart data={trendData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+            <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+            <YAxis tick={{ fontSize: 10 }} tickFormatter={v => v + '%'} />
+            <Tooltip formatter={v => pct1(v)} />
+            <Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
+            <Line dataKey="top10_pct" stroke="#185fa5" strokeWidth={2} name="Top 10 clients % of revenue" />
+            <Line dataKey="top50_pct" stroke="#e0803a" strokeWidth={2} name="Top 50 clients % of revenue" />
+            <Line dataKey="target" stroke="#3b9e5a" strokeWidth={1.5} strokeDasharray="5 4" dot={false} name="Target — top 50 below 35%" />
+          </LineChart>
+        </ResponsiveContainer>
+          }
+          table={
+            <table>
+              <thead><tr><th>Month</th><th>Top 10 % of revenue</th><th>Top 50 % of revenue</th><th>Target</th></tr></thead>
+              <tbody>
+                {trendData.map(r => (
+                  <tr key={r.month}><td>{r.month}</td><td>{pct1(r.top10_pct)}</td><td>{pct1(r.top50_pct)}</td><td>{r.target}%</td></tr>
+                ))}
+                {trendData.length === 0 && <tr><td colSpan={4} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
+              </tbody>
+            </table>
+          }
+        />
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>Target: top-50 client revenue concentration below 35%. Current: {pct1(kpis.top50_turnover_pct)}. Green dashed line = target threshold.</p>
+      </div>
+
+      <div className="panel">
+        <div className="ptitle">📋 Top 20 clients by options revenue — concentration watch<InfoBtn text="Highest-revenue clients ranked by MTD options turnover, with each client's % of total revenue, cumulative %, mapped RM, and an unmapped-account risk flag." /></div>
         <div className="tw"><table>
-          <thead><tr><th>Rank</th><th>UCC</th><th>Client</th><th>MTF balance</th><th>% of book</th><th>Interest/day</th><th>Margin status</th></tr></thead>
+          <thead><tr><th>Rank</th><th>UCC</th><th>Name</th><th>Type</th><th>Options TO (MTD)</th><th>Revenue (MTD)</th><th>% of total rev</th><th>Cum %</th><th>RM</th><th>Risk flag</th></tr></thead>
           <tbody>
-            {MTF_TOP.map((r,i)=><tr key={i}><td>{r.rank}</td><td>{r.ucc}</td><td>{r.name}</td><td>{r.bal}</td><td>{r.pct}</td><td>{r.int}</td><td>{r.status}</td></tr>)}
-            <tr style={{borderTop:"0.5px solid var(--br)",fontWeight:"500"}}><td colSpan="2">Top 5 total</td><td></td><td>₹3.19Cr</td><td>36.2%</td><td>₹5,680</td><td></td></tr>
+            {top_clients.map(r => (
+              <tr key={r.ucc}>
+                <td>{r.rank}</td><td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
+                <td><span className="badge b-ri">{r.client_type}</span></td>
+                <td>{rupee(r.opt_to)}</td>
+                <td>{r.brokerage > 0 ? rupee(r.brokerage) : '—'}</td>
+                <td>{pct2(r.pct_of_total)}</td><td>{pct1(r.cum_pct)}</td>
+                <td>{r.rm_name}</td>
+                <td>{r.unmapped ? <span className="badge b-pend">Unmapped</span> : '—'}</td>
+              </tr>
+            ))}
+            {top_clients.length === 0 && <tr><td colSpan={10} style={{ color: 'var(--tx3)' }}>No trade data.</td></tr>}
           </tbody>
         </table></div>
       </div>
+
+      <div className="tc2">
+        <div className="panel">
+          <div className="ptitle">💰 MTF book concentration — top 10 exposures<InfoBtn text="Largest margin-trading-facility (MTF) exposures, ranked by outstanding balance with each client's % of the total book and estimated daily interest." /></div>
+          <div className="tw"><table>
+            <thead><tr><th>Rank</th><th>UCC</th><th>Client</th><th>MTF balance</th><th>% of book</th><th>Interest/day</th><th>Margin status</th></tr></thead>
+            <tbody>
+              {mtf_top.map(r => (
+                <tr key={r.ucc}><td>{r.rank}</td><td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td><td>{rupee(r.balance)}</td><td>{pct1(r.pct_of_book)}</td><td>{rupee(r.interest / 30)}</td><td>—</td></tr>
+              ))}
+              {mtf_top.length === 0 && <tr><td colSpan={7} style={{ color: 'var(--tx3)' }}>No MTF data for latest month.</td></tr>}
+            </tbody>
+          </table></div>
+        </div>
+        <div className="panel">
+          <div className="ptitle">🥧 Segment &amp; revenue-stream concentration<InfoBtn text="Share of revenue by segment / revenue stream. Options clearing is Navia's primary revenue driver and the main concentration risk." /></div>
+          {segPie.length === 0 ? <div style={{ color: 'var(--tx3)', fontSize: 13, padding: '20px 0' }}>No revenue-stream data yet.</div> : (
+            <ViewToggle
+              chart={
+            <ResponsiveContainer width="100%" height={240}>
+              <PieChart>
+                <Pie data={segPie} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} innerRadius={50}
+                     label={(e) => `${e.name}: ${pct1(e.percent * 100)}`} labelLine={false}>
+                  {segPie.map((_, i) => <Cell key={i} fill={SEG_COLORS[i % SEG_COLORS.length]} />)}
+                </Pie>
+                <Tooltip formatter={v => rupee(v)} />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+              </PieChart>
+            </ResponsiveContainer>
+              }
+              table={
+                <table>
+                  <thead><tr><th>Segment</th><th>Revenue</th></tr></thead>
+                  <tbody>
+                    {segPie.map(r => (
+                      <tr key={r.name}><td>{r.name}</td><td>{rupee(r.value)}</td></tr>
+                    ))}
+                    {segPie.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
+                  </tbody>
+                </table>
+              }
+            />
+          )}
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Revenue dependency by segment. Options clearing is Navia's primary revenue driver and the main concentration risk.</p>
+        </div>
+      </div>
+
       <div className="panel">
-        <div className="ptitle">📊 Segment &amp; revenue-stream concentration</div>
-        <ResponsiveContainer width="100%" height={200}>
-          <PieChart>
-            <Pie data={SEG_PIE} dataKey="value" cx="40%" cy="50%" outerRadius={75} innerRadius={40}>
-              {SEG_PIE.map((e,i)=><Cell key={i} fill={e.color} />)}
-            </Pie>
-            <Tooltip formatter={v=>v+"%"} />
-            <Legend layout="vertical" align="right" verticalAlign="middle" iconSize={10} wrapperStyle={{fontSize:11}} />
-          </PieChart>
-        </ResponsiveContainer>
-        <p style={{fontSize:"11px",color:"var(--tx3)",marginTop:"6px"}}>Revenue dependency by segment. Regulatory change to Eq Options (40% driver) is the primary concentration risk.</p>
+        <div className="ptitle">📋 Float concentration — top 20 clients by opening balance<InfoBtn text="Clients ranked by average opening ledger balance, showing each one's % of total float, cumulative %, and whether they traded this month (idle float = cross-sell opportunity)." /></div>
+        <div className="tw"><table>
+          <thead><tr><th>Rank</th><th>UCC</th><th>Client</th><th>Type</th><th>Avg opening balance</th><th>% of total float</th><th>Cum %</th><th>Trading activity</th><th>Float utilisation</th></tr></thead>
+          <tbody>
+            {float_top.map(r => (
+              <tr key={r.ucc}>
+                <td>{r.rank}</td><td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
+                <td><span className="badge b-ri">{r.client_type}</span></td>
+                <td>{rupee(r.balance)}</td><td>{pct1(r.pct_of_total)}</td><td>{pct1(r.cum_pct)}</td>
+                <td><span className={`badge ${r.traded_this_month ? 'b-act' : 'b-pend'}`}>{r.traded_this_month ? 'Active' : 'Low'}</span></td>
+                <td>—</td>
+              </tr>
+            ))}
+            {float_top.length === 0 && <tr><td colSpan={9} style={{ color: 'var(--tx3)' }}>No ledger data.</td></tr>}
+          </tbody>
+        </table></div>
+        <div className="alert a-i" style={{ marginTop: 10 }}>
+          ℹ️ Clients with high float but low trading activity (Idle) are both a retention risk and a cross-sell opportunity — MTF, options advisory, or partner products can deploy their capital productively.
+        </div>
       </div>
     </div>
-    <div className="panel">
-      <div className="ptitle">📋 Float concentration — top 20 clients by opening balance</div>
-      <div className="tw"><table>
-        <thead><tr><th>Rank</th><th>Client</th><th>Type</th><th>Avg opening balance</th><th>% of total float</th><th>Cum %</th><th>Trading activity</th><th>Float utilisation</th></tr></thead>
-        <tbody>
-          {FLOAT_TOP.map((r,i)=><tr key={i}><td>{r.rank}</td><td>{r.name}</td><td><span className="badge b-ri">{r.type}</span></td><td>{r.bal}</td><td>{r.pct}</td><td>{r.cum}</td><td>{r.act}</td><td>{r.util}</td></tr>)}
-        </tbody>
-      </table></div>
-      <div className="alert a-i" style={{marginTop:"10px"}}>💡 Clients with high float but low trading activity (Idle) are both a retention risk and a cross-sell opportunity.</div>
-    </div>
-  </div>
-);
+  );
+};
+
 export default ConcentrationRisk;

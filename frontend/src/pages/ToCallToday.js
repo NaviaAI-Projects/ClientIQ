@@ -8,6 +8,7 @@ const sc = s => s>=70?'h':s>=50?'m':'l';
 const ToCallToday = () => {
   const [aiCalls, setAiCalls]     = useState([]);
   const [scheduled, setScheduled] = useState([]);
+  const [expanded, setExpanded]   = useState({});
   const [logPanel, setLogPanel]   = useState(null);
   const [form, setForm]           = useState({ channel:'Click-to-call', outcome:'Connected — positive', followup:'', duration:'', notes:'' });
   const [saving, setSaving]       = useState(false);
@@ -45,7 +46,46 @@ const ToCallToday = () => {
     if (reason.toLowerCase().includes('expir')) return <span className="badge b-dor" style={{marginRight:'6px'}}>Lead expiring</span>;
     if (reason.toLowerCase().includes('churn')) return <span className="badge b-dor" style={{marginRight:'6px'}}>Churn risk</span>;
     if (reason.toLowerCase().includes('cross')) return <span className="badge b-lead" style={{marginRight:'6px'}}>Cross-sell</span>;
+    if (reason.toLowerCase().includes('dormant')) return <span className="badge b-dor" style={{marginRight:'6px'}}>Dormant</span>;
     return <span className="badge b-int" style={{marginRight:'6px'}}>Revenue growth</span>;
+  };
+
+  // Split the AI brief "Why: … Talk about: …" into its two parts for the expander.
+  const splitBrief = text => {
+    if (!text) return { why:'', talk:'' };
+    const idx = text.search(/talk about\s*:/i);
+    if (idx === -1) return { why: text.trim(), talk:'' };
+    return {
+      why:  text.slice(0, idx).replace(/^\s*why\s*:/i, '').trim(),
+      talk: text.slice(idx).replace(/^talk about\s*:/i, '').trim()
+    };
+  };
+
+  const AiReason = ({ c, i }) => {
+    const { why, talk } = splitBrief(c.reason_detail || c.reason || 'AI identified priority');
+    const open = !!expanded[i];
+    return (
+      <td style={{fontSize:'12px',color:'var(--tx2)',maxWidth:'340px'}}>
+        {reasonBadge(c.reason)}
+        <span>{why}</span>
+        {talk && (
+          <>
+            {' '}
+            <button
+              onClick={() => setExpanded(p => ({ ...p, [i]: !p[i] }))}
+              style={{border:'none',background:'none',color:'var(--ic)',cursor:'pointer',fontSize:'11px',fontWeight:600,padding:0}}>
+              {open ? '▲ Less' : '▼ Details'}
+            </button>
+            {open && (
+              <div style={{marginTop:'6px',padding:'8px 10px',background:'var(--ibg)',borderRadius:'6px',lineHeight:1.6}}>
+                <div style={{fontWeight:600,fontSize:'11px',color:'var(--ic)',marginBottom:'3px'}}>💬 What to talk about</div>
+                <div style={{fontSize:'12px',color:'var(--tx2)'}}>{talk}</div>
+              </div>
+            )}
+          </>
+        )}
+      </td>
+    );
   };
 
   return (
@@ -76,7 +116,7 @@ const ToCallToday = () => {
               <tr key={i}>
                 <td><span className="lc" onClick={() => navigate('/client-360',{state:{ucc:c.ucc}})}>{c.client_name||c.name}</span></td>
                 <td><span className={`badge ${tb(c.client_type)}`}>{c.client_type}</span></td>
-                <td style={{fontSize:'12px',color:'var(--tx2)'}}>{reasonBadge(c.reason)}{c.reason_detail||c.reason||'AI identified priority'}</td>
+                <AiReason c={c} i={i} />
                 <td><span className={`ais ${c.priority==='Critical'?'h':c.priority==='High'?'h':'m'}`}>{c.priority||'High'}</span></td>
                 <td style={{color:!c.last_contact?'var(--dc)':'inherit'}}>{c.last_contact?new Date(c.last_contact).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'Never'}</td>
                 <td>{c.best_time||'Flexible'}</td>

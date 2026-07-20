@@ -5,13 +5,19 @@ const auth    = require('../middleware/auth');
 
 router.get('/company', auth, async (req, res) => {
   try {
-    const today = new Date().toISOString().split('T')[0];
+    // Use the latest date that actually has data, not the wall-clock "today"
+    // (brokerage/ledger are snapshot-dated on upload; turnover is on the trade date).
     const [total, active, mapped, trades, float_, leads] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM clients'),
       pool.query('SELECT COUNT(*) FROM clients WHERE is_active = true'),
       pool.query('SELECT COUNT(*) FROM clients WHERE is_mapped = true'),
-      pool.query('SELECT COALESCE(SUM(brokerage_earned),0) brokerage, COALESCE(SUM(eq_cash_turnover + eq_fo_turnover + commodity_fo_turnover),0) turnover FROM daily_trades WHERE trade_date = $1', [today]),
-      pool.query('SELECT COALESCE(SUM(opening_balance),0) total FROM daily_ledger WHERE ledger_date = $1', [today]),
+      pool.query(`SELECT
+          (SELECT COALESCE(SUM(brokerage_earned),0) FROM daily_trades
+             WHERE trade_date = (SELECT MAX(trade_date) FROM daily_trades WHERE brokerage_earned > 0)) AS brokerage,
+          (SELECT COALESCE(SUM(eq_cash_turnover + eq_fo_turnover + commodity_fo_turnover),0) FROM daily_trades
+             WHERE trade_date = (SELECT MAX(trade_date) FROM daily_trades
+                                 WHERE eq_cash_turnover > 0 OR eq_fo_turnover > 0 OR commodity_fo_turnover > 0)) AS turnover`),
+      pool.query('SELECT COALESCE(SUM(opening_balance),0) total FROM daily_ledger WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)'),
       pool.query("SELECT COUNT(*) FROM lead_pool WHERE status = 'unassigned'")
     ]);
     res.json({

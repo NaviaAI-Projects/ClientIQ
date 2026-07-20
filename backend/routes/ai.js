@@ -126,6 +126,199 @@ router.post('/rescore', auth, async (req, res) => {
   }
 });
 
+// GET /api/ai/digest — Groq-written daily brief for the logged-in RM, based on their clients.
+// Response shape matches frontend AiDigest.js:
+//   { summary(HTML), expiring_leads, churn_alerts, cross_sell_count, working_days_left, alerts:[{type,title,message}] }
+router.get('/digest', auth, async (req, res) => {
+  try {
+    // RM identity: users.name → rm_master.rm_name → rm_master.id
+    const userRes = await pool.query('SELECT name FROM users WHERE id = $1 LIMIT 1', [req.user.id]);
+    const userName = userRes.rows[0]?.name || '';
+    const rmRes = await pool.query(
+      'SELECT id FROM rm_master WHERE LOWER(rm_name) = LOWER($1) LIMIT 1', [userName]
+    );
+    const rmId = rmRes.rows[0]?.id || null;
+
+    // NSE 2026 trading holidays — for working-days-to-EOM
+    const HOLIDAYS = new Set([
+      '2026-01-26','2026-03-03','2026-03-26','2026-03-31','2026-04-03','2026-04-14',
+      '2026-05-01','2026-05-28','2026-06-26','2026-09-14','2026-10-02','2026-10-20',
+      '2026-11-10','2026-11-24','2026-12-25'
+    ]);
+    const now = new Date();
+    const yy = now.getFullYear(), mm = now.getMonth();
+    const lastDay = new Date(yy, mm + 1, 0).getDate();
+    let workingDaysLeft = 0;
+    for (let d = now.getDate(); d <= lastDay; d++) {
+      const dow = new Date(yy, mm, d).getDay();
+      const iso = `${yy}-${String(mm + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      if (dow !== 0 && dow !== 6 && !HOLIDAYS.has(iso)) workingDaysLeft++;
+    }
+
+    const firstName = (userName.split(' ')[0]) || 'there';
+
+    if (!rmId) {
+      return res.json({
+        summary: '<p>No clients assigned yet. Contact your supervisor to get leads mapped to you.</p>',
+        expiring_leads: 0, churn_alerts: 0, cross_sell_count: 0,
+        working_days_left: workingDaysLeft, alerts: []
+      });
+    }
+
+    // Pull the RM's book with the four signals: lead score, churn, expiry, trading activity.
+    const bookRes = await pool.query(`
+      SELECT lp.ucc, c.name, c.client_type, c.plan, c.last_trade_date, c.account_open_date,
+             lp.lead_score, lp.churn_risk_score, lp.assignment_expires_at,
+             a.ai_notes,
+             CASE WHEN lp.assignment_expires_at IS NULL THEN NULL
+                  ELSE GREATEST(0, lp.assignment_expires_at::date - CURRENT_DATE) END AS days_to_expiry,
+             CASE WHEN c.last_trade_date IS NULL THEN NULL
+                  ELSE (CURRENT_DATE - c.last_trade_date::date) END AS days_since_trade,
+             COALESCE(t.total_turnover, 0) AS total_turnover,
+             COALESCE(t.brokerage, 0)      AS brokerage
+      FROM lead_pool lp
+      JOIN clients c ON lp.ucc = c.ucc
+      LEFT JOIN ai_scores a ON a.ucc = lp.ucc
+        AND a.score_date = (SELECT MAX(score_date) FROM ai_scores WHERE ucc = lp.ucc)
+      LEFT JOIN (
+        SELECT ucc,
+               SUM(COALESCE(eq_cash_turnover,0) + COALESCE(eq_fo_turnover,0)
+                 + COALESCE(options_premium_turnover,0) + COALESCE(commodity_fo_turnover,0)) AS total_turnover,
+               SUM(COALESCE(brokerage_earned,0)) AS brokerage
+        FROM daily_trades GROUP BY ucc
+      ) t ON t.ucc = lp.ucc
+      WHERE COALESCE(lp.assigned_rm_id, lp.assigned_to_rm) = $1
+        AND lp.status = 'assigned'
+      ORDER BY lp.lead_score DESC NULLS LAST
+    `, [rmId]);
+
+    const book = bookRes.rows;
+    const assignedTotal = book.length;
+    const expiringList = book.filter(r => r.days_to_expiry != null && r.days_to_expiry <= 7);
+    const churnList    = book.filter(r => (r.churn_risk_score || 0) >= 7);
+    const dormantList  = book.filter(r => r.last_trade_date == null || (r.days_since_trade != null && r.days_since_trade > 30));
+    // Cross-sell signal: actively-trading, high-value clients worth a product pitch.
+    const crossSellList = book.filter(r => (r.lead_score || 0) >= 50 && r.days_since_trade != null && r.days_since_trade <= 30);
+    // Per-client analysis buckets for the brief.
+    const highScoreList = book.filter(r => (r.lead_score || 0) >= 60);                      // who is high score
+    const lowRiskList   = book.filter(r => (r.churn_risk_score || 0) > 0 && (r.churn_risk_score || 0) <= 3); // low churn / low risk = stable
+    const toCallList    = book.filter(r =>                                                   // whom to call today
+         (r.days_to_expiry != null && r.days_to_expiry <= 7)
+      || (r.churn_risk_score || 0) >= 7
+      || r.last_trade_date == null
+      || (r.days_since_trade != null && r.days_since_trade > 30));
+
+    const expiring  = expiringList.length;
+    const churn     = churnList.length;
+    const crossSell = crossSellList.length;
+
+    // Deterministic fallback brief (used only if Groq is unavailable/errors).
+    let summary;
+    if (assignedTotal === 0) {
+      summary = '<p>You have no active leads assigned right now. Check the mapping pool or contact your supervisor.</p>';
+    } else {
+      summary =
+        `<p style="margin-bottom:10px"><strong>Good morning, ${firstName}!</strong> You have <strong>${assignedTotal}</strong> active lead${assignedTotal === 1 ? '' : 's'} assigned to you.</p>` +
+        `<p style="margin-bottom:10px"><strong>High score:</strong> ${highScoreList.length} priority client${highScoreList.length === 1 ? '' : 's'}${highScoreList.length ? ` (${highScoreList.slice(0,3).map(r => `${r.name} — ${r.lead_score}`).join(', ')})` : ''}.</p>` +
+        `<p style="margin-bottom:10px"><strong>Call today:</strong> ${toCallList.length} need${toCallList.length === 1 ? 's' : ''} a call${toCallList.length ? ` (${toCallList.slice(0,3).map(r => r.name).join(', ')})` : ''} — expiry, churn, or dormancy.</p>` +
+        `<p style="margin-bottom:10px"><strong>Retention:</strong> ${churn} at high churn risk${churnList.length ? ` (${churnList.slice(0,3).map(r => r.name).join(', ')})` : ''}.</p>` +
+        `<p style="margin-bottom:10px"><strong>Stable:</strong> ${lowRiskList.length} low-risk client${lowRiskList.length === 1 ? '' : 's'}${lowRiskList.length ? ` (${lowRiskList.slice(0,3).map(r => r.name).join(', ')})` : ''} — keep warm.</p>` +
+        `<p><strong>This month:</strong> ${workingDaysLeft} working day${workingDaysLeft === 1 ? '' : 's'} left to end of month.</p>`;
+    }
+
+    // Groq-written brief based on the RM's client data.
+    if (GROQ_API_KEY && assignedTotal > 0) {
+      try {
+        // Compact INR formatter (lakh / crore) for turnover & brokerage.
+        const inr = n => {
+          const v = Number(n) || 0;
+          if (v >= 1e7) return `₹${(v / 1e7).toFixed(2)} Cr`;
+          if (v >= 1e5) return `₹${(v / 1e5).toFixed(2)} L`;
+          if (v >= 1e3) return `₹${(v / 1e3).toFixed(1)}k`;
+          return `₹${Math.round(v)}`;
+        };
+        // Full per-client profile so the AI can write real detail, not one-liners.
+        const profile = r => {
+          const bits = [];
+          bits.push(`lead score ${r.lead_score ?? 'NA'}`);
+          bits.push(`churn risk ${r.churn_risk_score ?? 'NA'} out of 10`);
+          bits.push(`type ${r.client_type || 'NA'}`);
+          if (r.plan) bits.push(`plan ${r.plan}`);
+          bits.push(r.last_trade_date == null ? 'has never traded'
+                    : `last traded ${r.days_since_trade} days ago`);
+          if (Number(r.total_turnover) > 0) bits.push(`lifetime turnover ${inr(r.total_turnover)}`);
+          if (Number(r.brokerage) > 0)      bits.push(`brokerage ${inr(r.brokerage)}`);
+          if (r.days_to_expiry != null)     bits.push(`assignment expires in ${r.days_to_expiry} days`);
+          if (r.ai_notes)                   bits.push(`notes: ${String(r.ai_notes).slice(0, 120)}`);
+          return `- ${r.name} (${r.ucc}): ${bits.join('; ')}`;
+        };
+
+        const dataContext = `
+RM: ${firstName}
+Total active leads assigned: ${assignedTotal}
+Working days left this month: ${workingDaysLeft}
+
+FULL CLIENT PROFILES:
+${book.slice(0, 12).map(profile).join('\n')}
+
+GROUPS (for your structure):
+High-score (score 60+): ${highScoreList.map(r => r.name).join(', ') || 'none'}
+Call today (expiry/churn/dormant): ${toCallList.map(r => r.name).join(', ') || 'none'}
+Expiring within 7 days: ${expiringList.map(r => r.name).join(', ') || 'none'}
+High churn-risk (7+): ${churnList.map(r => r.name).join(', ') || 'none'}
+Stable / low-risk (churn ≤3): ${lowRiskList.map(r => r.name).join(', ') || 'none'}
+Dormant (30+ days): ${dormantList.map(r => r.name).join(', ') || 'none'}
+Cross-sell candidates: ${crossSellList.map(r => r.name).join(', ') || 'none'}`.trim();
+
+        const systemPrompt = `You are the AI assistant for Navia Markets, an Indian stock broker.
+Write a DETAILED, personalised morning brief for a Relationship Manager that analyses their clients using ONLY the profile data provided.
+Structure it as HTML with these <p> section headers (bold the label only with <strong>…</strong>):
+ <strong>Overview:</strong> 1-2 sentences on the book's shape.
+ <strong>High-score priorities:</strong> for each high-score client, name them and give 2-3 sentences — their score, activity/turnover, and the specific action to take.
+ <strong>Call today:</strong> for EACH client to call, name them and explain in 2-3 sentences why (expiry / churn / dormancy, with the day counts) and exactly what to discuss (concrete talking points using MTF, options, delivery vs intraday, brokerage, etc.).
+ <strong>Stable clients:</strong> name the low-risk clients and how to keep them engaged.
+ <strong>Opportunities:</strong> cross-sell / re-activation ideas tied to specific clients and their numbers.
+Be specific and use the actual numbers for each client, EXACTLY as given (e.g. "churn risk 3 out of 10", "last traded 38 days ago"). Never convert a value into a percentage, never change a day count, and never invent any figure or client name not in the data. Write full sentences with real depth — do NOT compress a client into a single line.
+Output ONLY HTML <p> tags. Never use Markdown asterisks (** or *). Aim for 220-320 words.`;
+        const userPrompt = `Client data:\n${dataContext}`;
+
+        const groqText = await callGroq(systemPrompt, userPrompt, 1100);
+        if (groqText && groqText.trim()) {
+          let html = groqText.trim().replace(/```html?/gi, '').replace(/```/g, '').trim();
+          // Safety net: convert any Markdown bold/italic the model emitted into HTML
+          // so the page never shows literal ** or * characters.
+          html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                     .replace(/(^|[^*])\*(?!\s)([^*]+?)\*(?!\*)/g, '$1<em>$2</em>');
+          if (!/<p[\s>]/i.test(html)) {
+            html = html.split(/\n+/).filter(Boolean)
+                       .map(line => `<p style="margin-bottom:10px">${line}</p>`).join('');
+          }
+          if (html) summary = html;
+        }
+      } catch (groqErr) {
+        console.error('Digest Groq generation failed, using fallback:', groqErr.message);
+      }
+    }
+
+    const alerts = [];
+    if (expiring > 0)  alerts.push({ type: 'urgent', title: 'Leads expiring soon', message: `${expiring} assigned lead${expiring === 1 ? '' : 's'} expire within 7 days. Call today before auto-reassignment.` });
+    if (churn > 0)     alerts.push({ type: 'warning', title: 'Churn risk', message: `${churn} client${churn === 1 ? '' : 's'} at high churn risk — schedule a retention call.` });
+    if (crossSell > 0) alerts.push({ type: 'opportunity', title: 'Cross-sell opportunity', message: `${crossSell} active high-value client${crossSell === 1 ? '' : 's'} — good candidate${crossSell === 1 ? '' : 's'} for an MTF / product pitch.` });
+
+    res.json({
+      summary,
+      expiring_leads: expiring,
+      churn_alerts: churn,
+      cross_sell_count: crossSell,
+      working_days_left: workingDaysLeft,
+      alerts
+    });
+  } catch (err) {
+    console.error('AI digest (/digest) error:', err.message);
+    res.status(500).json({ message: 'Failed to generate digest', error: err.message });
+  }
+});
+
 // GET /api/ai/daily-digest
 router.get('/daily-digest', auth, async (req, res) => {
   try {
@@ -498,6 +691,40 @@ Keep it brief, practical and specific to this client's numbers. No generic advic
   } catch (err) {
     console.error('Talking points error:', err.message);
     res.status(500).json({ message: 'Failed to generate talking points', error: err.message });
+  }
+});
+
+router.get('/company-insights', auth, async (req, res) => {
+  try {
+    const [clientsRes, leadsRes, rmRes, revenueRes] = await Promise.all([
+      pool.query(`SELECT COUNT(*) as total, AVG(a.lead_score) as avg_score,
+        COUNT(CASE WHEN a.lead_score >= 50 THEN 1 END) as high_priority,
+        COUNT(CASE WHEN a.churn_risk_score >= 6 THEN 1 END) as churn_risk,
+        COUNT(CASE WHEN c.is_mapped = true THEN 1 END) as mapped
+        FROM clients c LEFT JOIN ai_scores a ON c.ucc = a.ucc WHERE c.status = 'Active'`),
+      pool.query(`SELECT COUNT(*) as total, COUNT(CASE WHEN status='opted_in' THEN 1 END) as pending FROM lead_pool`),
+      pool.query(`SELECT COUNT(*) as total FROM users WHERE role IN ('rm','team_leader') AND is_active=true`),
+      pool.query(`SELECT COALESCE(SUM(brokerage_earned),0) as mtd_brokerage,
+        COALESCE(SUM(options_premium_turnover),0) as mtd_options
+        FROM daily_trades WHERE trade_date >= date_trunc('month', CURRENT_DATE)`)
+    ]);
+    const cs = clientsRes.rows[0];
+    const ls = leadsRes.rows[0];
+    const rs = revenueRes.rows[0];
+    res.json({
+      narrative: `${cs.total} active clients, ${cs.high_priority} high-priority. ${ls.pending} leads pending approval.`,
+      stats: {
+        total_clients: parseInt(cs.total), mapped_clients: parseInt(cs.mapped),
+        avg_lead_score: parseFloat(cs.avg_score||0).toFixed(1),
+        high_priority: parseInt(cs.high_priority), churn_risk: parseInt(cs.churn_risk),
+        total_leads: parseInt(ls.total), pending_approval: parseInt(ls.pending),
+        active_rms: parseInt(rmRes.rows[0]?.total||0),
+        mtd_brokerage: parseFloat(rs.mtd_brokerage||0),
+        mtd_options_to: parseFloat(rs.mtd_options||0)
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Failed to load company insights', error: err.message });
   }
 });
 

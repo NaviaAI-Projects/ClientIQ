@@ -5,6 +5,25 @@ const auth    = require('../middleware/auth');
 const audit   = require('../utils/audit');
 const jwt     = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
+const axios   = require('axios');
+
+// ── Groq helper (same config as routes/ai.js) ─────────────────
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL   = 'llama-3.1-8b-instant';
+async function callGroq(systemPrompt, userPrompt, maxTokens = 700) {
+  const response = await axios.post(GROQ_URL, {
+    model: GROQ_MODEL, max_tokens: maxTokens,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user',   content: userPrompt }
+    ]
+  }, {
+    headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+    timeout: 30000
+  });
+  return response.data.choices[0].message.content;
+}
 
 // ── Email transporter ──────────────────────────────────────────
 function createTransporter() {
@@ -42,6 +61,169 @@ router.get('/my', auth, async (req, res) => {
       ORDER BY lp.lead_score DESC
     `, [rmId]);
     res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// ── GET /to-call-today — leads needing action, with an AI reason to call ──
+// "Needing action" = assigned lead that is expiring soon, high churn risk, or dormant.
+router.get('/to-call-today', auth, async (req, res) => {
+  try {
+    const userResult = await pool.query(
+      'SELECT name FROM users WHERE id = $1 LIMIT 1', [req.user.id]
+    );
+    const userName = userResult.rows[0]?.name || '';
+    const rmResult = await pool.query(
+      'SELECT id FROM rm_master WHERE LOWER(rm_name) = LOWER($1) LIMIT 1', [userName]
+    );
+    const rmId = rmResult.rows[0]?.id || null;
+    if (!rmId) return res.json([]);
+
+    const result = await pool.query(`
+      SELECT lp.ucc, c.name AS client_name, c.client_type, c.plan,
+             c.last_trade_date, lp.lead_score, lp.churn_risk_score,
+             lp.assignment_expires_at, a.ai_notes,
+             CASE WHEN lp.assignment_expires_at IS NULL THEN NULL
+                  ELSE GREATEST(0, lp.assignment_expires_at::date - CURRENT_DATE) END AS days_to_expiry,
+             CASE WHEN c.last_trade_date IS NULL THEN NULL
+                  ELSE (CURRENT_DATE - c.last_trade_date::date) END AS days_since_trade,
+             COALESCE(t.total_turnover, 0) AS total_turnover,
+             COALESCE(t.brokerage, 0)      AS brokerage,
+             (SELECT MAX(i.created_at) FROM interactions i
+                WHERE i.ucc = lp.ucc AND i.rm_id = $1) AS last_contact,
+             EXISTS (SELECT 1 FROM interactions i
+                WHERE i.ucc = lp.ucc AND i.rm_id = $1
+                  AND DATE(i.created_at) = CURRENT_DATE) AS contacted_today
+      FROM lead_pool lp
+      JOIN clients c ON lp.ucc = c.ucc
+      LEFT JOIN ai_scores a ON a.ucc = lp.ucc
+        AND a.score_date = (SELECT MAX(score_date) FROM ai_scores WHERE ucc = lp.ucc)
+      LEFT JOIN (
+        SELECT ucc,
+               SUM(COALESCE(eq_cash_turnover,0) + COALESCE(eq_fo_turnover,0)
+                 + COALESCE(options_premium_turnover,0) + COALESCE(commodity_fo_turnover,0)) AS total_turnover,
+               SUM(COALESCE(brokerage_earned,0)) AS brokerage
+        FROM daily_trades GROUP BY ucc
+      ) t ON t.ucc = lp.ucc
+      WHERE COALESCE(lp.assigned_rm_id, lp.assigned_to_rm) = $2
+        AND lp.status = 'assigned'
+        AND (
+             (lp.assignment_expires_at IS NOT NULL AND lp.assignment_expires_at::date <= CURRENT_DATE + 7)
+          OR lp.churn_risk_score >= 7
+          OR c.last_trade_date IS NULL
+          OR c.last_trade_date::date < CURRENT_DATE - 30
+        )
+      ORDER BY lp.lead_score DESC NULLS LAST
+    `, [req.user.id, rmId]);
+
+    const inr = n => {
+      const v = Number(n) || 0;
+      if (v >= 1e7) return `₹${(v / 1e7).toFixed(2)} Cr`;
+      if (v >= 1e5) return `₹${(v / 1e5).toFixed(2)} L`;
+      if (v >= 1e3) return `₹${(v / 1e3).toFixed(1)}k`;
+      return `₹${Math.round(v)}`;
+    };
+
+    // Classify each lead. The "Why" is built DETERMINISTICALLY from real data (never AI —
+    // so the numbers are always correct); only the "Talk about" points are AI-generated.
+    const rows = result.rows.map(r => {
+      const dte      = r.days_to_expiry;
+      const dst      = r.days_since_trade;
+      const expiring = dte != null && dte <= 7;
+      const churn    = (r.churn_risk_score || 0) >= 7;
+
+      // Shared factual tail for context.
+      const ctx = [];
+      ctx.push(`lead score ${r.lead_score ?? 'NA'}`);
+      if (r.churn_risk_score != null) ctx.push(`churn risk ${r.churn_risk_score}/10`);
+      if (Number(r.total_turnover) > 0) ctx.push(`lifetime turnover ${inr(r.total_turnover)}`);
+      const ctxStr = ctx.length ? ` (${ctx.join(', ')})` : '';
+
+      let reason, whyText, talkFallback, priority;
+      if (expiring) {
+        reason       = 'Lead expiring';
+        whyText      = `Assignment expires in ${dte} day${dte === 1 ? '' : 's'} — contact before it auto-reassigns to another RM${ctxStr}.`;
+        talkFallback = 'Confirm you are their dedicated RM, understand their goals, and agree a concrete next step so the mapping is retained.';
+        priority     = dte <= 3 ? 'Critical' : 'High';
+      } else if (churn) {
+        reason       = 'Churn risk';
+        whyText      = `High churn risk at ${r.churn_risk_score}/10${ctxStr}. Proactive retention call needed.`;
+        talkFallback = 'Ask about any service or pricing concerns, review brokerage and charges, and offer a retention benefit or a call with a dealer.';
+        priority     = 'Critical';
+      } else {
+        reason  = 'Dormant';
+        priority = 'High';
+        if (r.last_trade_date == null) {
+          whyText      = `No trades on record yet${ctxStr}. Account opened but not activated.`;
+          talkFallback = 'Walk them through the platform, explain the segments available (equity delivery, F&O, MTF), and help them place a confident first trade.';
+        } else {
+          whyText      = `No trade for ${dst} days${ctxStr}. Re-engage before the client goes fully cold.`;
+          talkFallback = 'Share current market ideas, discuss MTF on their delivery holdings, and compare delivery vs intraday to rebuild activity.';
+        }
+      }
+
+      return {
+        ucc:              r.ucc,
+        client_name:      r.client_name,
+        name:             r.client_name,
+        client_type:      r.client_type,
+        lead_score:       r.lead_score,
+        churn_risk_score: r.churn_risk_score,
+        reason,
+        _whyText:         whyText,
+        reason_detail:    `Why: ${whyText} Talk about: ${talkFallback}`,
+        priority,
+        last_contact:     r.last_contact,
+        best_time:        null,
+        contacted_today:  r.contacted_today,
+      };
+    });
+
+    // AI generates ONLY the talking points (the "Talk about" part). The factual "Why" stays
+    // deterministic. One batched Groq call; on any error the rule-based talk fallback remains.
+    if (GROQ_API_KEY && rows.length > 0) {
+      try {
+        const list = result.rows.map((r, i) => {
+          const bits = [`lead score ${r.lead_score ?? 'NA'}`, `churn risk ${r.churn_risk_score ?? 'NA'} out of 10`, `type ${r.client_type || 'NA'}`];
+          if (r.plan) bits.push(`plan ${r.plan}`);
+          bits.push(r.last_trade_date == null ? 'has never traded' : `last traded ${r.days_since_trade} days ago`);
+          if (Number(r.total_turnover) > 0) bits.push(`lifetime turnover ${inr(r.total_turnover)}`);
+          if (Number(r.brokerage) > 0)      bits.push(`brokerage ${inr(r.brokerage)}`);
+          if (r.ai_notes)                   bits.push(`notes: ${String(r.ai_notes).slice(0, 100)}`);
+          return `${i}. ${r.client_name} — trigger: ${rows[i].reason}; ${bits.join('; ')}`;
+        }).join('\n');
+
+        const systemPrompt = `You are an assistant for Navia Markets, an Indian stock broker.
+For each client, write ONLY the "talk about" section for the Relationship Manager's call: 2-3 concrete, specific talking points for the conversation.
+Tailor to the client's trigger and profile — e.g. MTF on delivery holdings, an options strategy, a re-activation offer, addressing service concerns, a first-trade walkthrough.
+Use Indian broking context (NSE, BSE, MTF, options, delivery vs intraday). Do NOT restate scores or day counts, and do NOT invent any numbers — give actionable points only. 35-60 words each.
+Return ONLY a JSON array like [{"i":0,"talk":"..."},{"i":1,"talk":"..."}], one object per client. No prose, no code fences.`;
+        const userPrompt = `Clients:\n${list}`;
+
+        const raw = await callGroq(systemPrompt, userPrompt, 1400);
+        const match = raw && raw.match(/\[[\s\S]*\]/);
+        if (match) {
+          const parsed = JSON.parse(match[0]);
+          parsed.forEach(item => {
+            if (item && typeof item.i === 'number' && rows[item.i] && item.talk) {
+              const talk = String(item.talk).replace(/\*/g, '').trim();
+              rows[item.i].reason_detail = `Why: ${rows[item.i]._whyText} Talk about: ${talk}`;
+            }
+          });
+        }
+      } catch (groqErr) {
+        console.error('to-call-today Groq talking points failed, using rule text:', groqErr.message);
+      }
+    }
+    rows.forEach(r => { delete r._whyText; });
+
+    rows.sort((a, b) => {
+      const p = v => (v.priority === 'Critical' ? 0 : 1);
+      return p(a) - p(b) || (b.lead_score || 0) - (a.lead_score || 0);
+    });
+
+    res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -353,6 +535,49 @@ router.put('/:id/status', auth, async (req, res) => {
       [status, req.params.id]
     );
     res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/pending-approvals', auth, async (req, res) => {
+  try {
+    const { limit = 50 } = req.query;
+    const result = await pool.query(`
+      SELECT lp.id, lp.ucc, lp.lead_score, lp.churn_risk_score,
+        lp.status, lp.assigned_at, lp.updated_at,
+        c.name AS client_name, c.client_type, c.plan,
+        u.name AS rm_name, lp.assigned_to_rm AS rm_id
+      FROM lead_pool lp
+      JOIN clients c ON lp.ucc = c.ucc
+      LEFT JOIN users u ON lp.assigned_to_rm = u.id
+      WHERE lp.status = 'opted_in'
+      ORDER BY lp.lead_score DESC
+      LIMIT $1
+    `, [limit]);
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+router.get('/all', auth, async (req, res) => {
+  try {
+    const { limit = 100 } = req.query;
+    const result = await pool.query(`
+      SELECT lp.id, lp.ucc, lp.lead_score, lp.churn_risk_score,
+        lp.status, lp.assigned_at, lp.assignment_expires_at,
+        lp.reassign_count, lp.updated_at,
+        c.name AS client_name, c.client_type, c.plan,
+        u.name AS rm_name, lp.assigned_to_rm AS rm_id,
+        lp.optin_clicked, lp.optin_date
+      FROM lead_pool lp
+      JOIN clients c ON lp.ucc = c.ucc
+      LEFT JOIN users u ON lp.assigned_to_rm = u.id
+      ORDER BY lp.lead_score DESC
+      LIMIT $1
+    `, [limit]);
+    res.json(result.rows);
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }

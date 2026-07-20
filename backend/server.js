@@ -24,6 +24,7 @@ const routes = [
   ['/api/interactions',   './routes/interactions'],
   ['/api/import',         './routes/import'],
   ['/api/reports',        './routes/reports'],
+  ['/api/analytics',      './routes/analytics'],
   ['/api/users',          './routes/users'],
   ['/api/rm',             './routes/rm'],
   ['/api/ai',             './routes/ai'],
@@ -33,6 +34,7 @@ const routes = [
   ['/api/email',          './routes/email'],
   ['/api/nudge',          './routes/nudge'],
   ['/api/trade-insights', './routes/tradeInsights'],
+  ['/api/audit-log', './routes/auditLog'],
 ];
 
 routes.forEach(([routePath, file]) => {

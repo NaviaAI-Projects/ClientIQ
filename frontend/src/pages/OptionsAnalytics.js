@@ -1,157 +1,247 @@
-import React from 'react';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine } from 'recharts';
+import React, { useEffect, useState } from 'react';
+import {
+  LineChart, Line, BarChart, Bar, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+} from 'recharts';
+import api from '../api';
+import { InfoBtn, ViewToggle, DateRange, rangeParams, ClientLink } from '../components/ui';
 
-const DATES = ['4 May','5 May','6 May','7 May','8 May*','11 May','12 May','13 May','14 May','15 May*','18 May','19 May','20 May','21 May','22 May*','1 Jun','2 Jun','3 Jun*'];
-const TO    = [64.4,57.7,71.8,72.4,50.6,55.9,58.4,69.9,73.0,63.2,76.2,69.2,61.9,56.8,49.3,59.1,75.8,91.4];
-const EXPIRY_IDX = [4,9,14,17];
+const rupee = (n) => {
+  const v = Number(n) || 0;
+  if (Math.abs(v) >= 1e7) return '₹' + (v / 1e7).toFixed(2) + 'Cr';
+  if (Math.abs(v) >= 1e5) return '₹' + (v / 1e5).toFixed(2) + 'L';
+  return '₹' + Math.round(v).toLocaleString('en-IN');
+};
+const spct = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + Number(n).toFixed(1) + '%');
+const spct0 = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + Math.round(Number(n)) + '%');
+const colorOf = (n) => (n == null ? 'var(--tx2)' : n >= 0 ? 'var(--sc)' : 'var(--dc)');
 
-const toData = DATES.map((d,i)=>({ date:d, TO:TO[i], Avg:67.4, isExpiry:EXPIRY_IDX.includes(i) }));
-const clientData = DATES.map((d,i)=>({ date:d, clients:[1746,2028,1836,2003,1641,1821,2103,1793,2029,1687,1873,2037,1767,2004,1603,1743,2132,2410][i] }));
-const MO = ["Dec '25","Jan '26","Feb '26","Mar '26","Apr '26","May '26","Jun '26 MTD"];
-const trendData = MO.map((m,i)=>({ month:m, EqOpt:[47.9,60.4,64.0,79.9,58.9,61.8,67.4][i], CommOpt:[4.0,5.0,4.0,7.8,4.8,5.4,6.6][i] }));
-
-const MONTHLY = [
-  { m:"Jun '26 (MTD)", eqTO:67.4, eqC:1938, eqClr:'₹2,02,248', commTO:6.6, commC:241, commClr:'₹33,005', totRev:'₹2,35,253', mom:'+3.5%', momC:'var(--sc)' },
-  { m:"May '26",       eqTO:61.8, eqC:1853, eqClr:'₹1,86,736', commTO:5.4, commC:243, commClr:'₹27,325', totRev:'₹2,14,061', mom:'–3.7%', momC:'var(--dc)' },
-  { m:"Apr '26",       eqTO:58.9, eqC:1826, eqClr:'₹1,76,803', commTO:4.8, commC:229, commClr:'₹24,167', totRev:'₹2,00,970', mom:'–17.0%',momC:'var(--dc)' },
-  { m:"Mar '26",       eqTO:79.9, eqC:1966, eqClr:'₹2,39,787', commTO:7.8, commC:262, commClr:'₹39,173', totRev:'₹2,78,960', mom:'+43.6%',momC:'var(--sc)' },
-  { m:"Feb '26",       eqTO:64.0, eqC:1997, eqClr:'₹1,92,004', commTO:4.0, commC:236, commClr:'₹20,115', totRev:'₹2,12,119', mom:'+9.2%', momC:'var(--sc)' },
-  { m:"Dec '25",       eqTO:47.9, eqC:1901, eqClr:'₹1,43,556', commTO:4.0, commC:256, commClr:'₹19,895', totRev:'₹1,63,451', mom:'—',     momC:'inherit'   },
-];
-
-const TOP10 = [
-  { ucc:'NV10234', name:'Priya Krishnan',  type:'RI-HV',  to:'₹4.8Cr', lots:'1,840', rm:'Arjun' },
-  { ucc:'NV50089', name:'David Mathew',    type:'RI-HV',  to:'₹4.1Cr', lots:'1,560', rm:'—' },
-  { ucc:'NV10045', name:'Kavitha Sharma',  type:'NRE-HV', to:'₹3.9Cr', lots:'1,480', rm:'Mubarak' },
-  { ucc:'NV60214', name:'Meenakshi Pillai',type:'NRE',    to:'₹3.2Cr', lots:'1,210', rm:'Srinivasan' },
-  { ucc:'NV80112', name:'Vasantha Rajan',  type:'RI',     to:'₹2.9Cr', lots:'1,100', rm:'—' },
-];
-
-const EXPIRY_TABLE = [
-  { date:'3 Jun (Tue)', type:'Weekly', to:'82.1', vsMtd:'+22%', c:2280, cvsMtd:'+18%' },
-  { date:'5 Jun (Thu)', type:'Weekly', to:'91.4', vsMtd:'+36%', c:2410, cvsMtd:'+24%' },
-  { date:'26 Jun (Thu)',type:'Monthly',to:'—',    vsMtd:'—',    c:'—',  cvsMtd:'—'    },
-];
-
-const DotBar = ({ data }) => {
-  const Custom = ({ x, y, value, index }) => {
-    const isExp = data[index]?.isExpiry;
-    return <circle cx={x} cy={y} r={isExp?6:3} fill={isExp?'#a32d2d':'#185fa5'} />;
-  };
-  return null;
+// red dot on expiry days
+const ExpiryDot = (props) => {
+  const { cx, cy, payload } = props;
+  if (cx == null || cy == null) return null;
+  return payload.is_expiry
+    ? <circle cx={cx} cy={cy} r={4} fill="#e24b4a" stroke="#fff" strokeWidth={1} />
+    : <circle cx={cx} cy={cy} r={2.5} fill="#185fa5" />;
 };
 
-const OptionsAnalytics = () => (
-  <div>
-    <div className="ph"><h2>Options analytics</h2><p>Equity &amp; Commodity options — premium turnover, expiry patterns, client behaviour</p></div>
-    <div className="cards">
-      <div className="card ci"><div className="clbl">Avg daily Eq Opt TO (Jun)</div><div className="cval">₹67.4Cr</div><div className="csub">vs May avg ₹61.8Cr · +9%</div></div>
-      <div className="card cs"><div className="clbl">Options clients (Eq, Jun avg)</div><div className="cval">1,938/day</div><div className="csub">May avg 1,853 · +4.6%</div></div>
-      <div className="card cw"><div className="clbl">Expiry-day TO premium</div><div className="cval">+28%</div><div className="csub">vs non-expiry avg</div></div>
-      <div className="card cp"><div className="clbl">Comm Options avg (Jun)</div><div className="cval">₹6.6Cr/day</div><div className="csub">vs May ₹5.4Cr · +22%</div></div>
-    </div>
+const OptionsAnalytics = () => {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [range, setRange]     = useState({ key: 'month' });
 
-    <div className="panel">
-      <div className="ptitle">📈 Equity options daily premium TO — expiry days marked (₹Cr)</div>
-      <ResponsiveContainer width="100%" height={220}>
-        <LineChart data={toData} margin={{top:8,right:8,bottom:8,left:8}}>
-          <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-          <XAxis dataKey="date" tick={{fontSize:9}} interval={1} angle={-45} textAnchor="end" height={50} />
-          <YAxis tick={{fontSize:10}} />
-          <Tooltip />
-          <Legend wrapperStyle={{fontSize:11}} iconSize={10} />
-          <Line type="monotone" dataKey="TO" name="Eq Options TO (₹Cr)" stroke="#185fa5" strokeWidth={2} dot={(props) => { const isExp=EXPIRY_IDX.includes(props.index); return <circle key={props.index} cx={props.cx} cy={props.cy} r={isExp?6:3} fill={isExp?'#a32d2d':'#185fa5'} />; }} />
-          <Line type="monotone" dataKey="Avg" name="MTD avg" stroke="#854f0b" strokeDasharray="5 5" dot={false} strokeWidth={1.5} />
-        </LineChart>
-      </ResponsiveContainer>
-      <p style={{fontSize:'11px',color:'var(--tx3)',marginTop:'6px'}}>Red markers = weekly expiry days (Tue/Thu). Volume spike on expiry days is consistently 25–30% above non-expiry average.</p>
-    </div>
+  useEffect(() => {
+    if (range.key === 'custom' && !(range.from && range.to)) return;
+    setLoading(true);
+    api.get('/analytics/options', { params: rangeParams(range) })
+      .then(res => setData(res.data))
+      .catch(() => setError('Could not load options analytics.'))
+      .finally(() => setLoading(false));
+  }, [range]);
 
-    <div className="tc2">
-      <div className="panel">
-        <div className="ptitle">👥 Options client count — expiry vs non-expiry days</div>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={toData} margin={{top:8,right:8,bottom:8,left:8}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-            <XAxis dataKey="date" tick={{fontSize:8}} interval={2} />
-            <YAxis tick={{fontSize:10}} />
-            <Tooltip />
-            <Bar dataKey="TO" name="Options clients" fill="#b5d4f4"
-              label={false}
-              isAnimationActive={false}
-            />
-          </BarChart>
-        </ResponsiveContainer>
+  if (loading && !data) return <div className="ph"><h2>Options analytics</h2><p>Loading…</p></div>;
+  if (error)   return <div className="ph"><h2>Options analytics</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
+
+  const { meta, kpis, daily, monthly, expiry_analysis, top_clients } = data;
+  const lm = meta.latest_month || '';
+  const pm = meta.prior_month || '';
+
+  return (
+    <div>
+      <div className="ph">
+        <h2>Options analytics</h2>
+        <p>Equity &amp; Commodity options — Navia's primary revenue driver (40% of revenue) · Premium turnover, expiry patterns, client behaviour{meta.as_of ? ` · As of ${meta.as_of}` : ''}</p>
       </div>
-      <div className="panel">
-        <div className="ptitle">📈 Month-on-month options volume trend (₹Cr avg/day)</div>
-        <ResponsiveContainer width="100%" height={200}>
-          <LineChart data={trendData} margin={{top:8,right:8,bottom:8,left:8}}>
-            <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-            <XAxis dataKey="month" tick={{fontSize:10}} />
-            <YAxis tick={{fontSize:10}} />
-            <Tooltip />
-            <Legend wrapperStyle={{fontSize:11}} iconSize={10} />
-            <Line type="monotone" dataKey="EqOpt"   name="Eq Opt avg/day (₹Cr)"   stroke="#185fa5" strokeWidth={2} dot={{r:4}} />
-            <Line type="monotone" dataKey="CommOpt" name="Comm Opt avg/day (₹Cr)" stroke="#9FE1CB" strokeWidth={2} dot={{r:4}} />
-          </LineChart>
-        </ResponsiveContainer>
+
+      <DateRange value={range} onChange={setRange} bounds={meta && meta.range ? { min: meta.range.data_min, max: meta.range.data_max } : undefined} active={meta && meta.range} />
+      {loading && <div style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 8 }}>Updating…</div>}
+
+      <div className="cards">
+        <div className="card ci">
+          <div className="clbl">Avg daily Eq Opt TO ({lm})</div>
+          <div className="cval">₹{kpis.eq_opt_avg_daily_cr}Cr</div>
+          <div className="csub">vs {pm} avg ₹{kpis.eq_opt_prev_cr}Cr · {spct(kpis.eq_opt_mom_pct)}</div>
+        </div>
+        <div className="card cs">
+          <div className="clbl">Options clients (Eq, {lm} avg)</div>
+          <div className="cval">{kpis.eq_opt_clients_avg.toLocaleString('en-IN')}/day</div>
+          <div className="csub">{pm} avg {kpis.eq_opt_clients_prev.toLocaleString('en-IN')} · {spct(kpis.eq_opt_clients_mom_pct)}</div>
+        </div>
+        <div className="card cw">
+          <div className="clbl">Expiry-day TO premium</div>
+          <div className="cval">{spct0(kpis.expiry_premium_pct)}</div>
+          <div className="csub">vs non-expiry avg</div>
+        </div>
+        <div className="card cp">
+          <div className="clbl">Comm Options avg ({lm})</div>
+          <div className="cval">₹{kpis.comm_opt_avg_daily_cr}Cr/day</div>
+          <div className="csub">vs {pm} ₹{kpis.comm_opt_prev_cr}Cr · {spct(kpis.comm_opt_mom_pct)}</div>
+        </div>
       </div>
-    </div>
 
-    <div className="panel">
-      <div className="ptitle">📋 Options business — monthly comparison</div>
-      <div className="tw"><table>
-        <thead><tr><th>Month</th><th>Eq Opt TO (₹Cr/d)</th><th>Eq Opt clients</th><th>Eq Opt clearing (₹/d)</th><th>Comm Opt TO</th><th>Comm Opt clients</th><th>Comm clearing (₹/d)</th><th>Total options rev (₹/d)</th><th>MoM change</th></tr></thead>
-        <tbody>
-          {MONTHLY.map((r,i)=>(
-            <tr key={i}>
-              <td>{r.m}</td><td>{r.eqTO}</td><td>{r.eqC.toLocaleString('en-IN')}</td><td>{r.eqClr}</td>
-              <td>{r.commTO}</td><td>{r.commC}</td><td>{r.commClr}</td><td style={{fontWeight:'500'}}>{r.totRev}</td>
-              <td style={{color:r.momC}}>{r.mom}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table></div>
-    </div>
-
-    <div className="tc2">
       <div className="panel">
-        <div className="ptitle">📅 Expiry day analysis — Jun 2026</div>
-        <div className="alert a-i" style={{marginBottom:'10px'}}>ℹ️ Weekly expiries: every Tue &amp; Thu. NSE monthly: last Thu of month.</div>
+        <div className="ptitle">📈 Equity options daily premium TO — expiry days marked (₹Cr)<InfoBtn text="Daily equity-options premium turnover (SUM of traded_value for NFO/BFO OPTIDX+OPTSTK), in ₹ crore. Dashed line = month-to-date average. Red dots mark expiry days." /></div>
+        <ViewToggle
+          chart={
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={daily} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v + 'Cr'} />
+                <Tooltip formatter={v => '₹' + v + 'Cr'} />
+                <Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
+                <Line dataKey="eq_opt_to_cr" stroke="#185fa5" strokeWidth={2} dot={<ExpiryDot />} name="Eq Options TO (₹Cr)" />
+                <Line dataKey="mtd_avg_cr" stroke="#9aa7bd" strokeWidth={1.5} strokeDasharray="5 4" dot={false} name="MTD avg" />
+              </LineChart>
+            </ResponsiveContainer>
+          }
+          table={
+            <table>
+              <thead><tr><th>Date</th><th>Eq Opt TO (₹Cr)</th><th>MTD avg (₹Cr)</th><th>Expiry</th></tr></thead>
+              <tbody>
+                {daily.map((r, i) => (
+                  <tr key={i}><td>{r.date}</td><td>{r.eq_opt_to_cr}</td><td>{r.mtd_avg_cr}</td><td>{r.is_expiry ? '● Expiry' : '—'}</td></tr>
+                ))}
+                {daily.length === 0 && <tr><td colSpan={4} style={{ color: 'var(--tx3)' }}>No options data.</td></tr>}
+              </tbody>
+            </table>
+          }
+        />
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Red markers = weekly expiry days (Tue/Thu). Monthly expiry shown with triangle marker. Volume spike on expiry days is consistently 25–30% above non-expiry average.</p>
+      </div>
+
+      <div className="tc2">
+        <div className="panel">
+          <div className="ptitle">👥 Options client count — expiry vs non-expiry days<InfoBtn text="Distinct equity-options clients trading each day (COUNT DISTINCT ucc). Red bars = expiry days, which typically draw more participants." /></div>
+          <ViewToggle
+            chart={
+              <ResponsiveContainer width="100%" height={220}>
+                <BarChart data={daily} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+                  <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip />
+                  <Bar dataKey="clients" name="Options clients" radius={[4, 4, 0, 0]}>
+                    {daily.map((d, i) => <Cell key={i} fill={d.is_expiry ? '#e24b4a' : '#185fa5'} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            }
+            table={
+              <table>
+                <thead><tr><th>Date</th><th>Options clients</th><th>Expiry</th></tr></thead>
+                <tbody>
+                  {daily.map((r, i) => (
+                    <tr key={i}><td>{r.date}</td><td>{Number(r.clients).toLocaleString('en-IN')}</td><td>{r.is_expiry ? '● Expiry' : '—'}</td></tr>
+                  ))}
+                  {daily.length === 0 && <tr><td colSpan={3} style={{ color: 'var(--tx3)' }}>No options data.</td></tr>}
+                </tbody>
+              </table>
+            }
+          />
+        </div>
+        <div className="panel">
+          <div className="ptitle">📈 Month-on-month options volume trend (₹Cr avg/day)<InfoBtn text="Average daily premium turnover per month (month total ÷ trading days), in ₹ crore, for Equity options (blue) and Commodity options (orange)." /></div>
+          <ViewToggle
+            chart={
+              <ResponsiveContainer width="100%" height={220}>
+                <LineChart data={monthly} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+                  <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v + 'Cr'} />
+                  <Tooltip formatter={v => '₹' + v + 'Cr'} />
+                  <Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
+                  <Line dataKey="eq_opt_to_cr" stroke="#185fa5" strokeWidth={2} name="Eq Opt avg/day (₹Cr)" />
+                  <Line dataKey="comm_opt_to_cr" stroke="#e0803a" strokeWidth={2} name="Comm Opt avg/day (₹Cr)" />
+                </LineChart>
+              </ResponsiveContainer>
+            }
+            table={
+              <table>
+                <thead><tr><th>Month</th><th>Eq Opt (₹Cr/d)</th><th>Comm Opt (₹Cr/d)</th></tr></thead>
+                <tbody>
+                  {monthly.map(r => (
+                    <tr key={r.month}><td>{r.month}</td><td>{r.eq_opt_to_cr}</td><td>{r.comm_opt_to_cr}</td></tr>
+                  ))}
+                  {monthly.length === 0 && <tr><td colSpan={3} style={{ color: 'var(--tx3)' }}>No options data.</td></tr>}
+                </tbody>
+              </table>
+            }
+          />
+        </div>
+      </div>
+
+      <div className="panel">
+        <div className="ptitle">📋 Options business — monthly comparison<InfoBtn text="Per-month options business: avg daily premium turnover (₹Cr), avg daily client count, and MoM change in Eq-options turnover. Clearing-fee columns fill in once brokerage/clearing data is imported." /></div>
         <div className="tw"><table>
-          <thead><tr><th>Expiry date</th><th>Type</th><th>Eq Opt TO (₹Cr)</th><th>vs MTD avg</th><th>Clients</th><th>vs MTD avg</th></tr></thead>
+          <thead><tr>
+            <th>Month</th><th>Eq Opt TO (₹Cr/d)</th><th>Eq Opt clients</th><th>Eq Opt clearing (₹/d)</th>
+            <th>Comm Opt TO</th><th>Comm Opt clients</th><th>Comm clearing (₹/d)</th><th>Total options rev (₹/d)</th><th>MoM change</th>
+          </tr></thead>
           <tbody>
-            {EXPIRY_TABLE.map((r,i)=>(
-              <tr key={i} style={{background:r.type==='Monthly'?'var(--ibg)':'inherit'}}>
-                <td>{r.date}</td>
-                <td><span className={`badge ${r.type==='Monthly'?'b-nri':'b-pend'}`}>{r.type}</span></td>
-                <td>{r.to}</td><td style={{color:'var(--sc)'}}>{r.vsMtd}</td>
-                <td>{typeof r.c==='number'?r.c.toLocaleString('en-IN'):r.c}</td>
-                <td style={{color:'var(--sc)'}}>{r.cvsMtd}</td>
+            {monthly.slice().reverse().map((m) => (
+              <tr key={m.month}>
+                <td>{m.month}</td>
+                <td>{m.eq_opt_to_cr}</td>
+                <td>{m.eq_opt_clients.toLocaleString('en-IN')}</td>
+                <td>—</td>
+                <td>{m.comm_opt_to_cr}</td>
+                <td>{m.comm_opt_clients.toLocaleString('en-IN')}</td>
+                <td>—</td>
+                <td>—</td>
+                <td style={{ color: colorOf(m.mom_pct) }}>{spct(m.mom_pct)}</td>
               </tr>
             ))}
+            {monthly.length === 0 && <tr><td colSpan={9} style={{ color: 'var(--tx3)' }}>No options data.</td></tr>}
           </tbody>
         </table></div>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Clearing-fee revenue columns populate once brokerage/clearing data is imported; turnover and client counts are live.</p>
       </div>
-      <div className="panel">
-        <div className="ptitle">⭐ Top 10 options clients by premium TO (MTD)</div>
-        <div className="tw"><table>
-          <thead><tr><th>UCC</th><th>Client</th><th>Type</th><th>Eq Opt TO</th><th>Lots</th><th>RM</th></tr></thead>
-          <tbody>
-            {TOP10.map((r,i)=>(
-              <tr key={i}>
-                <td><span className="lc">{r.ucc}</span></td>
-                <td>{r.name}</td>
-                <td><span className={`badge ${r.type.includes('NR')?'b-nri':'b-hv'}`}>{r.type}</span></td>
-                <td>{r.to}</td><td>{r.lots}</td><td>{r.rm}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table></div>
-        <p style={{fontSize:'11px',color:'var(--tx3)',marginTop:'8px'}}>Unmapped high-TO clients flagged as priority leads in AI scoring.</p>
+
+      <div className="tc2">
+        <div className="panel">
+          <div className="ptitle">📅 Expiry day analysis — {lm}<InfoBtn text="Each expiry day's premium turnover and client count vs the month-to-date average. Monthly = last expiry of the month (NSE last-Thursday); Weekly = every other Tue/Thu expiry." /></div>
+          <div className="alert a-i" style={{ marginBottom: 10 }}>ℹ️ Weekly expiries: every Tue &amp; Thu. NSE monthly: last Thu of month.</div>
+          <div className="tw"><table>
+            <thead><tr><th>Expiry date</th><th>Type</th><th>Eq Opt TO (₹Cr)</th><th>vs MTD avg</th><th>Clients</th><th>vs MTD avg</th></tr></thead>
+            <tbody>
+              {expiry_analysis.map((e, i) => (
+                <tr key={i}>
+                  <td>{e.date}</td>
+                  <td><span className={`badge ${e.type === 'Monthly' ? 'b-nri' : 'b-pend'}`}>{e.type}</span></td>
+                  <td>{e.eq_opt_to_cr}</td>
+                  <td style={{ color: colorOf(e.vs_mtd_pct) }}>{spct0(e.vs_mtd_pct)}</td>
+                  <td>{e.clients.toLocaleString('en-IN')}</td>
+                  <td style={{ color: colorOf(e.clients_vs_mtd_pct) }}>{spct0(e.clients_vs_mtd_pct)}</td>
+                </tr>
+              ))}
+              {expiry_analysis.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tx3)' }}>No expiry days in range.</td></tr>}
+            </tbody>
+          </table></div>
+        </div>
+        <div className="panel">
+          <div className="ptitle">⭐ Top 10 options clients by premium TO (MTD)<InfoBtn text="Highest equity-options premium turnover this month (sum of traded_value per client, current month). Lots = traded quantity. Unmapped high-TO clients are flagged as priority leads." /></div>
+          <div className="tw"><table>
+            <thead><tr><th>UCC</th><th>Client</th><th>Type</th><th>Eq Opt TO</th><th>Lots</th><th>RM</th></tr></thead>
+            <tbody>
+              {top_clients.map(r => (
+                <tr key={r.ucc}>
+                  <td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
+                  <td><span className="badge b-ri">{r.client_type}</span></td>
+                  <td>{rupee(r.eq_opt_to)}</td>
+                  <td>{Math.round(r.lots).toLocaleString('en-IN')}</td>
+                  <td>{r.rm_name}</td>
+                </tr>
+              ))}
+              {top_clients.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tx3)' }}>No options data.</td></tr>}
+            </tbody>
+          </table></div>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>Unmapped high-TO clients flagged as priority leads in AI scoring. "Lots" shows traded quantity (lot size not in feed).</p>
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
+
 export default OptionsAnalytics;
