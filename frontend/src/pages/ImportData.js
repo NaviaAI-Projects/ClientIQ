@@ -2,12 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import api from '../api';
 
 const FILE_CONFIGS = {
-  client_master: { label: 'Client Master',  icon: '👤', color: '#3B82F6', bg: '#E6F1FB', freq: 'Periodic', step: 1, sample: 'client_master_sample.csv', keywords: ['clientmaster','client_master','clientmst'] },
+  client_master: { label: 'Client Master',  icon: '👤', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',    step: 1, sample: 'client_master_sample.csv', keywords: ['clientmaster','client_master','clientmst'] },
   trade:         { label: 'Trade File',      icon: '📊', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily',    step: 2, sample: 'trade_sample.csv',         keywords: ['trade','tradefile','tradein'] },
   brokerage:     { label: 'Brokerage File',  icon: '🧾', color: '#854F0B', bg: '#FAEEDA', freq: 'Daily',    step: 3, sample: 'brokerage_sample.csv',     keywords: ['brokerage','brokerge','brok'] },
-  ledger:        { label: 'Ledger File',     icon: '🏦', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',    step: 4, sample: 'ledger_sample.csv',        keywords: ['ledger','ledgr'] },
-  holdings:      { label: 'Holdings',        icon: '📁', color: '#08905C', bg: '#E6FAF3', freq: 'Weekly',   step: 5, sample: 'holdings_sample.csv',      keywords: ['holding','dp','dpholding'] },
-  mtf:           { label: 'MTF File',        icon: '💰', color: '#854F0B', bg: '#FAEEDA', freq: 'Monthly',  step: 6, sample: 'mtf_sample.csv',           keywords: ['mtf','margintrade','mtfinterest'] },
+  ledger:        { label: 'Ledger File',     icon: '🏦', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',    step: 4, sample: 'ledger_sample.csv',        keywords: ['ledger','ledgr','basecapital','base_capital','rmslimit','rms_limit','rms','limit','capital'] },
+  holdings:      { label: 'Holdings',        icon: '📁', color: '#08905C', bg: '#E6FAF3', freq: 'Daily',    step: 5, sample: 'holdings_sample.csv',      keywords: ['holding','dp','dpholding'] },
+  mtf:           { label: 'MTF File',        icon: '💰', color: '#854F0B', bg: '#FAEEDA', freq: 'Weekly',   step: 6, sample: 'mtf_sample.csv',           keywords: ['mtf','margintrade','mtfinterest'] },
 };
 
 function detectType(filename) {

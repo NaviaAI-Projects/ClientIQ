@@ -158,69 +158,89 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       }
     }
 
-    // ── TRADE FILE ────────────────────────────────────────
+    // ── TRADE FILE — NCL F&O Position export (F&O only) ────────────────
+    // Management format: 46-column NCL/NSE F&O position file. Each row is a client's open
+    // position in one contract for the day, carrying BOTH the day's buy and sell trading
+    // qty/value. We split each row into a buy leg and a sell leg so the raw `trades` table
+    // and the 90-day summary (which aggregate by buy_sell) keep working unchanged.
+    // Key cols (0-indexed): 3=BizDt(date) 8=ClntId(UCC) 9=FinInstrmTp 11=TckrSymb 12=XpryDt
+    //   14=StrkPric 15=OptnTp 21=OpnBuyTradgQty 22=OpnBuyTradgVal 23=OpnSellTradgQty 24=OpnSellTradgVal.
     else if (file_type === 'trade') {
-      const rows = XLSX.utils.sheet_to_json(sheet, { raw: true, defval: '' });
+      const arr = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+
+      // ── Exact-format validation: 46-column NCL F&O header, exact names & order ──
+      const EXPECTED = ['Sgmt','Src','RptgDt','BizDt','TradRegnOrgn','ClrMmbId','BrkrOrCtdnPtcptId',
+        'ClntTp','ClntId','FinInstrmTp','ISIN','TckrSymb','XpryDt','FininstrmActlXpryDt','StrkPric',
+        'OptnTp','NewBrdLotQty','OpngLngQty','OpngLngVal','OpngShrtQty','OpngShrtVal','OpnBuyTradgQty',
+        'OpnBuyTradgVal','OpnSellTradgQty','OpnSellTradgVal','PreExrcAssgndLngQty','PreExrcAssgndLngVal',
+        'PreExrcAssgndShrtQty','PreExrcAssgndShrtVal','ExrcdQty','AssgndQty','PstExrcAssgndLngQty',
+        'PstExrcAssgndLngVal','PstExrcAssgndShrtQty','PstExrcAssgndShrtVal','SttlmPric','RefRate','PrmAmt',
+        'DalyMrkToMktSettlmVal','FutrsFnlSttlmVal','ExrcAssgndVal','Rmks','Rsvd1','Rsvd2','Rsvd3','Rsvd4'];
+      const header = (arr[0] || []).map(c => String(c ?? '').trim());
+      const headerOk = header.length >= EXPECTED.length && EXPECTED.every((name, i) => header[i] === name);
+      if (!headerOk) {
+        throw new Error('FORMAT:Trade file must be the NCL F&O Position export — 46 columns beginning Sgmt, Src, RptgDt, BizDt … in the exact order.');
+      }
+
       const { rows: uccRows } = await dbClient.query('SELECT ucc FROM clients');
       const knownUCCs = new Set(uccRows.map(r => String(r.ucc).trim()));
       const grouped   = {};
       const tradeRows = [];
 
-      for (const row of rows) {
-        const ucc       = String(row['Account Id'] || '').trim();
-        const exchg     = String(row['Exchg. Seg'] || '').trim();
-        const instrName = String(row['Instrument Name'] || '').trim();
-        const traded    = parseFloat(row['Traded Value']) || 0;
-        const tradeDate = parseDate(String(row['Trade Date'] || '').trim());
-        const segment   = getSegment(exchg, instrName);
-
+      for (let ri = 1; ri < arr.length; ri++) {
+        const row = arr[ri];
+        if (!row || row.length < 25) continue;
+        const ucc       = String(row[8] ?? '').trim();               // ClntId
+        const tradeDate = parseDate(String(row[3] ?? '').trim());    // BizDt
         if (!ucc || !tradeDate) { failed++; continue; }
         if (!knownUCCs.has(ucc)) { failed++; continue; }
-        if (!dataDate || tradeDate > dataDate) dataDate = tradeDate;  // capture the trade file's date
+        if (!dataDate || tradeDate > dataDate) dataDate = tradeDate; // capture the trade file's date
 
-        const clientName  = String(row['Client Name'] || '').trim();
-        const symbol      = String(row['Trading Symbol'] || '').trim();
-        const buySell     = String(row['Buy/Sell'] || '').trim();
-        const tradeQty    = parseFloat(row['Trade Qty']) || 0;
-        const tradePrice  = parseFloat(row['Trade Price']) || 0;
-        const productType = String(row['Product Type'] || '').trim();
-        const orderType   = String(row['Order Type'] || '').trim();
-        const optionType  = String(row['Option Type'] || '').trim() || null;
-        const strikePrice = parseFloat(row['Strike Price']) || null;
-        const expiryDate  = parseDate(String(row['Expiry Date'] || '').trim()) || null;
-        const tradeId     = String(row['Trade Id'] || '').trim() || null;
-        const orderNo     = String(row['Order No'] || '').trim() || null;
-        const transTime   = String(row['Trans. Time'] || '').trim() || null;
-        const panNumber   = String(row['Pan Number'] || '').trim() || null;
+        const instrName = String(row[9] ?? '').trim();               // FinInstrmTp (IDO/STO/FUT…)
+        const tkr       = String(row[11] ?? '').trim();              // TckrSymb
+        const expiry    = parseDate(String(row[12] ?? '').trim());   // XpryDt
+        const strike    = parseFloat(row[14]) || null;               // StrkPric
+        const ot        = String(row[15] ?? '').trim().toUpperCase() || null; // OptnTp
+        const isOption  = ot === 'CE' || ot === 'PE';
+        const buyQty    = parseFloat(row[21]) || 0;                  // OpnBuyTradgQty
+        const buyVal    = parseFloat(row[22]) || 0;                  // OpnBuyTradgVal
+        const sellQty   = parseFloat(row[23]) || 0;                  // OpnSellTradgQty
+        const sellVal   = parseFloat(row[24]) || 0;                  // OpnSellTradgVal
+        const exchange  = 'NFO';                                     // F&O only for now
 
-        // Store individual trade row (retained for 90 days per document)
-        tradeRows.push([ucc, clientName, tradeDate, transTime, exchg, symbol, instrName,
-          buySell, tradeQty, tradePrice, traded, productType, orderType,
-          optionType, strikePrice, expiryDate, tradeId, orderNo, panNumber]);
+        // Readable, contract-unique trading symbol
+        const symbol = isOption
+          ? `${tkr} ${strike != null ? strike : ''}${ot}${expiry ? ' ' + expiry : ''}`.replace(/\s+/g, ' ').trim()
+          : `${tkr} FUT${expiry ? ' ' + expiry : ''}`.trim();
 
-        // Aggregate for daily_trades summary
+        // Split the position into a buy leg and a sell leg → raw `trades` rows. Columns:
+        // (ucc, client_name, trade_date, trans_time, exchange, trading_symbol, instrument_name,
+        //  buy_sell, trade_qty, trade_price, traded_value, product_type, order_type, option_type,
+        //  strike_price, expiry_date, trade_id, order_no, pan_number)
+        if (buyQty > 0 || buyVal > 0) {
+          tradeRows.push([ucc, '', tradeDate, null, exchange, symbol, instrName,
+            'B', buyQty, buyQty > 0 ? buyVal / buyQty : 0, buyVal, null, null,
+            ot, strike, expiry, null, null, null]);
+        }
+        if (sellQty > 0 || sellVal > 0) {
+          tradeRows.push([ucc, '', tradeDate, null, exchange, symbol, instrName,
+            'S', sellQty, sellQty > 0 ? sellVal / sellQty : 0, sellVal, null, null,
+            ot, strike, expiry, null, null, null]);
+        }
+
+        // Aggregate for daily_trades (F&O only: everything is eq_fo turnover; CE/PE also = options premium)
+        const turnover = buyVal + sellVal;
         const key = `${ucc}__${tradeDate}`;
         if (!grouped[key]) grouped[key] = {
           ucc, trade_date: tradeDate,
           eq_cash: 0, eq_fo: 0, comm: 0, opt_prem: 0,
-          instruments: {},  // track turnover per symbol
-          calls: 0, puts: 0
+          instruments: {}, calls: 0, puts: 0
         };
-        grouped[key].eq_cash  += segment === 'EQ_CASH'  ? traded : 0;
-        grouped[key].eq_fo    += (segment === 'EQ_FUT'  || segment === 'EQ_OPT')   ? traded : 0;
-        grouped[key].comm     += (segment === 'COMM_FUT' || segment === 'COMM_OPT') ? traded : 0;
-        grouped[key].opt_prem += (segment === 'EQ_OPT'  || segment === 'COMM_OPT') ? traded : 0;
-
-        // Track per-instrument turnover for top_instrument
-        if (symbol) {
-          if (!grouped[key].instruments[symbol]) grouped[key].instruments[symbol] = 0;
-          grouped[key].instruments[symbol] += traded;
-        }
-
-        // Track call/put ratio
-        const ot = String(row['Option Type'] || '').trim().toUpperCase();
-        if (ot === 'CE') grouped[key].calls += traded;
-        if (ot === 'PE') grouped[key].puts  += traded;
+        grouped[key].eq_fo    += turnover;
+        grouped[key].opt_prem += isOption ? turnover : 0;
+        if (symbol) grouped[key].instruments[symbol] = (grouped[key].instruments[symbol] || 0) + turnover;
+        if (ot === 'CE') grouped[key].calls += turnover;
+        if (ot === 'PE') grouped[key].puts  += turnover;
         processed++;
       }
 
@@ -441,19 +461,38 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       }
     }
 
-    // ── BROKERAGE FILE ────────────────────────────────────
+    // ── BROKERAGE FILE (ALL SEGMENTS export) ──────────────────────────
+    // Management format: multi-segment Excel, 31 columns, two-row grouped header, with a
+    // party row ("NAME [UCC]") before each client's block. One row per client PER TRADE DATE.
+    // col 0 = UCC, col 1 = Client Name, col 4 = Trade Date, col 17 = Total Brokerage,
+    // col 18 = Total Turnover, col 29 = Net Brokerage. Brokerage is keyed by the file's own date.
     else if (file_type === 'brokerage') {
-      const rows  = XLSX.utils.sheet_to_json(sheet, { range: 2, header: 1, defval: '' });
-      const today = new Date().toISOString().split('T')[0];
-      const brokerageMap = {};
+      const rows  = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      const norm  = (s) => String(s ?? '').replace(/[\s\r\n]+/g, '').toUpperCase();
+      const ncols = sheet['!ref'] ? (XLSX.utils.decode_range(sheet['!ref']).e.c + 1) : 0;
 
-      for (const row of rows) {
-        const party = String(row[0] || '').trim();
-        const ucc   = extractUCC(party);
-        if (!ucc) { failed++; continue; }
-        if (party.toLowerCase().includes('total') || party.toLowerCase().includes('grand')) continue;
-        const brokerage = parseFloat(row[7]) || 0;
-        brokerageMap[ucc] = { ucc, brokerage, today };
+      // ── Exact-format validation: 31 columns; header row carries UCC / Client Name / Trade Date ──
+      const hIdx = rows.findIndex(r => norm(r[0]) === 'UCC');
+      const h    = hIdx >= 0 ? rows[hIdx] : [];
+      const okHeader = hIdx >= 0 && ncols === 31
+        && norm(h[1]).startsWith('CLIENTNAME')
+        && norm(h[4]).startsWith('TRADEDATE');
+      if (!okHeader) {
+        throw new Error('FORMAT:Brokerage file must be the ALL-SEGMENTS export — 31 columns with UCC, Client Name and Trade Date header columns.');
+      }
+
+      const brokerageMap = {};
+      for (let i = hIdx + 1; i < rows.length; i++) {
+        const row = rows[i];
+        const ucc = String(row[0] ?? '').trim();
+        if (!ucc || isNaN(Number(ucc))) continue;            // skip party rows / the sub-header row
+        const tradeDate = parseDate(String(row[4] ?? '').trim());
+        if (!tradeDate) { failed++; continue; }
+        const brokerage = parseFloat(row[17]) || 0;          // col 17 = Total Brokerage
+        const key = ucc + '__' + tradeDate;
+        if (!brokerageMap[key]) brokerageMap[key] = { ucc, tradeDate, brokerage: 0 };
+        brokerageMap[key].brokerage += brokerage;
+        processed++;
       }
 
       const dedupedBrokerage = Object.values(brokerageMap);
@@ -463,35 +502,45 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         let pi = 1;
         for (const r of batch) {
           values.push(`($${pi++},$${pi++},$${pi++})`);
-          params.push(r.ucc, r.today, r.brokerage);
+          params.push(r.ucc, r.tradeDate, r.brokerage);
         }
         await dbClient.query(`
           INSERT INTO daily_trades (ucc, trade_date, brokerage_earned)
           VALUES ${values.join(',')}
           ON CONFLICT (ucc, trade_date) DO UPDATE SET brokerage_earned = EXCLUDED.brokerage_earned
         `, params);
-        processed += batch.length;
       }
     }
 
-    // ── LEDGER FILE ───────────────────────────────────────
+    // ── BASE CAPITAL FILE (replaces the old Ledger file) ──────────────
+    // Management format: SYMPHONY RMS LIMIT export — pipe-delimited text, NO header,
+    // 23 fields per row. col 0 = UCC, col 4 = base capital. The base-capital amount is
+    // stored as the client's balance/float (daily_ledger.opening_balance) so every
+    // existing float-income calculation keeps working unchanged.
     else if (file_type === 'ledger') {
-      const rows    = XLSX.utils.sheet_to_json(sheet, { range: 1, header: 1, defval: 0 });
-      const today   = new Date().toISOString().split('T')[0];
+      const today = new Date().toISOString().split('T')[0];
+      const raw   = fs.readFileSync(req.file.path, 'utf8');
+      const lines = raw.split('\n').map(l => l.replace(/\r$/, '')).filter(l => l.trim().length > 0);
+
+      // ── Exact-format validation: pipe-delimited, exactly 23 fields, numeric UCC in col 0 ──
+      const sample    = lines.slice(0, 25);
+      const wrongCols = sample.length === 0 || sample.some(l => l.split('|').length !== 23);
+      const firstUcc  = lines[0] ? String(lines[0].split('|')[0]).trim() : '';
+      if (wrongCols || isNaN(parseInt(firstUcc))) {
+        throw new Error('FORMAT:Base Capital file must be pipe-delimited ( | ) with exactly 23 columns — UCC in column 1 and base capital in column 5.');
+      }
+
+      const { rows: clientRows } = await dbClient.query('SELECT ucc FROM clients');
+      const clientSet = new Set(clientRows.map(r => String(r.ucc).trim()));
+
       const ledgerMap = {};
-
-      // Per document: only track ledger for clients active in last 30 days
-      const { rows: activeRows } = await dbClient.query(`
-        SELECT ucc FROM clients WHERE last_trade_date >= CURRENT_DATE - INTERVAL '30 days'
-      `);
-      const activeSet = new Set(activeRows.map(r => r.ucc));
-
-      for (const row of rows) {
-        const ucc = String(row[0] || '').trim();
-        if (!ucc || ucc === 'UCC') { failed++; continue; }
-        if (!activeSet.has(ucc)) { failed++; continue; } // Skip inactive > 30 days
-        const balance = (parseFloat(row[3]) || 0) - (parseFloat(row[2]) || 0);
-        ledgerMap[ucc] = { ucc, balance, today };
+      for (const line of lines) {
+        const parts = line.split('|');
+        const ucc = String(parts[0] || '').trim();
+        if (!ucc || isNaN(parseInt(ucc))) { failed++; continue; }
+        if (!clientSet.has(ucc)) { failed++; continue; }         // skip member / non-client ids
+        const baseCapital = parseFloat(parts[4]) || 0;           // col 4 = base capital
+        ledgerMap[ucc] = { ucc, balance: baseCapital, today };
       }
 
       const dedupedLedger = Object.values(ledgerMap);
@@ -530,6 +579,14 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         // Read raw file — pipe-delimited, no headers
         const rawContent = fs.readFileSync(req.file.path, 'utf8');
         lines = rawContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      }
+
+      // ── Exact-format validation: pipe-delimited, exactly 12 fields, numeric UCC in col 0 ──
+      const hSample = lines.slice(0, 25);
+      const hWrong  = hSample.length === 0 || hSample.some(l => l.split('|').length !== 12);
+      const hUcc    = lines[0] ? String(lines[0].split('|')[0]).trim() : '';
+      if (hWrong || isNaN(parseInt(hUcc))) {
+        throw new Error('FORMAT:Holdings file must be pipe-delimited ( | ) with exactly 12 columns — UCC in column 1, quantity in column 3, price in column 12.');
       }
 
       for (const line of lines) {
@@ -638,8 +695,12 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
   } catch (err) {
     await dbClient.query('ROLLBACK').catch(() => {});
-    console.error('IMPORT ERROR:', err.message);
     if (fs.existsSync(req.file?.path)) fs.unlinkSync(req.file.path);
+    // Format-validation failures are surfaced as a clean 400 (not a server error).
+    if (err && typeof err.message === 'string' && err.message.startsWith('FORMAT:')) {
+      return res.status(400).json({ message: 'File is not in the correct format', detail: err.message.slice(7) });
+    }
+    console.error('IMPORT ERROR:', err.message);
     res.status(500).json({ message: 'Import failed', error: err.message });
   } finally {
     dbClient.release();

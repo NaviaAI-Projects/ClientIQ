@@ -1,4 +1,5 @@
-Brokerage Report — Navia Markets,,,,,,,
-Party [UCC],Segment,Turnover,Qty,Trades,Reserved,Reserved,Brokerage (Rs.)
-RAMESH KUMAR [94476486],EQ,285625,100,2,,,31.00
-PRIYA SHARMA [96193187],FO,9037,75,1,,,120.00
+UCC,Client Name,Business Code,Brkg Basket,Trade Date,Square-Off,Square-Off,Square-Off,Delivery,Delivery,Delivery,Futures,Futures,Options,Options,Asn/Exc/Exp,Asn/Exc/Exp,Total,Total,Realised,Realised,Realised,Realised,Realised,Realised,Unrealised,Unrealised,Unrealised,Unrealised,Net Brokerage,GST Taxable
+UCC,Client Name,Business Code,Brkg Basket,Trade Date,Brokerage,Turnover,Brkg%,Brokerage,Turnover,Brkg%,Brokerage,Turnover,Brokerage,Turnover,Brokerage,Turnover,Brokerage,Turnover,Tran,Clearing,Sebi,STT,Stamp,GST,Tran,Clr,Sebi,GST,Net Brokerage,GST Taxable
+ANBAZHAGAN [48945920],,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+48945920,ANBAZHAGAN,26/04/2024,FLEXI EQUITY,01/04/26,0,0,0,0,14575,0,0,0,0,0,0,0,0,14575,0.45,0,0.01,15,2,0.08,0,0,0,0,0,0.46
+96193187,PRIYA SHARMA,22/09/2020,FLEXI FO,02/07/26,0,0,0,0,0,0,0,0,120,9037,0,0,120,9037,0.3,0,0.01,0,1,0.05,0,0,0,0,120,0.32
