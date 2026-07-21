@@ -723,7 +723,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     if (fs.existsSync(req.file?.path)) fs.unlinkSync(req.file.path);
     // Format-validation failures are surfaced as a clean 400 (not a server error).
     if (err && typeof err.message === 'string' && err.message.startsWith('FORMAT:')) {
-      return res.status(400).json({ message: 'File is not in the correct format', detail: err.message.slice(7) });
+      return res.status(400).json({ message: 'Invalid file format — please upload the correct format for this file type.', detail: err.message.slice(7) });
     }
     console.error('IMPORT ERROR:', err.message);
     res.status(500).json({ message: 'Import failed', error: err.message });

@@ -73,7 +73,8 @@ const ImportData = () => {
         const d = err.response.data;
         setConflict({ mode: 'single', fileType, file, message: d.message, importedAt: d.existing?.imported_at, records: d.existing?.records });
       } else {
-        setResults(r => ({ ...r, [fileType]: { success: false, message: err.response?.data?.message || 'Upload failed' } }));
+        const d = err.response?.data || {};
+        setResults(r => ({ ...r, [fileType]: { success: false, message: d.message || 'Upload failed', detail: d.detail } }));
       }
     } finally {
       setUploading(u => ({ ...u, [fileType]: false }));
@@ -424,7 +425,7 @@ const ImportData = () => {
                 <div className={`alert ${result.success ? 'a-s' : 'a-d'}`} style={{ marginTop: '8px', marginBottom: 0, fontSize: '11px' }}>
                   {result.success
                     ? `✓ ${result.processed?.toLocaleString()} records${result.failed > 0 ? `, ${result.failed} failed` : ''}`
-                    : `✗ ${result.message}`}
+                    : (<><strong>✗ {result.message}</strong>{result.detail ? <div style={{ marginTop: '4px', opacity: 0.9 }}>{result.detail}</div> : null}</>)}
                 </div>
               )}
               {/* Last import status — always shown below upload button */}
