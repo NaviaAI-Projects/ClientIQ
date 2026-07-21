@@ -63,10 +63,72 @@ const FILE_LABELS = {
   ledger: 'Ledger File', holdings: 'Holdings File', mtf: 'MTF File'
 };
 
+// Validate a file's format for its chosen slot BEFORE any duplicate/other check, so a wrong
+// file (e.g. a Trade file dropped into the Client Master slot) always reports "Invalid file
+// format" instead of a misleading duplicate popup. Returns { ok, detail }.
+function validateFileFormat(file_type, filePath, originalname) {
+  const norm  = (s) => String(s ?? '').replace(/_x000[dD]_/g, '').replace(/[\s\r\n]+/g, '').toUpperCase();
+  const fname = (originalname || filePath || '').toLowerCase();
+  try {
+    // Pipe-delimited text types
+    if (file_type === 'ledger' || file_type === 'holdings') {
+      let lines;
+      if (file_type === 'holdings' && (fname.endsWith('.ods') || fname.endsWith('.xlsx') || fname.endsWith('.xls'))) {
+        const wb = XLSX.readFile(filePath); const sh = wb.Sheets[wb.SheetNames[0]];
+        lines = XLSX.utils.sheet_to_json(sh, { header: 1, raw: false, defval: '' })
+          .map(r => (Array.isArray(r) ? String(r[0] ?? '') : String(r ?? '')).trim()).filter(l => l.includes('|'));
+      } else {
+        lines = fs.readFileSync(filePath, 'utf8').split('\n').map(l => l.replace(/\r$/, '').trim()).filter(Boolean);
+      }
+      const need = file_type === 'ledger' ? 23 : 12;
+      const ok = lines.length > 0 && lines.slice(0, 25).every(l => l.split('|').length === need)
+        && !isNaN(parseInt(String(lines[0].split('|')[0]).trim()));
+      return ok ? { ok: true } : { ok: false, detail: file_type === 'ledger'
+        ? 'Base Capital / Ledger must be pipe-delimited ( | ) with 23 columns (UCC in column 1).'
+        : 'Holdings must be pipe-delimited ( | ) with 12 columns (UCC in column 1).' };
+    }
+    // Spreadsheet / CSV types
+    const wb  = XLSX.readFile(filePath, { raw: true, dense: true });
+    const sh  = wb.Sheets[wb.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sh, { header: 1, defval: '', raw: false });
+    if (file_type === 'client_master') {
+      const h = (rows[0] || []).map(norm);
+      return h.includes('UCC') ? { ok: true } : { ok: false, detail: 'Client Master must have a UCC and Client Name header row.' };
+    }
+    if (file_type === 'trade') {
+      const h = (rows[0] || []).map(norm);
+      const ok = h[0] === 'SGMT' && h[3] === 'BIZDT' && h[8] === 'CLNTID' && h[11] === 'TCKRSYMB';
+      return ok ? { ok: true } : { ok: false, detail: 'Trade file must be the NCL F&O Position export (46 columns beginning Sgmt, Src, RptgDt, BizDt …).' };
+    }
+    if (file_type === 'brokerage') {
+      const ncols = sh['!ref'] ? (XLSX.utils.decode_range(sh['!ref']).e.c + 1) : 0;
+      const hIdx  = rows.findIndex(r => norm(r[0]) === 'UCC'); const h = hIdx >= 0 ? rows[hIdx] : [];
+      const ok = hIdx >= 0 && ncols === 31 && norm(h[1]).startsWith('CLIENTNAME') && norm(h[4]).startsWith('TRADEDATE');
+      return ok ? { ok: true } : { ok: false, detail: 'Brokerage must be the ALL-SEGMENTS export (31 columns with UCC, Client Name and Trade Date).' };
+    }
+    if (file_type === 'mtf') {
+      const hIdx = rows.findIndex(r => norm(r[0]).startsWith('FROMDATE')); const h = hIdx >= 0 ? rows[hIdx] : [];
+      const ok = hIdx >= 0 && norm(h[1]).startsWith('TODATE') && norm(h[4]).startsWith('INTEREST');
+      return ok ? { ok: true } : { ok: false, detail: 'MTF must have From Date, To Date, Interest Rate, Grace Days, Interest (Rs.), Net Charged columns.' };
+    }
+    return { ok: true }; // unknown type → let the import branch handle it
+  } catch (e) {
+    return { ok: false, detail: 'The file could not be read — please upload the correct format.' };
+  }
+}
+
 router.post('/upload', auth, upload.single('file'), async (req, res) => {
   const { file_type } = req.body;
   const overwrite = req.body.overwrite === 'true' || req.body.overwrite === true;
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
+
+  // ── Format check FIRST — a wrong file in a slot reports "Invalid file format"
+  //    before any duplicate/other check (e.g. a Trade file dropped into Client Master). ──
+  const fmt = validateFileFormat(file_type, req.file.path, req.file.originalname);
+  if (!fmt.ok) {
+    if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+    return res.status(400).json({ message: 'Invalid file format — please upload the correct format for this file type.', detail: fmt.detail });
+  }
 
   // ── Duplicate pre-check ───────────────────────────────────────
   // Warn (HTTP 409) if this file/data was already imported, unless the user chose to overwrite.
