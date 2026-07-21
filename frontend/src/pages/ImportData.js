@@ -5,7 +5,7 @@ const FILE_CONFIGS = {
   client_master: { label: 'Client Master',  icon: '👤', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',    step: 1, sample: 'client_master_sample.csv', keywords: ['clientmaster','client_master','clientmst'] },
   trade:         { label: 'Trade File',      icon: '📊', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily',    step: 2, sample: 'trade_sample.csv',         keywords: ['trade','tradefile','tradein'] },
   brokerage:     { label: 'Brokerage File',  icon: '🧾', color: '#854F0B', bg: '#FAEEDA', freq: 'Daily',    step: 3, sample: 'brokerage_sample.xlsx',     keywords: ['brokerage','brokerge','brok'] },
-  ledger:        { label: 'Ledger File',     icon: '🏦', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',    step: 4, sample: 'ledger_sample.csv',        keywords: ['ledger','ledgr','basecapital','base_capital','rmslimit','rms_limit','rms','limit','capital'] },
+  ledger:        { label: 'Ledger File',     icon: '🏦', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',    step: 4, sample: 'ledger_sample.txt',        keywords: ['ledger','ledgr','basecapital','base_capital','rmslimit','rms_limit','rms','limit','capital'] },
   holdings:      { label: 'Holdings',        icon: '📁', color: '#08905C', bg: '#E6FAF3', freq: 'Daily',    step: 5, sample: 'holdings_sample.csv',      keywords: ['holding','dp','dpholding'] },
   mtf:           { label: 'MTF File',        icon: '💰', color: '#854F0B', bg: '#FAEEDA', freq: 'Weekly',   step: 6, sample: 'mtf_sample.xlsx',           keywords: ['mtf','margintrade','mtfinterest'] },
 };
@@ -23,6 +23,25 @@ const FMT_DT = dt => {
   const d = new Date(dt);
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
     + ' · ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true });
+};
+
+// Small metric chip used in the per-card result panel (Imported / Skipped / Failed)
+const StatChip = ({ label, val, tone }) => {
+  const c = tone === 'bad'
+      ? { bg: '#FBE3E3', fg: '#A32D2D' }
+      : tone === 'muted'
+      ? { bg: '#EEF1F6', fg: '#5A6B85' }
+      : { bg: '#E6F4D9', fg: '#3B6D11' };
+  return (
+    <div style={{ flex: 1, textAlign: 'center', background: c.bg, borderRadius: '6px', padding: '5px 4px' }}>
+      <div style={{ fontSize: '13px', fontWeight: 800, color: c.fg, fontFamily: 'var(--font-mono, monospace)', lineHeight: 1.2 }}>
+        {Number(val || 0).toLocaleString('en-IN')}
+      </div>
+      <div style={{ fontSize: '9px', fontWeight: 700, color: c.fg, opacity: 0.72, letterSpacing: '0.3px', textTransform: 'uppercase' }}>
+        {label}
+      </div>
+    </div>
+  );
 };
 
 const ImportData = () => {
@@ -338,7 +357,7 @@ const ImportData = () => {
                       {item.result && (
                         <div style={{ fontSize: '11px', marginTop: '3px', color: item.result.success ? 'var(--sc)' : 'var(--dc)' }}>
                           {item.result.success
-                            ? `✓ ${item.result.processed?.toLocaleString()} records${item.result.failed > 0 ? `, ${item.result.failed} failed` : ''}`
+                            ? `✓ ${item.result.processed?.toLocaleString()} imported${item.result.skipped > 0 ? ` · ${item.result.skipped.toLocaleString()} skipped` : ''}${item.result.failed > 0 ? ` · ${item.result.failed} failed` : ''}`
                             : `✗ ${item.result.message}`}
                         </div>
                       )}
@@ -424,7 +443,7 @@ const ImportData = () => {
               {result && (
                 <div className={`alert ${result.success ? 'a-s' : 'a-d'}`} style={{ marginTop: '8px', marginBottom: 0, fontSize: '11px' }}>
                   {result.success
-                    ? `✓ ${result.processed?.toLocaleString()} records${result.failed > 0 ? `, ${result.failed} failed` : ''}`
+                    ? `✓ ${result.processed?.toLocaleString()} imported${result.skipped > 0 ? ` · ${result.skipped.toLocaleString()} skipped` : ''}${result.failed > 0 ? ` · ${result.failed} failed` : ''}`
                     : (<><strong>✗ {result.message}</strong>{result.detail ? <div style={{ marginTop: '4px', opacity: 0.9 }}>{result.detail}</div> : null}</>)}
                 </div>
               )}
@@ -437,38 +456,49 @@ const ImportData = () => {
                   </div>
                 );
                 const log = result
-                  ? { status: result.success ? 'success' : 'failed', records_processed: result.processed, records_failed: result.failed, file_name: '', created_at: new Date(), imported_by_name: null, message: result.message }
+                  ? { status: result.success ? (result.failed > 0 ? 'partial' : 'success') : 'failed', records_processed: result.processed, records_failed: result.failed, records_skipped: result.skipped, file_name: '', created_at: new Date(), imported_by_name: null, message: result.message }
                   : lastAll;
                 if (!log) return null;
                 const isSuccess = log.status === 'success';
                 const isPartial = log.status === 'partial';
                 const isFailed  = log.status === 'failed' || log.status === 'error';
+                const headFg = isSuccess ? '#3B6D11' : isPartial ? '#854F0B' : '#A32D2D';
                 return (
                   <div style={{
-                    marginTop:   '8px',
-                    padding:     '8px 10px',
+                    marginTop:    '8px',
+                    padding:      '9px 11px',
                     borderRadius: 'var(--r)',
-                    fontSize:    '11px',
-                    background:  isSuccess ? '#EAF3DE' : isPartial ? '#FFF3DC' : '#FCEBEB',
-                    border:      `1px solid ${isSuccess ? '#C2ECDC' : isPartial ? '#FBE4BF' : '#FAD4D6'}`,
-                    borderLeft:  `3px solid ${isSuccess ? '#3B6D11' : isPartial ? '#854F0B' : '#A32D2D'}`,
-                    color:       isSuccess ? '#3B6D11' : isPartial ? '#854F0B' : '#A32D2D',
+                    background:   isSuccess ? '#F3F9EC' : isPartial ? '#FFF8EC' : '#FCEEEE',
+                    border:       `1px solid ${isSuccess ? '#D6E9C2' : isPartial ? '#F6E2BC' : '#F6D2D4'}`,
                   }}>
-                    <div style={{ fontWeight: '700', marginBottom: '2px' }}>
-                      {isSuccess ? '✓ Success' : isPartial ? '⚠ Partial' : '✗ Failed'}
-                    </div>
-                    {isSuccess || isPartial ? (
-                      <div style={{ color: 'inherit', opacity: 0.85 }}>
-                        {Number(log.records_processed || 0).toLocaleString()} imported
-                        {log.records_failed > 0 && ` · ${log.records_failed} failed`}
-                        {log.imported_by_name && ` · ${log.imported_by_name}`}
-                        <br />
-                        {new Date(log.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                  marginBottom: (isSuccess || isPartial) ? '7px' : 0 }}>
+                      <span style={{ fontWeight: 700, fontSize: '11.5px', color: headFg }}>
+                        {isSuccess ? '✓ Success' : isPartial ? '⚠ Partial' : '✗ Failed'}
+                      </span>
+                      <span style={{ fontSize: '10px', color: 'var(--tx3)', whiteSpace: 'nowrap' }}>
+                        {new Date(log.created_at).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
                         {' · '}
                         {new Date(log.created_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: true })}
-                      </div>
+                      </span>
+                    </div>
+                    {(isSuccess || isPartial) ? (
+                      <>
+                        <div style={{ display: 'flex', gap: '6px' }}>
+                          <StatChip label="Imported" val={log.records_processed} tone="ok" />
+                          {log.records_skipped > 0 && <StatChip label="Skipped" val={log.records_skipped} tone="muted" />}
+                          {log.records_failed  > 0 && <StatChip label="Failed"  val={log.records_failed}  tone="bad" />}
+                        </div>
+                        {log.records_skipped > 0 && (
+                          <div style={{ fontSize: '9.5px', color: 'var(--tx3)', marginTop: '5px', lineHeight: 1.4 }}>
+                            Skipped = rows whose UCC isn’t in the client master (member / non-client accounts). Not errors.
+                          </div>
+                        )}
+                      </>
                     ) : (
-                      <div style={{ opacity: 0.85 }}>{log.message || 'Upload failed — check file format'}</div>
+                      <div style={{ fontSize: '11px', color: '#A32D2D', opacity: 0.9 }}>
+                        {log.message || 'Upload failed — check file format'}
+                      </div>
                     )}
                   </div>
                 );
@@ -507,7 +537,8 @@ const ImportData = () => {
                 <thead>
                   <tr>
                     <th>#</th><th>File Type</th><th>File Name</th><th>Trade Date</th>
-                    <th style={{ textAlign: 'right' }}>Records</th>
+                    <th style={{ textAlign: 'right' }}>Imported</th>
+                    <th style={{ textAlign: 'right' }}>Skipped</th>
                     <th style={{ textAlign: 'right' }}>Failed</th>
                     <th>Status</th><th>Uploaded By</th><th>Date & Time</th>
                   </tr>
@@ -527,6 +558,7 @@ const ImportData = () => {
                         <td style={{ fontSize: '12px', color: 'var(--tx2)', maxWidth: '180px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{log.file_name || '—'}</td>
                         <td style={{ fontSize: '12px', color: 'var(--tx2)', whiteSpace: 'nowrap' }}>{log.trade_date ? new Date(log.trade_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'}</td>
                         <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: '12px' }}>{Number(log.records_processed || 0).toLocaleString()}</td>
+                        <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: '12px', color: log.records_skipped > 0 ? 'var(--tx2)' : 'var(--tx3)' }}>{log.records_skipped > 0 ? Number(log.records_skipped).toLocaleString() : '—'}</td>
                         <td style={{ textAlign: 'right', fontFamily: 'var(--font-mono)', fontSize: '12px', color: log.records_failed > 0 ? 'var(--dc)' : 'var(--tx3)' }}>{log.records_failed > 0 ? log.records_failed : '—'}</td>
                         <td>
                           <span style={{
