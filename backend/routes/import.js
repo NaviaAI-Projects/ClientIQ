@@ -468,7 +468,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     // col 18 = Total Turnover, col 29 = Net Brokerage. Brokerage is keyed by the file's own date.
     else if (file_type === 'brokerage') {
       const rows  = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-      const norm  = (s) => String(s ?? '').replace(/[\s\r\n]+/g, '').toUpperCase();
+      const norm  = (s) => String(s ?? '').replace(/_x000[dD]_/g, '').replace(/[\s\r\n]+/g, '').toUpperCase();
       const ncols = sheet['!ref'] ? (XLSX.utils.decode_range(sheet['!ref']).e.c + 1) : 0;
 
       // ── Exact-format validation: 31 columns; header row carries UCC / Client Name / Trade Date ──
@@ -620,51 +620,76 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       }
     }
 
-    // ── MTF FILE ──────────────────────────────────────────
+    // ── MTF FILE (weekly) ─────────────────────────────────────────────
+    // Management format: 6-column Excel — header (From Date, To Date, Interest Rate,
+    // Grace Days, Interest (Rs.), Net Charged), then a party row "NAME [UCC]" before each
+    // client's interest periods. Each period's interest is spread evenly across its days
+    // (interest ÷ day-count, inclusive) for real daily MTF interest — done at read time in the MIS.
     else if (file_type === 'mtf') {
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '', range: 2, header: 1 });
-      const mtfMap = {};
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      const norm = (s) => String(s ?? '').replace(/_x000[dD]_/g, '').replace(/[\s\r\n]+/g, '').toUpperCase();
 
-      for (const row of rows) {
-        const ucc        = String(row['UCC'] || row[0] || '').trim();
-        // MTF file has fixed columns — use index positions (more reliable than string keys with newlines)
-        // Col 15 = From Date, Col 19 = Interest (Rs.), Col 27 = Net Charged
-        const fromDateRaw = row[15] || row['From\nDate'] || row['From Date'] || row[2] || '';
-        const fromDate    = parseDate(String(fromDateRaw).trim());
-        const netCharged  = parseFloat(row[27]) || 0;
-        const interest    = parseFloat(row[19]) || 0;
-        const interestRate = parseFloat(row[17]) || 0;
-        const toDateRaw   = row[16] || '';
-        const toDate      = parseDate(String(toDateRaw).trim());
-
-        if (!ucc || isNaN(parseInt(ucc)) || !fromDate) { failed++; continue; }
-        const monthYear = fromDate.substring(0, 7);
-        const amount    = netCharged || interest;
-        if (!amount) { failed++; continue; }
-        const k = `${ucc}__${monthYear}`;
-        if (!mtfMap[k]) mtfMap[k] = { ucc, monthYear, amount, fromDate, toDate, interestRate };
-        else mtfMap[k].amount += amount;
+      // ── Exact-format validation: header carries From Date / To Date / Interest (Rs.) ──
+      const hIdx = rows.findIndex(r => norm(r[0]).startsWith('FROMDATE'));
+      const h    = hIdx >= 0 ? rows[hIdx] : [];
+      const okHeader = hIdx >= 0 && norm(h[1]).startsWith('TODATE') && norm(h[4]).startsWith('INTEREST');
+      if (!okHeader) {
+        throw new Error('FORMAT:MTF file must be the interest export — From Date, To Date, Interest Rate, Grace Days, Interest (Rs.), Net Charged header columns.');
       }
 
-      const dedupedMTF = Object.values(mtfMap);
-      for (let i = 0; i < dedupedMTF.length; i += BATCH_SIZE) {
-        const batch = dedupedMTF.slice(i, i + BATCH_SIZE);
+      // Period table — one row per client interest period; the MIS spreads it to daily.
+      await dbClient.query(`
+        CREATE TABLE IF NOT EXISTS mtf_interest (
+          ucc TEXT NOT NULL, from_date DATE NOT NULL, to_date DATE NOT NULL,
+          interest NUMERIC DEFAULT 0, rate NUMERIC DEFAULT 0, updated_at TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (ucc, from_date, to_date)
+        )
+      `);
+      await dbClient.query(`CREATE INDEX IF NOT EXISTS idx_mtf_int_dates ON mtf_interest(from_date, to_date)`);
+
+      const periods = {};
+      let currentUcc = null;
+      for (let i = hIdx + 1; i < rows.length; i++) {
+        const row = rows[i];
+        const c0  = String(row[0] ?? '').trim();
+        const bracket = c0.match(/\[(\d+)\]/);
+        if (bracket) { currentUcc = bracket[1]; continue; }      // party row → set current client
+        const fromDate = parseDate(c0);
+        const toDate   = parseDate(String(row[1] ?? '').trim());
+        if (!currentUcc || !fromDate || !toDate) continue;       // skip totals / blank rows
+        const rate     = parseFloat(row[2]) || 0;
+        const interest = parseFloat(row[4]) || 0;                // col 4 = Interest (Rs.)
+        periods[`${currentUcc}__${fromDate}__${toDate}`] = { ucc: currentUcc, fromDate, toDate, interest, rate };
+        processed++;
+      }
+
+      const rowsArr = Object.values(periods);
+      for (let i = 0; i < rowsArr.length; i += BATCH_SIZE) {
+        const batch = rowsArr.slice(i, i + BATCH_SIZE);
         const values = [], params = [];
         let pi = 1;
         for (const r of batch) {
-          values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
-          params.push(r.ucc, r.monthYear, 0, r.amount, r.fromDate || null, r.toDate || null, r.interestRate || 0);
+          values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
+          params.push(r.ucc, r.fromDate, r.toDate, r.interest, r.rate);
         }
         await dbClient.query(`
-          INSERT INTO mtf_monthly (ucc, month_year, avg_mtf_balance, interest_earned, from_date, to_date, interest_rate)
+          INSERT INTO mtf_interest (ucc, from_date, to_date, interest, rate)
           VALUES ${values.join(',')}
-          ON CONFLICT (ucc, month_year) DO UPDATE SET
-            interest_earned = mtf_monthly.interest_earned + EXCLUDED.interest_earned,
-            to_date         = EXCLUDED.to_date,
-            interest_rate   = EXCLUDED.interest_rate
+          ON CONFLICT (ucc, from_date, to_date) DO UPDATE SET
+            interest = EXCLUDED.interest, rate = EXCLUDED.rate, updated_at = NOW()
         `, params);
-        processed += batch.length;
       }
+
+      // Recompute the monthly rollup from all periods (Client 360 / concentration views).
+      await dbClient.query(`
+        INSERT INTO mtf_monthly (ucc, month_year, avg_mtf_balance, interest_earned, from_date, to_date, interest_rate)
+        SELECT ucc, TO_CHAR(from_date,'YYYY-MM'), 0, SUM(interest), MIN(from_date), MAX(to_date), AVG(rate)
+        FROM mtf_interest
+        GROUP BY ucc, TO_CHAR(from_date,'YYYY-MM')
+        ON CONFLICT (ucc, month_year) DO UPDATE SET
+          interest_earned = EXCLUDED.interest_earned,
+          from_date = EXCLUDED.from_date, to_date = EXCLUDED.to_date, interest_rate = EXCLUDED.interest_rate
+      `);
     }
 
     else if (file_type === 'bhavcopy') {

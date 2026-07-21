@@ -1573,6 +1573,18 @@ router.get('/daily-mis', auth, async (req, res) => {
     `);
     const ledger = await pool.query(`SELECT COALESCE(SUM(opening_balance),0)::float AS bal FROM daily_ledger WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)`);
 
+    // Real daily MTF interest per date — each period's interest spread evenly across its days
+    // (interest ÷ inclusive day-count). e.g. ₹7.02 over 04–10 Apr (7 days) = ₹1.00/day.
+    const mtfByDate = {};
+    try {
+      const mtfD = await pool.query(`
+        SELECT gs::date::text AS dt, SUM(interest / (GREATEST((to_date - from_date), 0) + 1)) AS daily
+        FROM mtf_interest, LATERAL generate_series(from_date, to_date, interval '1 day') gs
+        GROUP BY gs::date
+      `);
+      mtfD.rows.forEach(r => { mtfByDate[r.dt] = Number(r.daily); });
+    } catch (e) { /* mtf_interest not populated yet */ }
+
     const rows = perDay.rows.map(r => ({
       d: String(r.d), eq_opt: Number(r.eq_opt), comm_opt: Number(r.comm_opt), eq_fut: Number(r.eq_fut),
       comm_fut: Number(r.comm_fut), eq_cash: Number(r.eq_cash), total_clients: Number(r.total_clients),
@@ -1619,7 +1631,7 @@ router.get('/daily-mis', auth, async (req, res) => {
       incLine('Eq Options clearing', () => 0, 'no clearing feed'),
       incLine('Comm Options clearing', () => 0, 'no clearing feed'),
       incLine('Equity brokerage', r => r.brok, null),
-      incLine('MTF interest (daily)', () => mtfDay, null),
+      incLine('MTF interest (daily)', r => mtfByDate[r.d] || 0, null),
       incLine('Float income (est.)', () => dailyFloat, null),
     ];
     const realLines = income.filter(l => !l.note);
