@@ -165,7 +165,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     }
   }
 
-  let processed = 0, failed = 0;
+  let processed = 0, failed = 0, skipped = 0;
   let dataDate  = null;   // real data/trade date parsed from the file (for the audit log Trade Date column)
   const errors  = [];
   const dbClient = await pool.connect();
@@ -255,7 +255,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const ucc       = String(row[8] ?? '').trim();               // ClntId
         const tradeDate = parseDate(String(row[3] ?? '').trim());    // BizDt
         if (!ucc || !tradeDate) { failed++; continue; }
-        if (!knownUCCs.has(ucc)) { failed++; continue; }
+        if (!knownUCCs.has(ucc)) { skipped++; continue; }
         if (!dataDate || tradeDate > dataDate) dataDate = tradeDate; // capture the trade file's date
 
         const instrName = String(row[9] ?? '').trim();               // FinInstrmTp (IDO/STO/FUT…)
@@ -600,7 +600,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const parts = line.split('|');
         const ucc = String(parts[0] || '').trim();
         if (!ucc || isNaN(parseInt(ucc))) { failed++; continue; }
-        if (!clientSet.has(ucc)) { failed++; continue; }         // skip member / non-client ids
+        if (!clientSet.has(ucc)) { skipped++; continue; }        // skip member / non-client ids (not a failure)
         const baseCapital = parseFloat(parts[4]) || 0;           // col 4 = base capital
         ledgerMap[ucc] = { ucc, balance: baseCapital, today };
       }
@@ -659,7 +659,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const qty      = parseFloat(parts[2])  || 0;  // col 2 = quantity
         const avgPrice = parseFloat(parts[11]) || 0;  // col 11 = average price per unit
         const value    = qty * avgPrice;               // total holding value
-        if (value === 0) { failed++; continue; }
+        if (value === 0) { skipped++; continue; }
         if (!holdings[ucc]) holdings[ucc] = 0;
         holdings[ucc] += value;
         processed++;
@@ -767,18 +767,19 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     // Inside handleUpload after dbClient.query('COMMIT'):
     await audit(req,
       overwrite ? 'IMPORT_REPLACED' : 'FILE_IMPORT',
-      `${overwrite ? 'Replaced' : 'Imported'} ${processed} records, ${failed} failed (${req.file.originalname})`,
+      `${overwrite ? 'Replaced' : 'Imported'} ${processed} records, ${skipped} skipped, ${failed} failed (${req.file.originalname})`,
       null, failed > 0 ? 'partial' : 'success', 'import');
 
     await pool.query(`ALTER TABLE import_log ADD COLUMN IF NOT EXISTS trade_date DATE`);
+    await pool.query(`ALTER TABLE import_log ADD COLUMN IF NOT EXISTS records_skipped INT DEFAULT 0`);
     await pool.query(`
-      INSERT INTO import_log (import_date, file_type, file_name, records_processed, records_failed, status, imported_by, trade_date, created_at)
-      VALUES (NOW() AT TIME ZONE 'Asia/Kolkata',$1,$2,$3,$4,$5,$6,$7,NOW() AT TIME ZONE 'Asia/Kolkata')
-    `, [file_type, req.file.originalname, processed, failed,
+      INSERT INTO import_log (import_date, file_type, file_name, records_processed, records_failed, records_skipped, status, imported_by, trade_date, created_at)
+      VALUES (NOW() AT TIME ZONE 'Asia/Kolkata',$1,$2,$3,$4,$5,$6,$7,$8,NOW() AT TIME ZONE 'Asia/Kolkata')
+    `, [file_type, req.file.originalname, processed, failed, skipped,
         failed === 0 ? 'success' : (processed > 0 ? 'partial' : 'failed'), req.user.id, dataDate]);
 
     if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-    res.json({ message: 'Import complete', processed, failed, errors: errors.slice(0, 10) });
+    res.json({ message: 'Import complete', processed, skipped, failed, errors: errors.slice(0, 10) });
 
   } catch (err) {
     await dbClient.query('ROLLBACK').catch(() => {});
