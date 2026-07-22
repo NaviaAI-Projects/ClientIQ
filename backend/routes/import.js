@@ -134,11 +134,13 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
   // Warn (HTTP 409) if this file/data was already imported, unless the user chose to overwrite.
   // Client Master → conflict on ANY prior client_master import (it's a full-base replace).
   // Other files   → conflict on same file_type + same file name already imported.
-  if (!overwrite) {
+  // Trade & Brokerage carry a real trade date INSIDE the file, so they are duplicate-
+  // checked AFTER parsing, by that date (see the check just before COMMIT below):
+  // a different trade date uploads freely, only the same date already loaded is blocked.
+  // Snapshot files (client master, ledger, holdings, mtf) have no per-file date, so they
+  // are checked here by upload day.
+  if (!overwrite && !['trade', 'brokerage'].includes(file_type)) {
     try {
-      // Only treat it as a duplicate if a file of THIS TYPE was already imported
-      // TODAY (IST). A prior day's import must never block a new day's upload —
-      // daily files routinely reuse the same filename (e.g. Tradefile.csv).
       const dup = await pool.query(
         `SELECT file_name, created_at, records_processed FROM import_log
          WHERE file_type = $1 AND status IN ('success','partial')
@@ -758,6 +760,31 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       dbClient.release();
       if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
       return res.json({ message: 'Bhavcopy not required — holdings file already contains computed values', processed: 0, failed: 0 });
+    }
+
+    // ── Duplicate check for date-bearing files (Trade, Brokerage), by the file's REAL trade date ──
+    // A different trade date uploads normally; only the SAME date already imported is blocked
+    // (unless the user chose Replace). This runs post-parse because the date lives inside the file.
+    if (!overwrite && ['trade', 'brokerage'].includes(file_type) && dataDate) {
+      await dbClient.query(`ALTER TABLE import_log ADD COLUMN IF NOT EXISTS trade_date DATE`);
+      const dupd = await dbClient.query(
+        `SELECT file_name, created_at, records_processed FROM import_log
+         WHERE file_type = $1 AND trade_date = $2 AND status IN ('success','partial')
+         ORDER BY created_at DESC LIMIT 1`,
+        [file_type, dataDate]);
+      if (dupd.rows.length > 0) {
+        const p = dupd.rows[0];
+        await dbClient.query('ROLLBACK');
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        const dstr = new Date(dataDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+        return res.status(409).json({
+          conflict: true,
+          file_type,
+          file_name: req.file.originalname,
+          message: `A ${FILE_LABELS[file_type] || file_type} for ${dstr} was already uploaded (${p.records_processed} records). Replace that date's data?`,
+          existing: { file_name: p.file_name, imported_at: p.created_at, records: p.records_processed }
+        });
+      }
     }
 
     await dbClient.query('COMMIT');
