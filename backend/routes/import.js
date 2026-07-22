@@ -82,7 +82,7 @@ function validateFileFormat(file_type, filePath, originalname) {
       }
       const need = file_type === 'ledger' ? 23 : 12;
       const ok = lines.length > 0 && lines.slice(0, 25).every(l => l.split('|').length === need)
-        && !isNaN(parseInt(String(lines[0].split('|')[0]).trim()));
+        && String(lines[0].split('|')[0]).trim().length > 0;   // UCC may be alphanumeric (e.g. BAA00110)
       return ok ? { ok: true } : { ok: false, detail: file_type === 'ledger'
         ? 'Base Capital / Ledger must be pipe-delimited ( | ) with 23 columns (UCC in column 1).'
         : 'Holdings must be pipe-delimited ( | ) with 12 columns (UCC in column 1).' };
@@ -589,7 +589,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       const sample    = lines.slice(0, 25);
       const wrongCols = sample.length === 0 || sample.some(l => l.split('|').length !== 23);
       const firstUcc  = lines[0] ? String(lines[0].split('|')[0]).trim() : '';
-      if (wrongCols || isNaN(parseInt(firstUcc))) {
+      if (wrongCols || !firstUcc) {
         throw new Error('FORMAT:Base Capital file must be pipe-delimited ( | ) with exactly 23 columns — UCC in column 1 and base capital in column 5.');
       }
 
@@ -600,7 +600,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       for (const line of lines) {
         const parts = line.split('|');
         const ucc = String(parts[0] || '').trim();
-        if (!ucc || isNaN(parseInt(ucc))) { failed++; continue; }
+        if (!ucc) { failed++; continue; }   // UCC may be alphanumeric (BAA00110); only blank UCC is a real failure
         if (!clientSet.has(ucc)) { skipped++; continue; }        // skip member / non-client ids (not a failure)
         const baseCapital = parseFloat(parts[4]) || 0;           // col 4 = base capital
         ledgerMap[ucc] = { ucc, balance: baseCapital, today };
@@ -648,7 +648,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       const hSample = lines.slice(0, 25);
       const hWrong  = hSample.length === 0 || hSample.some(l => l.split('|').length !== 12);
       const hUcc    = lines[0] ? String(lines[0].split('|')[0]).trim() : '';
-      if (hWrong || isNaN(parseInt(hUcc))) {
+      if (hWrong || !hUcc) {
         throw new Error('FORMAT:Holdings file must be pipe-delimited ( | ) with exactly 12 columns — UCC in column 1, quantity in column 3, price in column 12.');
       }
 
@@ -656,7 +656,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const parts = line.split('|');
         if (parts.length < 4) continue;
         const ucc      = String(parts[0]).trim();
-        if (!ucc || isNaN(ucc)) continue;
+        if (!ucc) continue;   // UCC may be alphanumeric
         const qty      = parseFloat(parts[2])  || 0;  // col 2 = quantity
         const avgPrice = parseFloat(parts[11]) || 0;  // col 11 = average price per unit
         const value    = qty * avgPrice;               // total holding value
