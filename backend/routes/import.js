@@ -136,27 +136,26 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
   // Other files   → conflict on same file_type + same file name already imported.
   if (!overwrite) {
     try {
-      const dup = file_type === 'client_master'
-        ? await pool.query(
-            `SELECT file_name, created_at, records_processed FROM import_log
-             WHERE file_type = 'client_master' AND status IN ('success','partial')
-             ORDER BY created_at DESC LIMIT 1`)
-        : await pool.query(
-            `SELECT file_name, created_at, records_processed FROM import_log
-             WHERE file_type = $1 AND LOWER(file_name) = LOWER($2) AND status IN ('success','partial')
-             ORDER BY created_at DESC LIMIT 1`,
-            [file_type, req.file.originalname]);
+      // Only treat it as a duplicate if a file of THIS TYPE was already imported
+      // TODAY (IST). A prior day's import must never block a new day's upload —
+      // daily files routinely reuse the same filename (e.g. Tradefile.csv).
+      const dup = await pool.query(
+        `SELECT file_name, created_at, records_processed FROM import_log
+         WHERE file_type = $1 AND status IN ('success','partial')
+           AND created_at::date = (NOW() AT TIME ZONE 'Asia/Kolkata')::date
+         ORDER BY created_at DESC LIMIT 1`,
+        [file_type]);
       if (dup.rows.length > 0) {
         const p = dup.rows[0];
         if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-        const when = p.created_at ? new Date(p.created_at).toLocaleString('en-IN') : 'earlier';
+        const when = p.created_at ? new Date(p.created_at).toLocaleString('en-IN') : 'earlier today';
         return res.status(409).json({
           conflict: true,
           file_type,
           file_name: req.file.originalname,
           message: file_type === 'client_master'
-            ? `A Client Master file was already imported (${p.file_name}, ${p.records_processed} records on ${when}). Replacing will update all client records.`
-            : `"${req.file.originalname}" (${FILE_LABELS[file_type] || file_type}) was already uploaded on ${when} — ${p.records_processed} records. Replace the existing data?`,
+            ? `A Client Master file was already imported today (${p.file_name}, ${p.records_processed} records at ${when}). Replacing will update all client records.`
+            : `A ${FILE_LABELS[file_type] || file_type} was already uploaded today (${p.file_name}, ${p.records_processed} records at ${when}). Replace the existing data?`,
           existing: { file_name: p.file_name, imported_at: p.created_at, records: p.records_processed }
         });
       }
