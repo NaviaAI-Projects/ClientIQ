@@ -256,8 +256,8 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const ucc       = String(row[8] ?? '').trim();               // ClntId
         const tradeDate = parseDate(String(row[3] ?? '').trim());    // BizDt
         if (!ucc || !tradeDate) { failed++; continue; }
+        if (!dataDate || tradeDate > dataDate) dataDate = tradeDate; // capture the file's trade date even if the client isn't mapped yet
         if (!knownUCCs.has(ucc)) { skipped++; continue; }
-        if (!dataDate || tradeDate > dataDate) dataDate = tradeDate; // capture the trade file's date
 
         const instrName = String(row[9] ?? '').trim();               // FinInstrmTp (IDO/STO/FUT…)
         const tkr       = String(row[11] ?? '').trim();              // TckrSymb
