@@ -59,8 +59,18 @@ function getSegment(exchg, instrName) {
 }
 
 const FILE_LABELS = {
-  client_master: 'Client Master', trade: 'Trade File', brokerage: 'Brokerage File',
+  client_master: 'Client Master',
+  nse_cm: 'NSE Cash', bse_cm: 'BSE Cash', nse_fo: 'NSE F&O', bse_fo: 'BSE F&O', mcx: 'MCX',
+  trade: 'Trade File',
+  brokerage: 'Brokerage File',
   ledger: 'Ledger File', holdings: 'Holdings File', mtf: 'MTF File'
+};
+
+// Trade slots → the exchange + segment their file must carry inside (Xchg / Sgmt columns).
+const TRADE_SLOTS = {
+  nse_cm: { xchg: 'NSE', sgmt: 'CM' }, bse_cm: { xchg: 'BSE', sgmt: 'CM' },
+  nse_fo: { xchg: 'NSE', sgmt: 'FO' }, bse_fo: { xchg: 'BSE', sgmt: 'FO' },
+  mcx:    { xchg: 'MCX', sgmt: 'CO' },
 };
 
 // Validate a file's format for its chosen slot BEFORE any duplicate/other check, so a wrong
@@ -95,10 +105,17 @@ function validateFileFormat(file_type, filePath, originalname) {
       const h = (rows[0] || []).map(norm);
       return h.includes('UCC') ? { ok: true } : { ok: false, detail: 'Client Master must have a UCC and Client Name header row.' };
     }
-    if (file_type === 'trade') {
+    if (TRADE_SLOTS[file_type]) {
       const h = (rows[0] || []).map(norm);
-      const ok = h[0] === 'SGMT' && h[3] === 'BIZDT' && h[8] === 'CLNTID' && h[11] === 'TCKRSYMB';
-      return ok ? { ok: true } : { ok: false, detail: 'Trade file must be the NCL F&O Position export (46 columns beginning Sgmt, Src, RptgDt, BizDt …).' };
+      const headerOk = h[0] === 'TRADDT' && h[1] === 'BIZDT' && h[2] === 'SGMT' && h[4] === 'XCHG'
+        && h[18] === 'CLNTID' && h[24] === 'BUYSELLIND';
+      if (!headerOk) return { ok: false, detail: 'Trade file must be the 46-column exchange export (TradDt, BizDt, Sgmt, Src, Xchg … ClntId … BuySellInd …).' };
+      const want = TRADE_SLOTS[file_type];
+      const d = rows[1] || [];
+      const gotX = String(d[4] ?? '').trim().toUpperCase();
+      const gotS = String(d[2] ?? '').trim().toUpperCase();
+      const ok = (!gotX || gotX === want.xchg) && (!gotS || gotS === want.sgmt);
+      return ok ? { ok: true } : { ok: false, detail: `This looks like a ${gotX}/${gotS} file, but this slot expects ${want.xchg} ${want.sgmt}. Please upload the correct file here.` };
     }
     if (file_type === 'brokerage') {
       const ncols = sh['!ref'] ? (XLSX.utils.decode_range(sh['!ref']).e.c + 1) : 0;
@@ -139,7 +156,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
   // a different trade date uploads freely, only the same date already loaded is blocked.
   // Snapshot files (client master, ledger, holdings, mtf) have no per-file date, so they
   // are checked here by upload day.
-  if (!overwrite && !['trade', 'brokerage'].includes(file_type)) {
+  if (!overwrite && !['nse_cm', 'bse_cm', 'nse_fo', 'bse_fo', 'mcx', 'brokerage'].includes(file_type)) {
     try {
       const dup = await pool.query(
         `SELECT file_name, created_at, records_processed FROM import_log
@@ -226,23 +243,24 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     // position in one contract for the day, carrying BOTH the day's buy and sell trading
     // qty/value. We split each row into a buy leg and a sell leg so the raw `trades` table
     // and the 90-day summary (which aggregate by buy_sell) keep working unchanged.
-    // Key cols (0-indexed): 3=BizDt(date) 8=ClntId(UCC) 9=FinInstrmTp 11=TckrSymb 12=XpryDt
-    //   14=StrkPric 15=OptnTp 21=OpnBuyTradgQty 22=OpnBuyTradgVal 23=OpnSellTradgQty 24=OpnSellTradgVal.
-    else if (file_type === 'trade') {
-      const arr = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+    // Unified exchange trade format (46 cols) for all 5 slots: NSE_CM, BSE_CM, NSE_FO, BSE_FO, MCX.
+    // Key cols (0-indexed): 1=BizDt(date) 2=Sgmt(CM/FO/CO) 4=Xchg 7=FinInstrmTp 10=TckrSymb 12=XpryDt
+    //   14=StrkPric 15=OptnTp 18=ClntId(UCC) 24=BuySellInd(B/S) 25=TradQty 27=Pric.
+    else if (TRADE_SLOTS[file_type]) {
+      const arr  = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
+      const slot = TRADE_SLOTS[file_type];
 
-      // ── Exact-format validation: 46-column NCL F&O header, exact names & order ──
-      const EXPECTED = ['Sgmt','Src','RptgDt','BizDt','TradRegnOrgn','ClrMmbId','BrkrOrCtdnPtcptId',
-        'ClntTp','ClntId','FinInstrmTp','ISIN','TckrSymb','XpryDt','FininstrmActlXpryDt','StrkPric',
-        'OptnTp','NewBrdLotQty','OpngLngQty','OpngLngVal','OpngShrtQty','OpngShrtVal','OpnBuyTradgQty',
-        'OpnBuyTradgVal','OpnSellTradgQty','OpnSellTradgVal','PreExrcAssgndLngQty','PreExrcAssgndLngVal',
-        'PreExrcAssgndShrtQty','PreExrcAssgndShrtVal','ExrcdQty','AssgndQty','PstExrcAssgndLngQty',
-        'PstExrcAssgndLngVal','PstExrcAssgndShrtQty','PstExrcAssgndShrtVal','SttlmPric','RefRate','PrmAmt',
-        'DalyMrkToMktSettlmVal','FutrsFnlSttlmVal','ExrcAssgndVal','Rmks','Rsvd1','Rsvd2','Rsvd3','Rsvd4'];
+      // ── Exact-format validation: 46-column exchange header, exact names & order ──
+      const EXPECTED = ['TradDt','BizDt','Sgmt','Src','Xchg','ClrMmbId','Brkr','FinInstrmTp','FinInstrmId',
+        'ISIN','TckrSymb','SctySrs','XpryDt','FininstrmActlXpryDt','StrkPric','OptnTp','FinInstrmNm','ClntTp',
+        'ClntId','FullyExctdConfSnt','OrgnlCtdnPtcptId','CtdnPtcptId','SttlmTp','SctiesSttlmTxId','BuySellInd',
+        'TradQty','NewBrdLotQty','Pric','UnqTradIdr','RptdTxSts','TradDtTm','UpdDt','OrdrRef','OrdrDtTm',
+        'InstgUsr','CtclId','TradRegnOrgn','OrdrTp','BlckDealInd','SttlmCycl','MktTpandId','Rmks',
+        'Rsvd1','Rsvd2','Rsvd3','Rsvd4'];
       const header = (arr[0] || []).map(c => String(c ?? '').trim());
       const headerOk = header.length >= EXPECTED.length && EXPECTED.every((name, i) => header[i] === name);
       if (!headerOk) {
-        throw new Error('FORMAT:Trade file must be the NCL F&O Position export — 46 columns beginning Sgmt, Src, RptgDt, BizDt … in the exact order.');
+        throw new Error('FORMAT:Trade file must be the 46-column exchange export — TradDt, BizDt, Sgmt, Src, Xchg … ClntId … BuySellInd, TradQty … Pric.');
       }
 
       const { rows: uccRows } = await dbClient.query('SELECT ucc FROM clients');
@@ -252,58 +270,53 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
       for (let ri = 1; ri < arr.length; ri++) {
         const row = arr[ri];
-        if (!row || row.length < 25) continue;
-        const ucc       = String(row[8] ?? '').trim();               // ClntId
-        const tradeDate = parseDate(String(row[3] ?? '').trim());    // BizDt
+        if (!row || row.length < 28) continue;
+        const ucc       = String(row[18] ?? '').trim();              // ClntId
+        const tradeDate = parseDate(String(row[1] ?? '').trim());    // BizDt
         if (!ucc || !tradeDate) { failed++; continue; }
         if (!dataDate || tradeDate > dataDate) dataDate = tradeDate; // capture the file's trade date even if the client isn't mapped yet
         if (!knownUCCs.has(ucc)) { skipped++; continue; }
 
-        const instrName = String(row[9] ?? '').trim();               // FinInstrmTp (IDO/STO/FUT…)
-        const tkr       = String(row[11] ?? '').trim();              // TckrSymb
+        const seg       = (String(row[2] ?? '').trim().toUpperCase() || slot.sgmt);   // CM / FO / CO
+        const exchange  = (String(row[4] ?? '').trim().toUpperCase() || slot.xchg);   // NSE / BSE / MCX
+        const instrName = String(row[7] ?? '').trim();               // FinInstrmTp (STK/STF/IDO/FUO…)
+        const tkr       = String(row[10] ?? '').trim();              // TckrSymb
         const expiry    = parseDate(String(row[12] ?? '').trim());   // XpryDt
         const strike    = parseFloat(row[14]) || null;               // StrkPric
         const ot        = String(row[15] ?? '').trim().toUpperCase() || null; // OptnTp
         const isOption  = ot === 'CE' || ot === 'PE';
-        const buyQty    = parseFloat(row[21]) || 0;                  // OpnBuyTradgQty
-        const buyVal    = parseFloat(row[22]) || 0;                  // OpnBuyTradgVal
-        const sellQty   = parseFloat(row[23]) || 0;                  // OpnSellTradgQty
-        const sellVal   = parseFloat(row[24]) || 0;                  // OpnSellTradgVal
-        const exchange  = 'NFO';                                     // F&O only for now
+        const bs        = String(row[24] ?? '').trim().toUpperCase().startsWith('S') ? 'S' : 'B'; // BuySellInd
+        const qty       = parseFloat(row[25]) || 0;                  // TradQty
+        const price     = parseFloat(row[27]) || 0;                  // Pric
+        const value     = qty * price;                               // traded value = qty × price
+        if (qty <= 0 && value <= 0) { skipped++; continue; }         // nothing to record
 
         // Readable, contract-unique trading symbol
         const symbol = isOption
           ? `${tkr} ${strike != null ? strike : ''}${ot}${expiry ? ' ' + expiry : ''}`.replace(/\s+/g, ' ').trim()
-          : `${tkr} FUT${expiry ? ' ' + expiry : ''}`.trim();
+          : (expiry ? `${tkr} FUT ${expiry}`.trim() : tkr);
 
-        // Split the position into a buy leg and a sell leg → raw `trades` rows. Columns:
+        // One raw `trades` row per executed trade. Segment (CM/FO/CO) is stored in product_type. Columns:
         // (ucc, client_name, trade_date, trans_time, exchange, trading_symbol, instrument_name,
         //  buy_sell, trade_qty, trade_price, traded_value, product_type, order_type, option_type,
         //  strike_price, expiry_date, trade_id, order_no, pan_number)
-        if (buyQty > 0 || buyVal > 0) {
-          tradeRows.push([ucc, '', tradeDate, null, exchange, symbol, instrName,
-            'B', buyQty, buyQty > 0 ? buyVal / buyQty : 0, buyVal, null, null,
-            ot, strike, expiry, null, null, null]);
-        }
-        if (sellQty > 0 || sellVal > 0) {
-          tradeRows.push([ucc, '', tradeDate, null, exchange, symbol, instrName,
-            'S', sellQty, sellQty > 0 ? sellVal / sellQty : 0, sellVal, null, null,
-            ot, strike, expiry, null, null, null]);
-        }
+        tradeRows.push([ucc, '', tradeDate, null, exchange, symbol, instrName,
+          bs, qty, price, value, seg, null, ot, strike, expiry, null, null, null]);
 
-        // Aggregate for daily_trades (F&O only: everything is eq_fo turnover; CE/PE also = options premium)
-        const turnover = buyVal + sellVal;
+        // Aggregate for daily_trades, split by segment.
         const key = `${ucc}__${tradeDate}`;
         if (!grouped[key]) grouped[key] = {
           ucc, trade_date: tradeDate,
           eq_cash: 0, eq_fo: 0, comm: 0, opt_prem: 0,
           instruments: {}, calls: 0, puts: 0
         };
-        grouped[key].eq_fo    += turnover;
-        grouped[key].opt_prem += isOption ? turnover : 0;
-        if (symbol) grouped[key].instruments[symbol] = (grouped[key].instruments[symbol] || 0) + turnover;
-        if (ot === 'CE') grouped[key].calls += turnover;
-        if (ot === 'PE') grouped[key].puts  += turnover;
+        if (seg === 'CM')      grouped[key].eq_cash += value;
+        else if (seg === 'CO') grouped[key].comm    += value;
+        else                   grouped[key].eq_fo   += value;   // FO
+        grouped[key].opt_prem += isOption ? value : 0;
+        if (symbol) grouped[key].instruments[symbol] = (grouped[key].instruments[symbol] || 0) + value;
+        if (ot === 'CE') grouped[key].calls += value;
+        if (ot === 'PE') grouped[key].puts  += value;
         processed++;
       }
 
@@ -403,9 +416,9 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
           SUM(n)::int AS total_trades,
           SUM(q)      AS total_qty,
           SUM(to_)    AS turnover,
-          SUM(CASE WHEN ex IN ('NSE','BSE') THEN to_ ELSE 0 END) AS eq_cash_to,
-          SUM(CASE WHEN ex IN ('NFO','BFO') AND (ot IS NULL OR ot = '') THEN to_ ELSE 0 END) AS eq_fut_to,
-          SUM(CASE WHEN ex = 'MCX' THEN to_ ELSE 0 END) AS comm_to,
+          SUM(CASE WHEN pt = 'CM' THEN to_ ELSE 0 END) AS eq_cash_to,
+          SUM(CASE WHEN pt = 'FO' AND (ot IS NULL OR ot = '') THEN to_ ELSE 0 END) AS eq_fut_to,
+          SUM(CASE WHEN pt = 'CO' THEN to_ ELSE 0 END) AS comm_to,
           SUM(CASE WHEN ot IN ('CE','PE') THEN to_ ELSE 0 END) AS options_to,
           SUM(CASE WHEN ot = 'CE' THEN to_ ELSE 0 END) AS call_to,
           SUM(CASE WHEN ot = 'PE' THEN to_ ELSE 0 END) AS put_to,
@@ -765,7 +778,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     // ── Duplicate check for date-bearing files (Trade, Brokerage), by the file's REAL trade date ──
     // A different trade date uploads normally; only the SAME date already imported is blocked
     // (unless the user chose Replace). This runs post-parse because the date lives inside the file.
-    if (!overwrite && ['trade', 'brokerage'].includes(file_type) && dataDate) {
+    if (!overwrite && ['nse_cm', 'bse_cm', 'nse_fo', 'bse_fo', 'mcx', 'brokerage'].includes(file_type) && dataDate) {
       await dbClient.query(`ALTER TABLE import_log ADD COLUMN IF NOT EXISTS trade_date DATE`);
       const dupd = await dbClient.query(
         `SELECT file_name, created_at, records_processed FROM import_log

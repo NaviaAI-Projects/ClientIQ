@@ -2,13 +2,23 @@ import React, { useState, useEffect, useRef } from 'react';
 import api from '../api';
 
 const FILE_CONFIGS = {
-  client_master: { label: 'Client Master',  icon: '👤', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',    step: 1, sample: 'client_master_sample.ods', keywords: ['clientmaster','client_master','clientmst'] },
-  trade:         { label: 'Trade File',      icon: '📊', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily',    step: 2, sample: 'trade_sample.xlsx',        keywords: ['trade','tradefile','tradein'] },
-  brokerage:     { label: 'Brokerage File',  icon: '🧾', color: '#854F0B', bg: '#FAEEDA', freq: 'Daily',    step: 3, sample: 'brokerage_sample.xlsx',     keywords: ['brokerage','brokerge','brok'] },
-  ledger:        { label: 'Ledger File',     icon: '🏦', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',    step: 4, sample: 'ledger_sample.txt',        keywords: ['ledger','ledgr','basecapital','base_capital','rmslimit','rms_limit','rms','limit','capital'] },
-  holdings:      { label: 'Holdings',        icon: '📁', color: '#08905C', bg: '#E6FAF3', freq: 'Daily',    step: 5, sample: 'holdings_sample.xlsx',     keywords: ['holding','dp','dpholding'] },
-  mtf:           { label: 'MTF File',        icon: '💰', color: '#854F0B', bg: '#FAEEDA', freq: 'Weekly',   step: 6, sample: 'mtf_sample.xlsx',           keywords: ['mtf','margintrade','mtfinterest'] },
+  client_master: { label: 'Client Master',  section: 'Client Master', icon: '👤', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',  step: 1, sample: 'client_master_sample.ods', keywords: ['clientmaster','client_master','clientmst'] },
+
+  // ── Trade — split by segment (Cash / F&O / MCX) ──
+  nse_cm: { label: 'NSE Cash', section: 'Trade · Cash Market', icon: '📈', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily', step: 2, sample: 'trade_nse_cm_sample.csv', keywords: ['tradensecm','nsecm'] },
+  bse_cm: { label: 'BSE Cash', section: 'Trade · Cash Market', icon: '📈', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily', step: 2, sample: 'trade_bse_cm_sample.csv', keywords: ['tradebsecm','bsecm'] },
+  nse_fo: { label: 'NSE F&O',  section: 'Trade · F&O',         icon: '📊', color: '#6D3B9E', bg: '#F0E9F8', freq: 'Daily', step: 2, sample: 'trade_nse_fo_sample.csv', keywords: ['tradensefo','nsefo'] },
+  bse_fo: { label: 'BSE F&O',  section: 'Trade · F&O',         icon: '📊', color: '#6D3B9E', bg: '#F0E9F8', freq: 'Daily', step: 2, sample: 'trade_bse_fo_sample.csv', keywords: ['tradebsefo','bsefo'] },
+  mcx:    { label: 'MCX',      section: 'Trade · MCX',         icon: '🛢️', color: '#9E5B1E', bg: '#FBEFE0', freq: 'Daily', step: 2, sample: 'trade_mcx_sample.csv',    keywords: ['trademcx','mcxco','mcx'] },
+
+  brokerage:     { label: 'Brokerage File',  section: 'Other Files', icon: '🧾', color: '#854F0B', bg: '#FAEEDA', freq: 'Daily',  step: 3, sample: 'brokerage_sample.xlsx', keywords: ['brokerage','brokerge','brok'] },
+  ledger:        { label: 'Ledger File',     section: 'Other Files', icon: '🏦', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',  step: 4, sample: 'ledger_sample.txt',      keywords: ['ledger','ledgr','basecapital','base_capital','rmslimit','rms_limit','rms','limit','capital'] },
+  holdings:      { label: 'Holdings',        section: 'Other Files', icon: '📁', color: '#08905C', bg: '#E6FAF3', freq: 'Daily',  step: 5, sample: 'holdings_sample.xlsx',   keywords: ['holding','dp','dpholding'] },
+  mtf:           { label: 'MTF File',        section: 'Other Files', icon: '💰', color: '#854F0B', bg: '#FAEEDA', freq: 'Weekly', step: 6, sample: 'mtf_sample.xlsx',        keywords: ['mtf','margintrade','mtfinterest'] },
 };
+
+// Ordered list of section names, used to group the individual upload cards.
+const SECTION_ORDER = ['Client Master', 'Trade · Cash Market', 'Trade · F&O', 'Trade · MCX', 'Other Files'];
 
 function detectType(filename) {
   const n = (filename || '').toLowerCase().replace(/[\s_\-.]+/g, '');
@@ -109,7 +119,7 @@ const ImportData = () => {
       else unrecognised.push(file.name);
     });
     if (unrecognised.length > 0) {
-      setStatusMsg({ success: false, text: `Could not detect type for: ${unrecognised.join(', ')}. Rename to include: clientmaster, trade, brokerage, ledger, holdings, or mtf.` });
+      setStatusMsg({ success: false, text: `Could not detect type for: ${unrecognised.join(', ')}. Filenames should include: clientmaster, Trade_NSE_CM / Trade_BSE_CM / Trade_NSE_FO / Trade_BSE_FO / Trade_MCX, brokerage, ledger, holdings, or mtf.` });
       setTimeout(() => setStatusMsg(null), 7000);
     }
     newItems.sort((a, b) => FILE_CONFIGS[a.type].step - FILE_CONFIGS[b.type].step);
@@ -283,8 +293,8 @@ const ImportData = () => {
       <div className="panel" style={{ marginBottom: '16px' }}>
         <div className="ptitle">Import All Files</div>
         <p style={{ fontSize: '12px', color: 'var(--tx2)', marginBottom: '14px', lineHeight: 1.6 }}>
-          Select all 6 files at once. The system reads the filename and automatically assigns each file to the correct parser.
-          Files are then uploaded in the correct order: <strong>Client Master → Trade → Brokerage → Ledger → Holdings → MTF</strong>.
+          Select all your files at once. The system reads each filename and automatically assigns it to the correct parser.
+          Upload order: <strong>Client Master → Trade (NSE/BSE Cash, NSE/BSE F&amp;O, MCX) → Brokerage → Ledger → Holdings → MTF</strong>.
         </p>
 
         {/* Drop zone */}
@@ -309,7 +319,7 @@ const ImportData = () => {
             {dragOver ? 'Drop files here' : 'Click to select files or drag & drop'}
           </div>
           <div style={{ fontSize: '12px', color: 'var(--tx3)', marginBottom: '10px' }}>
-            Select all 6 files at once — .xlsx, .csv accepted
+            Select all your files at once — .xlsx, .csv, .ods, .txt accepted
           </div>
           <input
             id="bulk-file-input"
@@ -391,8 +401,15 @@ const ImportData = () => {
 
       {/* ── INDIVIDUAL UPLOAD CARDS ── */}
       <div className="slbl" style={{ marginBottom: '10px' }}>Or upload individually</div>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px', marginBottom: '16px' }}>
-        {Object.entries(FILE_CONFIGS).map(([key, cfg]) => {
+      {SECTION_ORDER.map(section => {
+        const secEntries = Object.entries(FILE_CONFIGS).filter(([, c]) => c.section === section);
+        if (secEntries.length === 0) return null;
+        return (
+        <div key={section} style={{ marginBottom: '14px' }}>
+          <div style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--tx2)', margin: '2px 0 8px',
+                        textTransform: 'uppercase', letterSpacing: '0.4px' }}>{section}</div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+        {secEntries.map(([key, cfg]) => {
           const last   = getLastImport(key);
           const result = results[key];
           const busy   = uploading[key];
@@ -506,7 +523,10 @@ const ImportData = () => {
             </div>
           );
         })}
-      </div>
+          </div>
+        </div>
+        );
+      })}
 
       {/* ── ACTION BUTTONS ── */}
       <div className="brow" style={{ marginBottom: '20px' }}>
