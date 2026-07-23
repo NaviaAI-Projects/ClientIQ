@@ -447,8 +447,8 @@ router.get('/concentration', auth, async (req, res) => {
 // Expiry day = a trade day on which options expiring that same day traded.
 router.get('/options', auth, async (req, res) => {
   try {
-    const EQ   = `exchange IN ('NFO','BFO') AND instrument_name IN ('OPTIDX','OPTSTK')`;
-    const COMM = `exchange IN ('MCX','NCDEX') AND instrument_name IN ('OPTFUT','OPTIDX','OPTSTK')`;
+    const EQ   = `product_type = 'FO' AND option_type IN ('CE','PE')`;
+    const COMM = `product_type = 'CO' AND option_type IN ('CE','PE')`;
 
     const rng = await resolveRange(req, 'trades');
 
@@ -614,11 +614,11 @@ router.get('/new-business', auth, async (req, res) => {
     `, [rng.from, rng.to]);
     const maxOpenRow = await pool.query(`SELECT MAX(account_open_date) d FROM clients`);
     const SEGCASE = `CASE
-      WHEN exchange IN ('NFO','BFO') AND instrument_name IN ('OPTIDX','OPTSTK') THEN 'Equity Options'
-      WHEN exchange IN ('NFO','BFO') AND instrument_name IN ('FUTIDX','FUTSTK') THEN 'Equity Futures'
-      WHEN exchange IN ('MCX','NCDEX') AND instrument_name IN ('OPTFUT','OPTIDX','OPTSTK') THEN 'Commodity Options'
-      WHEN exchange IN ('MCX','NCDEX') THEN 'Commodity Futures'
-      WHEN exchange IN ('NSE','BSE') THEN 'Equity Cash'
+      WHEN product_type = 'CM' THEN 'Equity Cash'
+      WHEN product_type = 'FO' AND option_type IN ('CE','PE') THEN 'Equity Options'
+      WHEN product_type = 'FO' THEN 'Equity Futures'
+      WHEN product_type = 'CO' AND option_type IN ('CE','PE') THEN 'Commodity Options'
+      WHEN product_type = 'CO' THEN 'Commodity Futures'
       ELSE 'Other' END`;
     const seg = await pool.query(`
       WITH s AS (
@@ -1550,15 +1550,15 @@ router.get('/daily-mis', auth, async (req, res) => {
     // 5-way segment split + client segments per day, from raw trades
     const perDay = await pool.query(`
       SELECT t.trade_date::text AS d,
-             COALESCE(SUM(t.traded_value) FILTER (WHERE t.exchange IN ('NFO','BFO') AND t.instrument_name IN ('OPTIDX','OPTSTK')),0)::float AS eq_opt,
-             COALESCE(SUM(t.traded_value) FILTER (WHERE t.exchange IN ('MCX','NCDEX') AND t.instrument_name IN ('OPTFUT','OPTIDX','OPTSTK')),0)::float AS comm_opt,
-             COALESCE(SUM(t.traded_value) FILTER (WHERE t.exchange IN ('NFO','BFO') AND t.instrument_name IN ('FUTIDX','FUTSTK')),0)::float AS eq_fut,
-             COALESCE(SUM(t.traded_value) FILTER (WHERE t.exchange IN ('MCX','NCDEX') AND t.instrument_name = 'FUTCOM'),0)::float AS comm_fut,
-             COALESCE(SUM(t.traded_value) FILTER (WHERE t.exchange IN ('NSE','BSE')),0)::float AS eq_cash,
+             COALESCE(SUM(t.traded_value) FILTER (WHERE t.product_type = 'FO' AND t.option_type IN ('CE','PE')),0)::float AS eq_opt,
+             COALESCE(SUM(t.traded_value) FILTER (WHERE t.product_type = 'CO' AND t.option_type IN ('CE','PE')),0)::float AS comm_opt,
+             COALESCE(SUM(t.traded_value) FILTER (WHERE t.product_type = 'FO' AND (t.option_type IS NULL OR t.option_type NOT IN ('CE','PE'))),0)::float AS eq_fut,
+             COALESCE(SUM(t.traded_value) FILTER (WHERE t.product_type = 'CO' AND (t.option_type IS NULL OR t.option_type NOT IN ('CE','PE'))),0)::float AS comm_fut,
+             COALESCE(SUM(t.traded_value) FILTER (WHERE t.product_type = 'CM'),0)::float AS eq_cash,
              COUNT(DISTINCT t.ucc)::int AS total_clients,
-             COUNT(DISTINCT t.ucc) FILTER (WHERE t.exchange IN ('NFO','BFO') AND t.instrument_name IN ('OPTIDX','OPTSTK','FUTIDX','FUTSTK'))::int AS fo_eq_clients,
-             COUNT(DISTINCT t.ucc) FILTER (WHERE t.exchange IN ('MCX','NCDEX'))::int AS fo_comm_clients,
-             COUNT(DISTINCT t.ucc) FILTER (WHERE t.exchange IN ('NSE','BSE'))::int AS cash_clients,
+             COUNT(DISTINCT t.ucc) FILTER (WHERE t.product_type = 'FO')::int AS fo_eq_clients,
+             COUNT(DISTINCT t.ucc) FILTER (WHERE t.product_type = 'CO')::int AS fo_comm_clients,
+             COUNT(DISTINCT t.ucc) FILTER (WHERE t.product_type = 'CM')::int AS cash_clients,
              COUNT(DISTINCT t.ucc) FILTER (WHERE c.client_type ILIKE 'NR%')::int AS nri_clients,
              BOOL_OR(t.expiry_date = t.trade_date) AS is_expiry
       FROM trades t LEFT JOIN clients c ON c.ucc = t.ucc
@@ -1804,9 +1804,9 @@ router.get('/market-share', auth, async (req, res) => {
     const navia = await pool.query(`
       WITH t AS (
         SELECT to_char(trade_date,'YYYY-MM') AS mon, trade_date, traded_value,
-          CASE WHEN exchange IN ('NFO','BFO') AND instrument_name IN ('OPTIDX','OPTSTK') THEN 'eqopt'
-               WHEN exchange IN ('MCX','NCDEX') AND instrument_name IN ('OPTFUT','OPTIDX','OPTSTK') THEN 'commopt'
-               WHEN exchange IN ('NFO','BFO') AND instrument_name IN ('FUTIDX','FUTSTK') THEN 'eqfut'
+          CASE WHEN product_type = 'FO' AND option_type IN ('CE','PE') THEN 'eqopt'
+               WHEN product_type = 'CO' AND option_type IN ('CE','PE') THEN 'commopt'
+               WHEN product_type = 'FO' THEN 'eqfut'
                ELSE 'other' END AS seg
         FROM trades WHERE trade_date::date BETWEEN $1 AND $2
       )

@@ -267,6 +267,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       const knownUCCs = new Set(uccRows.map(r => String(r.ucc).trim()));
       const grouped   = {};
       const tradeRows = [];
+      const dates     = new Set();   // trade dates present in THIS file → scope the summary rebuild to just these
 
       for (let ri = 1; ri < arr.length; ri++) {
         const row = arr[ri];
@@ -276,6 +277,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         if (!ucc || !tradeDate) { failed++; continue; }
         if (!dataDate || tradeDate > dataDate) dataDate = tradeDate; // capture the file's trade date even if the client isn't mapped yet
         if (!knownUCCs.has(ucc)) { skipped++; continue; }
+        dates.add(tradeDate);
 
         const seg       = (String(row[2] ?? '').trim().toUpperCase() || slot.sgmt);   // CM / FO / CO
         const exchange  = (String(row[4] ?? '').trim().toUpperCase() || slot.xchg);   // NSE / BSE / MCX
@@ -320,11 +322,13 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         processed++;
       }
 
-      // Drop indexes for faster bulk insert
-      await dbClient.query('DROP INDEX IF EXISTS idx_trades_ucc');
-      await dbClient.query('DROP INDEX IF EXISTS idx_trades_date');
-      await dbClient.query('DROP INDEX IF EXISTS idx_trades_ucc_date');
-      await dbClient.query('DROP INDEX IF EXISTS idx_trades_symbol');
+      // Ensure indexes exist (created once, kept across imports). Previously they were DROPPED
+      // and REBUILT on every upload, which re-indexed the WHOLE trades table each time and got
+      // slower as data grew — unworkable at 180-day scale. Keep them; incremental inserts are fine.
+      await dbClient.query('CREATE INDEX IF NOT EXISTS idx_trades_ucc ON trades(ucc)');
+      await dbClient.query('CREATE INDEX IF NOT EXISTS idx_trades_date ON trades(trade_date)');
+      await dbClient.query('CREATE INDEX IF NOT EXISTS idx_trades_ucc_date ON trades(ucc, trade_date)');
+      await dbClient.query('CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(trading_symbol)');
 
       // 1. Bulk insert individual trades (TRADE_BATCH kept small to avoid param limit)
       for (let i = 0; i < tradeRows.length; i += TRADE_BATCH) {
@@ -342,12 +346,6 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
           VALUES ${values.join(',')}
         `, params);
       }
-
-      // Recreate indexes
-      await dbClient.query('CREATE INDEX idx_trades_ucc ON trades(ucc)');
-      await dbClient.query('CREATE INDEX idx_trades_date ON trades(trade_date)');
-      await dbClient.query('CREATE INDEX idx_trades_ucc_date ON trades(ucc, trade_date)');
-      await dbClient.query('CREATE INDEX idx_trades_symbol ON trades(trading_symbol)');
 
       // Delete raw trades older than 90 days (per document)
       await dbClient.query(`DELETE FROM trades WHERE trade_date < CURRENT_DATE - INTERVAL '90 days'`);
@@ -409,6 +407,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
             SUM(CASE WHEN UPPER(buy_sell) LIKE 'B%' THEN trade_qty    ELSE 0 END)::float AS bq,
             SUM(CASE WHEN UPPER(buy_sell) LIKE 'S%' THEN trade_qty    ELSE 0 END)::float AS sq
           FROM trades
+          WHERE trade_date = ANY($1::date[])
           GROUP BY ucc, trade_date, trading_symbol
         )
         SELECT
@@ -422,12 +421,15 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
           SUM(CASE WHEN ot IN ('CE','PE') THEN to_ ELSE 0 END) AS options_to,
           SUM(CASE WHEN ot = 'CE' THEN to_ ELSE 0 END) AS call_to,
           SUM(CASE WHEN ot = 'PE' THEN to_ ELSE 0 END) AS put_to,
-          SUM(CASE WHEN pt ILIKE '%CNC%' OR pt ILIKE '%DELIV%' THEN to_ ELSE 0 END) AS cnc_to,
-          SUM(CASE WHEN pt ILIKE '%MIS%' OR pt ILIKE '%INTRA%' THEN to_ ELSE 0 END) AS mis_to,
-          SUM(CASE WHEN pt NOT ILIKE '%CNC%' AND pt NOT ILIKE '%DELIV%'
-                    AND pt NOT ILIKE '%MIS%' AND pt NOT ILIKE '%INTRA%' THEN to_ ELSE 0 END) AS other_to,
-          SUM(CASE WHEN pt ILIKE '%CNC%' OR pt ILIKE '%DELIV%' THEN n ELSE 0 END)::int AS cnc_trades,
-          SUM(CASE WHEN pt ILIKE '%MIS%' OR pt ILIKE '%INTRA%' THEN n ELSE 0 END)::int AS mis_trades,
+          -- Delivery (CNC) vs Intraday (MIS) derived per symbol/day from matched buy vs sell:
+          --   matched qty = LEAST(buy_qty, sell_qty)  → intraday round-trip (both legs)
+          --   leftover (net position carried forward)  → delivery
+          -- Turnover splits the same way and always sums back to total turnover.
+          SUM((bv + sv) - LEAST(bq, sq) * ((CASE WHEN bq > 0 THEN bv / bq ELSE 0 END) + (CASE WHEN sq > 0 THEN sv / sq ELSE 0 END))) AS cnc_to,
+          SUM(LEAST(bq, sq) * ((CASE WHEN bq > 0 THEN bv / bq ELSE 0 END) + (CASE WHEN sq > 0 THEN sv / sq ELSE 0 END))) AS mis_to,
+          0::numeric AS other_to,
+          SUM(CASE WHEN LEAST(bq, sq) = 0 THEN n ELSE 0 END)::int AS cnc_trades,
+          SUM(CASE WHEN LEAST(bq, sq) > 0 THEN n ELSE 0 END)::int AS mis_trades,
           SUM(bv) AS buy_val, SUM(sv) AS sell_val, SUM(bq) AS buy_qty, SUM(sq) AS sell_qty,
           SUM(CASE WHEN bq > 0 AND sq > 0
                    THEN ((sv / NULLIF(sq,0)) - (bv / NULLIF(bq,0))) * LEAST(bq, sq)
@@ -447,7 +449,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
           buy_val = EXCLUDED.buy_val, sell_val = EXCLUDED.sell_val,
           buy_qty = EXCLUDED.buy_qty, sell_qty = EXCLUDED.sell_qty,
           realized_pnl = EXCLUDED.realized_pnl, symbols = EXCLUDED.symbols, updated_at = NOW()
-      `);
+      `, [Array.from(dates)]);
 
       // Roll the summary window: drop rows for dates that have aged out of the 90-day window.
       await dbClient.query(`DELETE FROM trade_summary_90d WHERE trade_date < CURRENT_DATE - INTERVAL '90 days'`);
