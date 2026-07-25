@@ -1312,13 +1312,18 @@ router.get('/rm-performance', auth, async (req, res) => {
                     THEN EXTRACT(YEAR FROM (SELECT MAX(trade_date) FROM daily_trades))::int
                     ELSE EXTRACT(YEAR FROM (SELECT MAX(trade_date) FROM daily_trades))::int - 1 END, 4, 1)`;
 
+    // ── Date range (#35 date-range filter) — the "MTD" revenue/turnover figures
+    // are scoped to the selected range (default = current month, same as before).
+    const rng = await resolveRange(req);
+    const fromD = rng.from, toD = rng.to;
+
     const rows = await pool.query(`
       WITH mtd AS (
         SELECT c.assigned_rm_id AS rm_id,
                SUM(dt.brokerage_earned) AS rev,
                SUM(dt.eq_cash_turnover + dt.eq_fo_turnover + dt.commodity_fo_turnover + dt.options_premium_turnover) AS turnover
         FROM clients c JOIN daily_trades dt ON dt.ucc = c.ucc
-        WHERE dt.trade_date >= date_trunc('month', (SELECT MAX(trade_date) FROM daily_trades)) AND c.assigned_rm_id IS NOT NULL
+        WHERE dt.trade_date::date BETWEEN $1 AND $2 AND c.assigned_rm_id IS NOT NULL
         GROUP BY c.assigned_rm_id
       ),
       ytd AS (
@@ -1344,7 +1349,7 @@ router.get('/rm-performance', auth, async (req, res) => {
       LEFT JOIN ytd ON ytd.rm_id = rm.id
       GROUP BY rm.id, rm.rm_name
       ORDER BY mtd_turnover DESC, clients DESC
-    `);
+    `, [fromD, toD]);
 
     const monthly = await pool.query(`
       SELECT to_char(dt.trade_date,'YYYY-MM') AS mon, rm.rm_name,
@@ -1355,6 +1360,14 @@ router.get('/rm-performance', auth, async (req, res) => {
 
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const mLabel = (m) => `${MON[+m.split('-')[1] - 1]} '${m.split('-')[0].slice(2)}`;
+    const fmtFull = (d) => { if (!d) return null; const dt = new Date(d); return `${dt.getUTCDate()} ${MON[dt.getUTCMonth()]} ${dt.getUTCFullYear()}`; };
+
+    // As-of date + trading days in the selected range (for the header + range label)
+    const latestTrade = await pool.query(`SELECT MAX(trade_date) d FROM daily_trades`);
+    const tdays = await pool.query(
+      `SELECT COUNT(DISTINCT trade_date)::int n FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2`,
+      [fromD, toD]
+    );
 
     const rmRows = rows.rows.map(r => ({
       rm_name: r.rm_name, clients: Number(r.clients), mtd_rev: Number(r.mtd_rev), mtd_turnover: Number(r.mtd_turnover),
@@ -1379,6 +1392,10 @@ router.get('/rm-performance', auth, async (req, res) => {
     const worst = rmRows.length > 1 ? rmRows[rmRows.length - 1] : null;
 
     res.json({
+      meta: {
+        as_of: fmtFull(latestTrade.rows[0]?.d),
+        range: rangeMeta(rng, tdays.rows[0]?.n),
+      },
       cards: {
         best_rm: best ? best.rm_name : '—', best_turnover: best ? best.mtd_turnover : 0,
         worst_rm: worst ? worst.rm_name : '—', worst_turnover: worst ? worst.mtd_turnover : 0,

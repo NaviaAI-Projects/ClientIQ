@@ -56,17 +56,21 @@ router.get('/rm', auth, async (req, res) => {
       return res.json({ my_clients: 0, my_leads: 0, interactions_30d: 0 });
     }
 
-    const [clients, leads, interactions] = await Promise.all([
+    const [clients, leads, interactions, asOf] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM clients WHERE assigned_rm_id = $1', [rmId]),
       pool.query("SELECT COUNT(*) FROM lead_pool WHERE assigned_to_rm = $1 AND status = 'assigned'", [rmId]),
       pool.query(`
         SELECT COUNT(*) FROM interactions
         WHERE rm_id = $1
         AND created_at >= NOW() - INTERVAL '30 days'
-      `, [req.user.id])
+      `, [req.user.id]),
+      // Latest date that actually has trade data (#12 "As of Date")
+      pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') AS d FROM daily_trades`)
     ]);
 
     res.json({
+      rm_name:          userName || 'RM',
+      data_as_of:       asOf.rows[0]?.d || null,
       my_clients:       parseInt(clients.rows[0].count),
       my_leads:         parseInt(leads.rows[0].count),
       interactions_30d: parseInt(interactions.rows[0].count)

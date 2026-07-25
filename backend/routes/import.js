@@ -66,6 +66,36 @@ const FILE_LABELS = {
   ledger: 'Ledger File', holdings: 'Holdings File', mtf: 'MTF File'
 };
 
+// The Ledger file carries no date inside it, so its ledger_date comes from the FILE NAME.
+// Expected format: DD-MM-YYYY somewhere in the name, separators - _ / or . (e.g.
+// "Ledger_17-07-2026.csv", "Base_Capital_17.07.2026.txt"). Returns 'YYYY-MM-DD' or null.
+function parseLedgerDateFromName(name) {
+  const s = String(name || '');
+  const m = s.match(/(\d{2})[-_/.](\d{2})[-_/.](\d{4})/);
+  if (!m) return null;
+  const dd = parseInt(m[1], 10), mm = parseInt(m[2], 10), yyyy = parseInt(m[3], 10);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+  const iso = `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+  const d = new Date(iso + 'T00:00:00Z');           // reject impossible dates like 31-02-2026
+  if (isNaN(d.getTime()) || d.getUTCDate() !== dd) return null;
+  return iso;
+}
+
+// The Holdings file carries no date inside it, so its holding_date comes from the FILE NAME.
+// Expected format: DDMMYYYY (8 digits, separators - _ / or . optional) somewhere in the name,
+// e.g. "SYMPHONY_colISIN_19052026.csv" → 19 May 2026. Returns 'YYYY-MM-DD' or null.
+function parseHoldingDateFromName(name) {
+  const s = String(name || '');
+  const m = s.match(/(\d{2})[-_/.]?(\d{2})[-_/.]?(\d{4})/);
+  if (!m) return null;
+  const dd = parseInt(m[1], 10), mm = parseInt(m[2], 10), yyyy = parseInt(m[3], 10);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+  const iso = `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+  const d = new Date(iso + 'T00:00:00Z');           // reject impossible dates like 31022026
+  if (isNaN(d.getTime()) || d.getUTCDate() !== dd) return null;
+  return iso;
+}
+
 // Trade slots → the exchange + segment their file must carry inside (Xchg / Sgmt columns).
 const TRADE_SLOTS = {
   nse_cm: { xchg: 'NSE', sgmt: 'CM' }, bse_cm: { xchg: 'BSE', sgmt: 'CM' },
@@ -147,6 +177,34 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     return res.status(400).json({ message: 'Invalid file format — please upload the correct format for this file type.', detail: fmt.detail });
   }
 
+  // ── Ledger date comes from the FILE NAME (DD-MM-YYYY), not the upload day ──
+  // Parsed up-front so the same-date duplicate check and stored ledger_date both use it.
+  // No parseable date → reject, so a mis-named file can never be silently mis-dated.
+  let ledgerFileDate = null;
+  if (file_type === 'ledger') {
+    ledgerFileDate = parseLedgerDateFromName(req.file.originalname);
+    if (!ledgerFileDate) {
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        message: 'Invalid file format — please upload the correct format for this file type.',
+        detail: 'The Ledger filename must contain the ledger date in DD-MM-YYYY format (e.g. Ledger_17-07-2026.csv). Rename the file with its date and re-upload.'
+      });
+    }
+  }
+
+  // ── Holdings date comes from the FILE NAME (DDMMYYYY), not the upload day ──
+  let holdingFileDate = null;
+  if (file_type === 'holdings') {
+    holdingFileDate = parseHoldingDateFromName(req.file.originalname);
+    if (!holdingFileDate) {
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.status(400).json({
+        message: 'Invalid file format — please upload the correct format for this file type.',
+        detail: 'The Holdings filename must contain the holding date in DDMMYYYY format (e.g. SYMPHONY_colISIN_19052026.csv). Rename the file with its date and re-upload.'
+      });
+    }
+  }
+
   // ── Duplicate pre-check ───────────────────────────────────────
   // Warn (HTTP 409) if this file/data was already imported, unless the user chose to overwrite.
   // Client Master → conflict on ANY prior client_master import (it's a full-base replace).
@@ -154,9 +212,11 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
   // Trade & Brokerage carry a real trade date INSIDE the file, so they are duplicate-
   // checked AFTER parsing, by that date (see the check just before COMMIT below):
   // a different trade date uploads freely, only the same date already loaded is blocked.
-  // Snapshot files (client master, ledger, holdings, mtf) have no per-file date, so they
-  // are checked here by upload day.
-  if (!overwrite && !['nse_cm', 'bse_cm', 'nse_fo', 'bse_fo', 'mcx', 'brokerage'].includes(file_type)) {
+  // Ledger and Holdings carry their date in the FILE NAME, so they are duplicate-checked by
+  // that date AFTER parsing (with the Trade/Brokerage block below), not here by upload day.
+  // The remaining snapshot files (client master, mtf) have no date at all and are checked
+  // here by upload day.
+  if (!overwrite && !['nse_cm', 'bse_cm', 'nse_fo', 'bse_fo', 'mcx', 'brokerage', 'ledger', 'holdings'].includes(file_type)) {
     try {
       const dup = await pool.query(
         `SELECT file_name, created_at, records_processed FROM import_log
@@ -596,7 +656,8 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
     // stored as the client's balance/float (daily_ledger.opening_balance) so every
     // existing float-income calculation keeps working unchanged.
     else if (file_type === 'ledger') {
-      const today = new Date().toISOString().split('T')[0];
+      const today = ledgerFileDate;          // ledger_date comes from the file name (parsed above)
+      dataDate    = ledgerFileDate;          // record it as the file's date (audit log + duplicate check)
       const raw   = fs.readFileSync(req.file.path, 'utf8');
       const lines = raw.split('\n').map(l => l.replace(/\r$/, '')).filter(l => l.trim().length > 0);
 
@@ -641,7 +702,8 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
     // ── HOLDINGS FILE ─────────────────────────────────────
     else if (file_type === 'holdings') {
-      const today    = new Date().toISOString().split('T')[0];
+      const today    = holdingFileDate;      // holding_date comes from the file name (parsed above)
+      dataDate       = holdingFileDate;      // record it as the file's date (audit log + duplicate check)
       const holdings = {};
 
       // Holdings may arrive as a plain pipe-delimited text file, OR as a spreadsheet
@@ -777,10 +839,11 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       return res.json({ message: 'Bhavcopy not required — holdings file already contains computed values', processed: 0, failed: 0 });
     }
 
-    // ── Duplicate check for date-bearing files (Trade, Brokerage), by the file's REAL trade date ──
-    // A different trade date uploads normally; only the SAME date already imported is blocked
-    // (unless the user chose Replace). This runs post-parse because the date lives inside the file.
-    if (!overwrite && ['nse_cm', 'bse_cm', 'nse_fo', 'bse_fo', 'mcx', 'brokerage'].includes(file_type) && dataDate) {
+    // ── Duplicate check for date-bearing files (Trade, Brokerage, Ledger), by the file's REAL date ──
+    // Trade/Brokerage carry the date inside the file; Ledger carries it in the file name. Either way,
+    // a different date uploads normally; only the SAME date already imported is blocked (unless the
+    // user chose Replace). This runs post-parse so it can roll back the just-parsed rows.
+    if (!overwrite && ['nse_cm', 'bse_cm', 'nse_fo', 'bse_fo', 'mcx', 'brokerage', 'ledger', 'holdings'].includes(file_type) && dataDate) {
       await dbClient.query(`ALTER TABLE import_log ADD COLUMN IF NOT EXISTS trade_date DATE`);
       const dupd = await dbClient.query(
         `SELECT file_name, created_at, records_processed FROM import_log

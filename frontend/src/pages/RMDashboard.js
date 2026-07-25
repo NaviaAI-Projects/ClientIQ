@@ -40,7 +40,7 @@ const RMDashboard = () => {
     <div>
       <div className="ph">
         <h2>My dashboard</h2>
-        <p>{stats?.rm_name||'RM'} · {new Date().toLocaleDateString('en-IN',{month:'long',year:'numeric'})} · {stats?.my_clients||0} mapped clients · {stats?.my_leads||0} active leads</p>
+        <p>{stats?.rm_name||'RM'} · {new Date().toLocaleDateString('en-IN',{month:'long',year:'numeric'})} · {stats?.my_clients||0} mapped clients · {stats?.my_leads||0} active leads{stats?.data_as_of ? ` · As of ${stats.data_as_of}` : ''}</p>
       </div>
 
       {(stats?.dormant_alerts||0) > 0 && (

@@ -38,6 +38,46 @@ export const InfoBtn = ({ text }) => {
   );
 };
 
+// ── Notes (methodology / caveats) button ────────────────────────
+// Distinct from InfoBtn: Info gives the short formula/definition; Notes
+// gives the longer "how to read this / assumptions / data caveats" write-up.
+// Point #25.
+export const NotesBtn = ({ text, title = 'Methodology & notes' }) => {
+  const [open, setOpen] = useState(false);
+  if (!text) return null;
+  return (
+    <span style={{ position: 'relative', display: 'inline-block', marginLeft: 6 }}>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        aria-label="Notes"
+        title={title}
+        style={{
+          cursor: 'pointer', border: '1px solid var(--br2, #cbd5e1)',
+          background: 'var(--card, #fff)', color: 'var(--tx2, #475569)',
+          borderRadius: 4, height: 16, lineHeight: '14px', padding: '0 5px',
+          fontSize: 10, fontWeight: 700, verticalAlign: 'middle',
+        }}
+      >📝 Notes</button>
+      {open && (
+        <span
+          style={{
+            position: 'absolute', top: 22, left: 0, zIndex: 60, width: 300,
+            background: '#fff', border: '1px solid var(--br2, #cbd5e1)', borderRadius: 8,
+            boxShadow: '0 6px 22px rgba(0,0,0,0.14)', padding: '10px 12px',
+            fontSize: 11.5, lineHeight: 1.55, color: 'var(--tx2, #334155)',
+            fontWeight: 400, whiteSpace: 'pre-line', textAlign: 'left',
+          }}
+        >
+          <div style={{ fontWeight: 700, marginBottom: 4, color: 'var(--tx1, #1e293b)' }}>{title}</div>
+          {text}
+        </span>
+      )}
+    </span>
+  );
+};
+
 // ── Date range filter ───────────────────────────────────────────
 // Presets (relative to the data's latest date) + custom from/to.
 // Emits a value object: { key: 'month'|'30d'|'3m'|'all'|'custom', from, to }.

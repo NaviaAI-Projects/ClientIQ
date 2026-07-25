@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import api from '../api';
+import { InfoBtn, NotesBtn, DateRange, rangeParams } from '../components/ui';
 
 const rupee = (n) => {
   const v = Number(n) || 0;
@@ -14,35 +15,44 @@ const RMPerformance = () => {
   const [data, setData]   = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [range, setRange] = useState({ key: 'month' });
 
   useEffect(() => {
-    api.get('/analytics/rm-performance')
+    if (range.key === 'custom' && !(range.from && range.to)) return; // wait for both custom dates
+    setLoading(true);
+    api.get('/analytics/rm-performance', { params: rangeParams(range) })
       .then(res => setData(res.data))
       .catch(() => setError('Could not load RM performance.'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [range]);
 
-  if (loading) return <div className="ph"><h2>RM performance</h2><p>Loading…</p></div>;
+  if (loading && !data) return <div className="ph"><h2>RM performance</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>RM performance</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { cards, rm_names, chart, rows } = data;
+  const { meta, cards, rm_names, chart, rows } = data;
+  const rangeLbl = meta && meta.range && meta.range.from ? `${meta.range.from} – ${meta.range.to}` : 'selected range';
 
   return (
     <div>
       <div className="ph">
         <h2>RM performance</h2>
-        <p>Cross-RM analysis — revenue, lead conversion, client growth, activity</p>
+        <p>Cross-RM analysis — revenue, lead conversion, client growth, activity{meta && meta.as_of ? ` · As of ${meta.as_of}` : ''}</p>
       </div>
 
+      <DateRange value={range} onChange={setRange} bounds={meta && meta.range ? { min: meta.range.data_min, max: meta.range.data_max } : undefined} active={meta && meta.range} />
+      {loading && <div style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 8 }}>Updating…</div>}
+
       <div className="cards">
-        <div className="card cs"><div className="clbl">Best performing MTD</div><div className="cval">{cards.best_rm}</div><div className="csub">{rupee(cards.best_turnover)} turnover</div></div>
-        <div className="card cw"><div className="clbl">Needs attention</div><div className="cval">{cards.worst_rm}</div><div className="csub">{rupee(cards.worst_turnover)} turnover</div></div>
-        <div className="card ci"><div className="clbl">Team MTD revenue</div><div className="cval">{rupee(cards.team_rev)}</div><div className="csub">Brokerage-based</div></div>
-        <div className="card cp"><div className="clbl">Leads converted MTD</div><div className="cval">{cards.team_converted}</div></div>
+        <div className="card cs"><div className="clbl">Best performing</div><div className="cval">{cards.best_rm}</div><div className="csub">{rupee(cards.best_turnover)} turnover · {rangeLbl}</div></div>
+        <div className="card cw"><div className="clbl">Needs attention</div><div className="cval">{cards.worst_rm}</div><div className="csub">{rupee(cards.worst_turnover)} turnover · {rangeLbl}</div></div>
+        <div className="card ci"><div className="clbl">Team revenue</div><div className="cval">{rupee(cards.team_rev)}</div><div className="csub">Brokerage-based · {rangeLbl}</div></div>
+        <div className="card cp"><div className="clbl">Leads converted</div><div className="cval">{cards.team_converted}</div><div className="csub">Cumulative (all-time)</div></div>
       </div>
 
       <div className="panel">
-        <div className="ptitle">📊 RM revenue comparison (5 months)</div>
+        <div className="ptitle">📊 RM revenue comparison (5 months)
+          <InfoBtn text="Monthly client turnover per RM (₹Cr) over the last few months, as an activity proxy for revenue. Independent of the date-range filter above." />
+          <NotesBtn text={"Bars show each RM's total client turnover per calendar month (₹ crore), not brokerage — brokerage revenue is thin until the brokerage file is imported.\n\nThis 5-month trend is fixed and does NOT change with the date-range filter; the filter drives the KPI cards and the detailed table below.\n\nTurnover = EQ cash + EQ F&O + commodity F&O + options premium, summed across the RM's mapped clients."} /></div>
         <ResponsiveContainer width="100%" height={220}>
           <BarChart data={chart} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
@@ -56,9 +66,11 @@ const RMPerformance = () => {
       </div>
 
       <div className="panel">
-        <div className="ptitle">📋 Detailed comparison</div>
+        <div className="ptitle">📋 Detailed comparison
+          <InfoBtn text="Per-RM breakdown. The 'Rev (range)' column reflects the date-range filter above; 'YTD Rev' is fiscal-year-to-date and is not affected by the filter." />
+          <NotesBtn text={"Rev (range) = brokerage earned by each RM's mapped clients over the selected date range (default: current month).\n\nYTD Rev = brokerage since 1 April of the current financial year — always fiscal-YTD, independent of the range filter.\n\nConv% = converted ÷ leads. Target% shows '—' until per-RM revenue targets are configured. Churn alerts = mapped clients with an AI churn-risk score ≥ 60."} /></div>
         <div className="tw"><table>
-          <thead><tr><th>RM</th><th>Clients</th><th>MTD Rev</th><th>Target%</th><th>YTD Rev</th><th>Leads</th><th>Converted</th><th>Conv%</th><th>Interactions</th><th>Churn alerts</th></tr></thead>
+          <thead><tr><th>RM</th><th>Clients</th><th>Rev (range)</th><th>Target%</th><th>YTD Rev</th><th>Leads</th><th>Converted</th><th>Conv%</th><th>Interactions</th><th>Churn alerts</th></tr></thead>
           <tbody>
             {rows.map(r => (
               <tr key={r.rm_name}>
