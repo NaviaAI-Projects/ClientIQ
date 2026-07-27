@@ -10,10 +10,16 @@ const AuditLog = () => {
   const [loading, setLoading] = useState(true);
   const [cat, setCat]         = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
+  const [from, setFrom]       = useState('');
+  const [to, setTo]           = useState('');
 
   useEffect(() => {
-    api.get('/audit-log?limit=300').then(r => setLogs(r.data || [])).catch(console.error).finally(() => setLoading(false));
-  }, []);
+    setLoading(true);
+    const q = new URLSearchParams({ limit: '300' });
+    if (from) q.set('from', from);
+    if (to)   q.set('to', to);
+    api.get('/audit-log?' + q.toString()).then(r => setLogs(r.data || [])).catch(console.error).finally(() => setLoading(false));
+  }, [from, to]);
 
   const counts = {
     all: logs.length,
@@ -52,6 +58,14 @@ const AuditLog = () => {
             </select>
           </>
         )}
+        <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--tx3)', fontWeight: 600 }}>Date:</span>
+        <input type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)}
+          style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--br2, #cbd5e1)', color: 'var(--tx2, #334155)' }} />
+        <span style={{ fontSize: 11, color: 'var(--tx3)' }}>to</span>
+        <input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)}
+          style={{ fontSize: 12, padding: '4px 8px', borderRadius: 6, border: '1px solid var(--br2, #cbd5e1)', color: 'var(--tx2, #334155)' }} />
+        {(from || to) && <button type="button" onClick={() => { setFrom(''); setTo(''); }}
+          style={{ cursor: 'pointer', border: '1px solid var(--br2, #cbd5e1)', background: 'var(--card, #fff)', color: 'var(--tx2, #475569)', borderRadius: 6, fontSize: 12, fontWeight: 600, padding: '4px 10px' }}>Clear</button>}
       </div>
 
       <div className="panel">

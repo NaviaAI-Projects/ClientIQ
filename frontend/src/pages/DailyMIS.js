@@ -94,7 +94,7 @@ const DailyMIS = () => {
             <thead><tr><th>Metric</th><th>Today</th><th>MTD avg</th><th>Prior 3M avg</th></tr></thead>
             <tbody>
               <tr><td>Net MTF funding (₹Cr)</td><td>{(mtf.funding / 1e7).toFixed(2)}</td><td>{(mtf.funding / 1e7).toFixed(2)}</td><td>—</td></tr>
-              <tr><td>MTF interest earned (₹)</td><td>{inr(mtf.daily_interest)}</td><td>{inr(mtf.daily_interest)}</td><td>—</td></tr>
+              <tr><td>MTF interest earned (₹)</td><td>{inr(mtf.daily_interest)}</td><td>{inr(mtf.mtd_interest)}</td><td>—</td></tr>
               <tr><td>MTF clients</td><td>{mtf.clients.toLocaleString('en-IN')}</td><td>{mtf.clients.toLocaleString('en-IN')}</td><td>—</td></tr>
               <tr><td>Avg book per client (₹L)</td><td>{(mtf.avg_per_client / 1e5).toFixed(2)}</td><td>{(mtf.avg_per_client / 1e5).toFixed(2)}</td><td>—</td></tr>
             </tbody>

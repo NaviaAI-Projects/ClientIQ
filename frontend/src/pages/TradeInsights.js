@@ -21,6 +21,15 @@ const C = {
   gc:     'rgba(0,0,0,0.07)',
 };
 
+// Shared, high-contrast tooltip styling so hover values are always legible.
+// (Series colours are faint 13%-opacity pastels, which recharts otherwise
+//  reuses for the tooltip text — making the numbers nearly invisible.)
+const TT_CONTENT = { fontSize: '12px', background: '#ffffff', border: '1px solid #cbd5e1', borderRadius: '8px', boxShadow: '0 6px 22px rgba(0,0,0,0.16)', color: '#1e293b' };
+// No `color` here on purpose: each value keeps its own series colour (calls=blue, puts=purple,
+// etc.) so the tooltip shows the colour difference — just bold, on a solid card, so it's legible.
+const TT_ITEM    = { fontWeight: 700 };
+const TT_LABEL   = { color: '#1e293b', fontWeight: 700 };
+
 const FMT = v => {
   const n = parseFloat(v) || 0;
   const prefix = n < 0 ? '–₹' : '₹';
@@ -344,14 +353,14 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           {/* Section header */}
           <div style={{ marginBottom: '22px' }}>
             <h2 style={{ fontFamily: 'inherit', fontSize: '22px', fontWeight: '800', color: 'var(--tx)', marginBottom: '4px', letterSpacing: '-0.4px' }}>Your trading snapshot</h2>
-            <p style={{ fontSize: '12.5px', color: 'var(--tx3)', fontFamily: 'monospace' }}>{data.trade_days}-day overview · Options & Equity · NSE / NFO</p>
+            <p style={{ fontSize: '12.5px', color: 'var(--tx3)', fontFamily: 'monospace' }}>{data.trade_days}-day overview · {(data.segments && data.segments.length ? data.segments.join(' · ') : 'Equity & derivatives')}</p>
           </div>
 
           {/* KPI cards */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px', marginBottom: '18px' }}>
-            <Card label="Net P&L (Options)"     value={FMTP(summary.net_pnl)}      sub={`${summary.pnl_pct >= 0 ? '+' : ''}${summary.pnl_pct}% on premium deployed`}  borderColor={C.green}  valueColor={summary.net_pnl >= 0 ? C.green : C.red} />
+            <Card label="Net P&L"               value={FMTP(summary.net_pnl)}      sub={`${summary.pnl_pct >= 0 ? '+' : ''}${summary.pnl_pct}% on turnover`}  borderColor={C.green}  valueColor={summary.net_pnl >= 0 ? C.green : C.red} />
             <Card label="Win rate"               value={summary.win_rate + '%'}     sub={`${summary.wins} wins · ${summary.losses} losses`}                              borderColor={C.blue}   valueColor={C.blue} />
-            <Card label="Premium turnover"       value={FMT(summary.premium_to)}    sub={`${summary.lots} lots · ${summary.trades} trades`}                              borderColor={C.amber}  valueColor={C.amber} />
+            <Card label={data.has_options ? "Premium turnover" : "Turnover"}       value={FMT(summary.premium_to)}    sub={`${(summary.lots || 0).toLocaleString('en-IN')} ${data.has_options ? 'lots' : 'qty'} · ${summary.trades} trades`}                              borderColor={C.amber}  valueColor={C.amber} />
             <Card label="Active trading days"    value={`${data.trade_days} / ${days}`}  sub={`${Math.round(data.trade_days/days*100)}% of available days`}                    borderColor={C.purple} valueColor={C.purple} />
           </div>
 
@@ -388,7 +397,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <CartesianGrid strokeDasharray="3 3" stroke={C.gc} />
                     <XAxis dataKey="day" tick={{ fontSize: 10, fontFamily: 'monospace' }} tickFormatter={v => `D${v}`} />
                     <YAxis tick={{ fontSize: 10, fontFamily: 'monospace' }} tickFormatter={v => '₹' + (v/1000).toFixed(0) + 'K'} />
-                    <Tooltip formatter={v => [FMT(v), 'Cumulative P&L']} contentStyle={{ fontSize: '12px' }} />
+                    <Tooltip formatter={v => [FMT(v), 'Cumulative P&L']} contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
                     <ReferenceLine y={0} stroke="rgba(0,0,0,0.1)" />
                     <Line type="monotone" dataKey="pnl" stroke={summary.net_pnl >= 0 ? C.green : C.red} fill={summary.net_pnl >= 0 ? C.green2 : C.red2} dot={false} strokeWidth={2} />
                   </LineChart>
@@ -403,7 +412,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <CartesianGrid strokeDasharray="3 3" stroke={C.gc} />
                     <XAxis dataKey="week" tick={{ fontSize: 9, fontFamily: 'monospace' }} />
                     <YAxis tick={{ fontSize: 10, fontFamily: 'monospace' }} tickFormatter={v => '₹' + (v/1000).toFixed(0) + 'K'} />
-                    <Tooltip formatter={v => [FMT(v), 'P&L']} contentStyle={{ fontSize: '12px' }} />
+                    <Tooltip formatter={v => [FMT(v), 'P&L']} contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
                     <ReferenceLine y={0} stroke="rgba(0,0,0,0.1)" />
                     <Bar dataKey="pnl" radius={[4,4,0,0]}>
                       {(summary.weekly_pnl || []).map((e, i) => (
@@ -426,7 +435,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                         <Cell key={i} fill={[C.blue, C.purple, C.amber, C.green][i % 4]} />
                       ))}
                     </Pie>
-                    <Tooltip formatter={v => [v + '%']} />
+                    <Tooltip formatter={v => [v + '%']} contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
                     <Legend wrapperStyle={{ fontSize: '11px', fontFamily: 'monospace' }} iconSize={10} />
                   </PieChart>
                 </ResponsiveContainer>
@@ -490,6 +499,14 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             <p style={{ fontSize: '12.5px', color: 'var(--tx3)', fontFamily: 'monospace' }}>Strike selection · Call/Put bias · Expiry behaviour · Holding duration</p>
           </div>
 
+          {!data.has_options ? (
+            <Panel title="Options trading insights" sub="Call/Put, strike, expiry and holding-duration analytics apply only to options trades">
+              <div style={{ padding: '24px 12px', textAlign: 'center', color: 'var(--tx3)', fontSize: '13px', lineHeight: 1.6 }}>
+                No options activity in the selected period. This client traded {(data.segments && data.segments.length ? data.segments.join(', ') : 'equity cash')} only — options-specific insights don't apply here.
+              </div>
+            </Panel>
+          ) : (
+          <>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px', marginBottom: '18px' }}>
             <Card label="Options win rate"      value={options_stats.win_rate + '%'}      sub={`${options_stats.wins}W · ${options_stats.losses}L over ${data.trade_days} days`}   borderColor={C.blue}   valueColor={C.blue} />
             <Card label="Call vs Put split"     value={options_stats.call_pct + '% Calls'} sub={`${options_stats.call_pct >= 50 ? 'Bullish' : 'Bearish'} bias · ${100-options_stats.call_pct}% Puts`} borderColor={C.amber} valueColor={C.amber} />
@@ -499,6 +516,11 @@ const TradeInsights = ({ ucc, clientName, token }) => {
 
           {/* Strike selection table */}
           <Panel title="Strike selection — win rate & P&L by moneyness" sub="Where your trades happened and how they actually performed">
+            {(!options_stats.strike_table || options_stats.strike_table.length === 0) ? (
+              <div style={{ padding: '18px 12px', color: 'var(--tx3)', fontSize: '12.5px', lineHeight: 1.6 }}>
+                Not available — moneyness (ITM / ATM / OTM) needs each option's underlying spot price at the time of the trade, which isn't included in the trade feed.
+              </div>
+            ) : (
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                 <thead>
@@ -522,6 +544,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                 </tbody>
               </table>
             </div>
+            )}
           </Panel>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
@@ -532,10 +555,10 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <CartesianGrid strokeDasharray="3 3" stroke={C.gc} />
                     <XAxis dataKey="month" tick={{ fontSize: 10, fontFamily: 'monospace' }} />
                     <YAxis tick={{ fontSize: 10, fontFamily: 'monospace' }} tickFormatter={v => '₹' + (v/1000).toFixed(0) + 'K'} />
-                    <Tooltip formatter={v => [FMT(v)]} contentStyle={{ fontSize: '12px' }} />
+                    <Tooltip formatter={v => [FMT(v)]} contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
                     <Legend wrapperStyle={{ fontSize: '11px' }} />
-                    <Bar dataKey="calls" name="Calls P&L" fill={C.blue2}  stroke={C.blue}   strokeWidth={1} radius={[3,3,0,0]} />
-                    <Bar dataKey="puts"  name="Puts P&L"  fill={C.purp2}  stroke={C.purple} strokeWidth={1} radius={[3,3,0,0]} />
+                    <Bar dataKey="calls" name="Calls P&L" fill={C.blue} fillOpacity={0.15}  stroke={C.blue}   strokeWidth={1} radius={[3,3,0,0]} />
+                    <Bar dataKey="puts"  name="Puts P&L"  fill={C.purple} fillOpacity={0.15}  stroke={C.purple} strokeWidth={1} radius={[3,3,0,0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -563,10 +586,10 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <CartesianGrid strokeDasharray="3 3" stroke={C.gc} />
                     <XAxis dataKey="metric" tick={{ fontSize: 10, fontFamily: 'monospace' }} />
                     <YAxis tick={{ fontSize: 10, fontFamily: 'monospace' }} />
-                    <Tooltip contentStyle={{ fontSize: '12px' }} />
+                    <Tooltip contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
                     <Legend wrapperStyle={{ fontSize: '11px' }} />
-                    <Bar dataKey="expiry" name="Expiry days"     fill={C.amber2} stroke={C.amber} strokeWidth={1} radius={[3,3,0,0]} />
-                    <Bar dataKey="normal" name="Non-expiry days" fill={C.blue2}  stroke={C.blue}  strokeWidth={1} radius={[3,3,0,0]} />
+                    <Bar dataKey="expiry" name="Expiry days"     fill={C.amber} fillOpacity={0.15} stroke={C.amber} strokeWidth={1} radius={[3,3,0,0]} />
+                    <Bar dataKey="normal" name="Non-expiry days" fill={C.blue} fillOpacity={0.15}  stroke={C.blue}  strokeWidth={1} radius={[3,3,0,0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
@@ -608,6 +631,8 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               </table>
             </div>
           </Panel>
+          </>
+          )}
         </>
       )}
 
@@ -628,46 +653,47 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <XAxis dataKey="day" tick={{ fontSize: 10, fontFamily: 'monospace' }} />
                    <YAxis yAxisId="left"  tick={{ fontSize: 10, fontFamily: 'monospace' }} tickFormatter={v => v + '%'} domain={[0, Math.max(100, ...(patterns.dow || []).map(d => d.win_rate))]} />
                     <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} tickFormatter={v => '₹' + (v/1000).toFixed(0) + 'K'} />
-                    <Tooltip contentStyle={{ fontSize: '12px' }} />
+                    <Tooltip contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
                     <Legend wrapperStyle={{ fontSize: '11px' }} />
-                    <Bar  yAxisId="left"  dataKey="win_rate" name="Win rate %" fill={C.blue2} stroke={C.blue} strokeWidth={1.5} radius={[3,3,0,0]} />
+                    <Bar  yAxisId="left"  dataKey="win_rate" name="Win rate %" fill={C.blue} fillOpacity={0.15} stroke={C.blue} strokeWidth={1.5} radius={[3,3,0,0]} />
                     <Line yAxisId="right" type="monotone" dataKey="avg_pnl" name="Avg P&L ₹" stroke={C.green} fill={C.green2} strokeWidth={2} dot={{ r: 4 }} />
                   </ComposedChart>
                 </ResponsiveContainer>
               </div>
             </Panel>
 
-            <Panel title="Time-of-day performance" sub="Avg P&L per trade by market hour">
+            <Panel title="Time-of-day performance" sub="Trade activity by market hour">
+              {(!patterns.tod || patterns.tod.length === 0) ? (
+                <div style={{ height: '224px', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: 'var(--tx3)', fontSize: '13px', lineHeight: 1.6, padding: '0 24px' }}>
+                  Execution times aren't recorded for these trades yet.<br />
+                  This fills in as newer trade files (which carry the trade time) are uploaded.
+                </div>
+              ) : (
+              <>
               <div style={{ height: '224px' }}>
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={patterns.tod || []} margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
+                  <BarChart data={patterns.tod} margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke={C.gc} />
                     <XAxis dataKey="time" tick={{ fontSize: 9, fontFamily: 'monospace' }} />
-                    <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v} />
-                    <Tooltip formatter={v => [FMT(v), 'Avg P&L']} contentStyle={{ fontSize: '12px' }} />
-                    <ReferenceLine y={0} stroke="rgba(0,0,0,0.1)" />
-                    <Line type="monotone" dataKey="avg_pnl" stroke={C.purple} fill={C.purp2} strokeWidth={2} dot={{ r: 3 }} />
-                  </LineChart>
+                    <YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                    <Tooltip formatter={(v, n) => [n === 'turnover' ? FMT(v) : v, n === 'turnover' ? 'Turnover' : 'Trades']} contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
+                    <Bar dataKey="trades" name="Trades" fill={C.purple} fillOpacity={0.15} stroke={C.purple} strokeWidth={1} radius={[3, 3, 0, 0]} />
+                  </BarChart>
                 </ResponsiveContainer>
               </div>
               <div style={{ display: 'flex', gap: '10px', marginTop: '12px', flexWrap: 'wrap' }}>
                 {(() => {
-                  const tod = patterns.tod || [];
-                  if (tod.length === 0) return null;
-                  const best   = tod.reduce((a, b) => a.avg_pnl > b.avg_pnl ? a : b, tod[0]);
-                  const worst  = tod.reduce((a, b) => a.avg_pnl < b.avg_pnl ? a : b, tod[0]);
+                  const tod = patterns.tod;
+                  const busiest = tod.reduce((a, b) => b.trades > a.trades ? b : a, tod[0]);
                   return (
-                    <>
-                      <div style={{ padding: '7px 14px', borderRadius: '8px', background: C.green2, border: `1px solid rgba(38,201,126,.2)`, fontSize: '12px', fontWeight: '600', color: C.green }}>
-                        Best: {best.time} (₹{best.avg_pnl.toLocaleString('en-IN')} avg)
-                      </div>
-                      <div style={{ padding: '7px 14px', borderRadius: '8px', background: C.red2, border: `1px solid rgba(240,57,78,.2)`, fontSize: '12px', fontWeight: '600', color: C.red }}>
-                        Weakest: {worst.time} (₹{worst.avg_pnl.toLocaleString('en-IN')} avg)
-                      </div>
-                    </>
+                    <div style={{ padding: '7px 14px', borderRadius: '8px', background: C.green2, border: `1px solid rgba(38,201,126,.2)`, fontSize: '12px', fontWeight: '600', color: C.green }}>
+                      Most active: {busiest.time} ({busiest.trades} trades)
+                    </div>
                   );
                 })()}
               </div>
+              </>
+              )}
             </Panel>
           </div>
 
@@ -679,7 +705,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <CartesianGrid strokeDasharray="3 3" stroke={C.gc} />
                     <XAxis dataKey="label" tick={{ fontSize: 9, fontFamily: 'monospace' }} />
                     <YAxis tick={{ fontSize: 10 }} />
-                    <Tooltip formatter={v => [v.toFixed(1) + ' lots']} contentStyle={{ fontSize: '12px' }} />
+                    <Tooltip formatter={v => [v.toFixed(1) + ' lots']} contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
                     <Bar dataKey="lots" name="Avg lots" radius={[4,4,0,0]}>
                       {(patterns.lot_sizing || []).map((e, i) => (
                         <Cell key={i} fill={e.label?.includes('loss') ? 'rgba(240,57,78,0.75)' : e.label?.includes('win') ? 'rgba(38,201,126,0.75)' : 'rgba(74,143,245,0.75)'} />
@@ -703,7 +729,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <CartesianGrid strokeDasharray="3 3" stroke={C.gc} />
                     <XAxis dataKey="month" tick={{ fontSize: 10, fontFamily: 'monospace' }} />
                     <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + (v/1000).toFixed(0) + 'K'} />
-                    <Tooltip formatter={v => [FMT(v)]} contentStyle={{ fontSize: '12px' }} />
+                    <Tooltip formatter={v => [FMT(v)]} contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
                     <Legend wrapperStyle={{ fontSize: '11px' }} />
                     <ReferenceLine y={0} stroke="rgba(0,0,0,0.1)" />
                     <Bar dataKey="gross_profit" name="Gross profit" stackId="s" fill="rgba(38,201,126,0.7)" radius={[3,3,0,0]} />
@@ -851,9 +877,9 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                   <XAxis dataKey="month" tick={{ fontSize: 10, fontFamily: 'monospace' }} />
                   <YAxis yAxisId="left"  tick={{ fontSize: 10 }} tickFormatter={v => '₹' + (v/1000).toFixed(0) + 'K'} />
                   <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} tickFormatter={v => v + '%'} domain={[40, 80]} />
-                  <Tooltip contentStyle={{ fontSize: '12px' }} />
+                  <Tooltip contentStyle={TT_CONTENT} itemStyle={TT_ITEM} labelStyle={TT_LABEL} />
                   <Legend wrapperStyle={{ fontSize: '11px' }} />
-                  <Bar  yAxisId="left"  dataKey="net_pnl"  name="Net P&L"    fill={C.blue2} stroke={C.blue} strokeWidth={1} radius={[4,4,0,0]} />
+                  <Bar  yAxisId="left"  dataKey="net_pnl"  name="Net P&L"    fill={C.blue} fillOpacity={0.15} stroke={C.blue} strokeWidth={1} radius={[4,4,0,0]} />
                   <Line yAxisId="right" dataKey="win_rate" name="Win rate %"  type="monotone" stroke={C.green} fill={C.green2} strokeWidth={2} dot={{ r: 4 }} />
                 </ComposedChart>
               </ResponsiveContainer>

@@ -66,14 +66,18 @@ const FILE_LABELS = {
   ledger: 'Ledger File', holdings: 'Holdings File', mtf: 'MTF File'
 };
 
-// The Ledger file carries no date inside it, so its ledger_date comes from the FILE NAME.
-// Expected format: DD-MM-YYYY somewhere in the name, separators - _ / or . (e.g.
-// "Ledger_17-07-2026.csv", "Base_Capital_17.07.2026.txt"). Returns 'YYYY-MM-DD' or null.
+// The Ledger date comes from the FILE NAME. Accepts, in order:
+//   DD-MM-YYYY (any of - _ / . separators)  e.g. "Ledger_17-07-2026.csv"
+//   DDMMYYYY   (8 digits)                    e.g. "Ledger_17072026.xlsx"
+//   DDMMYY     (6 digits, 20YY)              e.g. "SUBTRIAL_270726_1.xlsx" → 27 Jul 2026
+// Returns 'YYYY-MM-DD' or null.
 function parseLedgerDateFromName(name) {
   const s = String(name || '');
-  const m = s.match(/(\d{2})[-_/.](\d{2})[-_/.](\d{4})/);
-  if (!m) return null;
-  const dd = parseInt(m[1], 10), mm = parseInt(m[2], 10), yyyy = parseInt(m[3], 10);
+  let dd, mm, yyyy, m;
+  if ((m = s.match(/(\d{2})[-_/.](\d{2})[-_/.](\d{4})/)))                { dd = +m[1]; mm = +m[2]; yyyy = +m[3]; }
+  else if ((m = s.match(/(?<!\d)(\d{2})(\d{2})(\d{4})(?!\d)/)))          { dd = +m[1]; mm = +m[2]; yyyy = +m[3]; }
+  else if ((m = s.match(/(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)/)))          { dd = +m[1]; mm = +m[2]; yyyy = 2000 + +m[3]; }
+  else return null;
   if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
   const iso = `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
   const d = new Date(iso + 'T00:00:00Z');           // reject impossible dates like 31-02-2026
@@ -112,6 +116,15 @@ function validateFileFormat(file_type, filePath, originalname) {
   try {
     // Pipe-delimited text types
     if (file_type === 'ledger' || file_type === 'holdings') {
+      // NEW Ledger format: xlsx trial-balance with a header row [UCC, Account Name, Closing Debit, Closing Credit].
+      if (file_type === 'ledger' && (fname.endsWith('.ods') || fname.endsWith('.xlsx') || fname.endsWith('.xls'))) {
+        const wb = XLSX.readFile(filePath); const sh = wb.Sheets[wb.SheetNames[0]];
+        const arr = XLSX.utils.sheet_to_json(sh, { header: 1, raw: false, defval: '' });
+        const hdr = (arr.find(r => Array.isArray(r) && norm(r[0]) === 'UCC') || []).map(c => norm(c));
+        const ok = hdr[0] === 'UCC' && hdr.some(c => c.startsWith('CLOSING'));
+        return ok ? { ok: true }
+                  : { ok: false, detail: 'Ledger (xlsx) must have a header row with columns: UCC, Account Name, Closing Debit, Closing Credit.' };
+      }
       let lines;
       if (file_type === 'holdings' && (fname.endsWith('.ods') || fname.endsWith('.xlsx') || fname.endsWith('.xls'))) {
         const wb = XLSX.readFile(filePath); const sh = wb.Sheets[wb.SheetNames[0]];
@@ -358,11 +371,17 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
           ? `${tkr} ${strike != null ? strike : ''}${ot}${expiry ? ' ' + expiry : ''}`.replace(/\s+/g, ' ').trim()
           : (expiry ? `${tkr} FUT ${expiry}`.trim() : tkr);
 
+        // Execution time-of-day from TradDtTm (col 31, e.g. "2026-07-16T12:03:00") → "HH:MM:SS".
+        // trans_time is a character-varying column, so we store the plain time string.
+        const rawDtTm   = String(row[30] ?? '').trim();
+        const timePart  = (rawDtTm.split(/[T ]/)[1] || '').slice(0, 8);
+        const transTime = /^\d{2}:\d{2}/.test(timePart) ? timePart : null;
+
         // One raw `trades` row per executed trade. Segment (CM/FO/CO) is stored in product_type. Columns:
         // (ucc, client_name, trade_date, trans_time, exchange, trading_symbol, instrument_name,
         //  buy_sell, trade_qty, trade_price, traded_value, product_type, order_type, option_type,
         //  strike_price, expiry_date, trade_id, order_no, pan_number)
-        tradeRows.push([ucc, '', tradeDate, null, exchange, symbol, instrName,
+        tradeRows.push([ucc, '', tradeDate, transTime, exchange, symbol, instrName,
           bs, qty, price, value, seg, null, ot, strike, expiry, null, null, null]);
 
         // Aggregate for daily_trades, split by segment.
@@ -650,36 +669,55 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       }
     }
 
-    // ── BASE CAPITAL FILE (replaces the old Ledger file) ──────────────
-    // Management format: SYMPHONY RMS LIMIT export — pipe-delimited text, NO header,
-    // 23 fields per row. col 0 = UCC, col 4 = base capital. The base-capital amount is
-    // stored as the client's balance/float (daily_ledger.opening_balance) so every
-    // existing float-income calculation keeps working unchanged.
+    // ── LEDGER FILE ───────────────────────────────────────────────────
+    // NEW format: xlsx "Subsidiary Trial Balance" — header row [UCC, Account Name,
+    // Closing Debit, Closing Credit]. Stored balance = Closing Credit − Closing Debit
+    // (net client ledger balance; matches the file's own "Net Closing Balance" footer).
+    // OLD format (kept as fallback): SYMPHONY RMS pipe-delimited text, 23 cols, col 4 = base capital.
+    // ledger_date comes from the file name (parsed above) either way.
     else if (file_type === 'ledger') {
       const today = ledgerFileDate;          // ledger_date comes from the file name (parsed above)
       dataDate    = ledgerFileDate;          // record it as the file's date (audit log + duplicate check)
-      const raw   = fs.readFileSync(req.file.path, 'utf8');
-      const lines = raw.split('\n').map(l => l.replace(/\r$/, '')).filter(l => l.trim().length > 0);
 
-      // ── Exact-format validation: pipe-delimited, exactly 23 fields, numeric UCC in col 0 ──
-      const sample    = lines.slice(0, 25);
-      const wrongCols = sample.length === 0 || sample.some(l => l.split('|').length !== 23);
-      const firstUcc  = lines[0] ? String(lines[0].split('|')[0]).trim() : '';
-      if (wrongCols || !firstUcc) {
-        throw new Error('FORMAT:Base Capital file must be pipe-delimited ( | ) with exactly 23 columns — UCC in column 1 and base capital in column 5.');
-      }
+      const lname  = (req.file.originalname || req.file.path || '').toLowerCase();
+      const isXlsx = lname.endsWith('.ods') || lname.endsWith('.xlsx') || lname.endsWith('.xls');
 
       const { rows: clientRows } = await dbClient.query('SELECT ucc FROM clients');
       const clientSet = new Set(clientRows.map(r => String(r.ucc).trim()));
-
       const ledgerMap = {};
-      for (const line of lines) {
-        const parts = line.split('|');
-        const ucc = String(parts[0] || '').trim();
-        if (!ucc) { failed++; continue; }   // UCC may be alphanumeric (BAA00110); only blank UCC is a real failure
-        if (!clientSet.has(ucc)) { skipped++; continue; }        // skip member / non-client ids (not a failure)
-        const baseCapital = parseFloat(parts[4]) || 0;           // col 4 = base capital
-        ledgerMap[ucc] = { ucc, balance: baseCapital, today };
+
+      if (isXlsx) {
+        const arr = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+        const hi  = arr.findIndex(r => Array.isArray(r) && String(r[0] ?? '').trim().toUpperCase() === 'UCC');
+        if (hi < 0) throw new Error('FORMAT:Ledger (xlsx) must have a header row with UCC, Account Name, Closing Debit, Closing Credit.');
+        const hdr    = arr[hi].map(c => String(c ?? '').replace(/[\r\n]+/g, ' ').replace(/_x000[dD]_/g, ' ').trim().toUpperCase());
+        const debCol = hdr.findIndex(c => c.startsWith('CLOSING') && c.includes('DEBIT'));
+        const creCol = hdr.findIndex(c => c.startsWith('CLOSING') && c.includes('CREDIT'));
+        const numOf  = (v) => parseFloat(String(v ?? '').replace(/,/g, '')) || 0;
+        for (let ri = hi + 1; ri < arr.length; ri++) {
+          const row = arr[ri]; if (!Array.isArray(row)) continue;
+          const ucc = String(row[0] ?? '').trim();
+          if (!ucc || ucc.toUpperCase() === 'CLIENTS') continue;                                  // separator / blank rows
+          if (/grand total|net closing balance/i.test(ucc + ' ' + String(row[1] ?? ''))) continue; // footer rows
+          if (!clientSet.has(ucc)) { skipped++; continue; }                                        // not a known client
+          ledgerMap[ucc] = { ucc, balance: numOf(row[creCol]) - numOf(row[debCol]), today };       // net = credit − debit
+        }
+      } else {
+        const raw   = fs.readFileSync(req.file.path, 'utf8');
+        const lines = raw.split('\n').map(l => l.replace(/\r$/, '')).filter(l => l.trim().length > 0);
+        const sample    = lines.slice(0, 25);
+        const wrongCols = sample.length === 0 || sample.some(l => l.split('|').length !== 23);
+        const firstUcc  = lines[0] ? String(lines[0].split('|')[0]).trim() : '';
+        if (wrongCols || !firstUcc) {
+          throw new Error('FORMAT:Base Capital file must be pipe-delimited ( | ) with exactly 23 columns — UCC in column 1 and base capital in column 5.');
+        }
+        for (const line of lines) {
+          const parts = line.split('|');
+          const ucc = String(parts[0] || '').trim();
+          if (!ucc) { failed++; continue; }   // UCC may be alphanumeric (BAA00110); only blank UCC is a real failure
+          if (!clientSet.has(ucc)) { skipped++; continue; }        // skip member / non-client ids (not a failure)
+          ledgerMap[ucc] = { ucc, balance: parseFloat(parts[4]) || 0, today };   // col 4 = base capital
+        }
       }
 
       const dedupedLedger = Object.values(ledgerMap);
@@ -901,11 +939,17 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
 router.get('/logs', auth, async (req, res) => {
   try {
+    const from = req.query.from || null, to = req.query.to || null;
+    const cond = [], params = [];
+    if (from) { params.push(from); cond.push(`il.created_at::date >= $${params.length}`); }
+    if (to)   { params.push(to);   cond.push(`il.created_at::date <= $${params.length}`); }
+    const where = cond.length ? 'WHERE ' + cond.join(' AND ') : '';
     const result = await pool.query(`
       SELECT il.*, u.name AS imported_by_name FROM import_log il
       LEFT JOIN users u ON il.imported_by = u.id
-      ORDER BY il.created_at DESC LIMIT 50
-    `);
+      ${where}
+      ORDER BY il.created_at DESC LIMIT 500
+    `, params);
     res.json(result.rows);
   } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
 });

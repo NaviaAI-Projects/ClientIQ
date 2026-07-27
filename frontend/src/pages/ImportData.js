@@ -4,11 +4,11 @@ import api from '../api';
 const FILE_CONFIGS = {
   client_master: { label: 'Client Master',  section: 'Client Master', icon: '👤', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',  step: 1, sample: 'client_master_sample.ods', keywords: ['clientmaster','client_master','clientmst'] },
 
-  // ── Trade — split by segment (Cash / F&O / MCX) ──
-  nse_cm: { label: 'NSE Cash', section: 'Trade · Cash Market', icon: '📈', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily', step: 2, sample: 'trade_nse_cm_sample.csv', keywords: ['tradensecm','nsecm'] },
-  bse_cm: { label: 'BSE Cash', section: 'Trade · Cash Market', icon: '📈', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily', step: 2, sample: 'trade_bse_cm_sample.csv', keywords: ['tradebsecm','bsecm'] },
-  nse_fo: { label: 'NSE F&O',  section: 'Trade · F&O',         icon: '📊', color: '#6D3B9E', bg: '#F0E9F8', freq: 'Daily', step: 2, sample: 'trade_nse_fo_sample.csv', keywords: ['tradensefo','nsefo'] },
-  bse_fo: { label: 'BSE F&O',  section: 'Trade · F&O',         icon: '📊', color: '#6D3B9E', bg: '#F0E9F8', freq: 'Daily', step: 2, sample: 'trade_bse_fo_sample.csv', keywords: ['tradebsefo','bsefo'] },
+  // ── Trade — grouped by exchange (NSE / BSE / MCX), each with its Cash + F&O file ──
+  nse_cm: { label: 'NSE Cash', section: 'Trade · NSE', icon: '📈', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily', step: 2, sample: 'trade_nse_cm_sample.csv', keywords: ['tradensecm','nsecm'] },
+  nse_fo: { label: 'NSE F&O',  section: 'Trade · NSE', icon: '📊', color: '#6D3B9E', bg: '#F0E9F8', freq: 'Daily', step: 2, sample: 'trade_nse_fo_sample.csv', keywords: ['tradensefo','nsefo'] },
+  bse_cm: { label: 'BSE Cash', section: 'Trade · BSE', icon: '📈', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily', step: 2, sample: 'trade_bse_cm_sample.csv', keywords: ['tradebsecm','bsecm'] },
+  bse_fo: { label: 'BSE F&O',  section: 'Trade · BSE', icon: '📊', color: '#6D3B9E', bg: '#F0E9F8', freq: 'Daily', step: 2, sample: 'trade_bse_fo_sample.csv', keywords: ['tradebsefo','bsefo'] },
   mcx:    { label: 'MCX',      section: 'Trade · MCX',         icon: '🛢️', color: '#9E5B1E', bg: '#FBEFE0', freq: 'Daily', step: 2, sample: 'trade_mcx_sample.csv',    keywords: ['trademcx','mcxco','mcx'] },
 
   brokerage:     { label: 'Brokerage File',  section: 'Other Files', icon: '🧾', color: '#854F0B', bg: '#FAEEDA', freq: 'Daily',  step: 3, sample: 'brokerage_sample.xlsx', keywords: ['brokerage','brokerge','brok'] },
@@ -18,7 +18,7 @@ const FILE_CONFIGS = {
 };
 
 // Ordered list of section names, used to group the individual upload cards.
-const SECTION_ORDER = ['Client Master', 'Trade · Cash Market', 'Trade · F&O', 'Trade · MCX', 'Other Files'];
+const SECTION_ORDER = ['Client Master', 'Trade · NSE', 'Trade · BSE', 'Trade · MCX', 'Other Files'];
 
 function detectType(filename) {
   const n = (filename || '').toLowerCase().replace(/[\s_\-.]+/g, '');
@@ -65,14 +65,19 @@ const ImportData = () => {
   const [rescoreMsg, setRescoreMsg] = useState(null);
   const [conflict, setConflict]     = useState(null);
   const [logFilter, setLogFilter]   = useState('');
+  const [logFrom, setLogFrom]       = useState('');
+  const [logTo, setLogTo]           = useState('');
   const [showAll, setShowAll]       = useState(false);
   const [dragOver, setDragOver]     = useState(false);
 
-  useEffect(() => { fetchLogs(); }, []);
+  useEffect(() => { fetchLogs(logFrom, logTo); }, [logFrom, logTo]);
 
-  const fetchLogs = async () => {
+  const fetchLogs = async (f = logFrom, t = logTo) => {
     try {
-      const res = await api.get('/import/logs');
+      const q = new URLSearchParams();
+      if (f) q.set('from', f);
+      if (t) q.set('to', t);
+      const res = await api.get('/import/logs' + (q.toString() ? '?' + q.toString() : ''));
       setLogs(res.data || []);
     } catch (err) { console.error(err); }
   };
@@ -307,7 +312,7 @@ const ImportData = () => {
             border:       `2px dashed ${dragOver ? 'var(--ic)' : 'var(--br)'}`,
             borderRadius: 'var(--r2)',
             background:   dragOver ? 'var(--ibg)' : 'var(--bg2)',
-            padding:      '32px 24px',
+            padding:      '18px 24px',
             textAlign:    'center',
             cursor:       'pointer',
             transition:   'all 0.15s',
@@ -405,8 +410,8 @@ const ImportData = () => {
         const secEntries = Object.entries(FILE_CONFIGS).filter(([, c]) => c.section === section);
         if (secEntries.length === 0) return null;
         return (
-        <div key={section} style={{ marginBottom: '14px' }}>
-          <div style={{ fontSize: '11.5px', fontWeight: 700, color: 'var(--tx2)', margin: '2px 0 8px',
+        <div key={section} style={{ marginBottom: '9px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 700, color: 'var(--tx3)', margin: '2px 0 5px',
                         textTransform: 'uppercase', letterSpacing: '0.4px' }}>{section}</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
         {secEntries.map(([key, cfg]) => {
@@ -417,10 +422,10 @@ const ImportData = () => {
             <div key={key} style={{
               background: 'var(--bg)', border: '1px solid var(--br)',
               borderTop: `3px solid ${cfg.color}`, borderRadius: 'var(--r2)',
-              padding: '14px 16px', boxShadow: 'var(--shadow-xs)',
+              padding: '9px 11px', boxShadow: 'var(--shadow-xs)',
             }}>
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '10px' }}>
-                <span style={{ fontSize: '20px', marginTop: '1px' }}>{cfg.icon}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '7px' }}>
+                <span style={{ fontSize: '16px' }}>{cfg.icon}</span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: '13px', fontWeight: '600', color: 'var(--tx)', marginBottom: '3px' }}>{cfg.label}</div>
                   <div style={{ display: 'flex', gap: '5px' }}>
@@ -432,7 +437,7 @@ const ImportData = () => {
 
               <label style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                padding: '8px 12px',
+                padding: '6px 10px',
                 background: busy ? 'var(--tx3)' : cfg.color,
                 color: 'white', borderRadius: 'var(--r)',
                 cursor: busy ? 'not-allowed' : 'pointer',
@@ -451,8 +456,8 @@ const ImportData = () => {
 
               {cfg.sample && (
                 <a href={`/samples/${cfg.sample}`} download
-                   style={{ display: 'block', textAlign: 'center', marginTop: '6px',
-                            fontSize: '11px', fontWeight: '600', color: cfg.color, textDecoration: 'none' }}>
+                   style={{ display: 'block', textAlign: 'center', marginTop: '4px',
+                            fontSize: '10.5px', fontWeight: '600', color: cfg.color, textDecoration: 'none' }}>
                   ⬇ Download sample format
                 </a>
               )}
@@ -468,7 +473,7 @@ const ImportData = () => {
               {(() => {
                 const lastAll = logs.find(l => l.file_type === key);
                 if (!lastAll && !result) return (
-                  <div style={{ marginTop: '8px', padding: '7px 10px', borderRadius: 'var(--r)', fontSize: '11px', background: 'var(--bg3)', color: 'var(--tx3)', border: '1px solid var(--br)' }}>
+                  <div style={{ marginTop: '6px', padding: '5px 9px', borderRadius: 'var(--r)', fontSize: '10.5px', background: 'var(--bg3)', color: 'var(--tx3)', border: '1px solid var(--br)' }}>
                     Not yet imported
                   </div>
                 );
@@ -527,7 +532,7 @@ const ImportData = () => {
         </div>
         );
       })}
-n
+
       {/* ── ACTION BUTTONS ── */}
       <div className="brow" style={{ marginBottom: '20px' }}>
         <button className="btn bp" onClick={runRescore} disabled={rescoring}>
@@ -540,12 +545,19 @@ n
       <div className="panel">
         <div className="phd">
           <div className="ptitle">Import History & Audit Log</div>
-          <select value={logFilter} onChange={e => setLogFilter(e.target.value)} style={{ fontSize: '12px', padding: '4px 8px' }}>
-            <option value="">All file types</option>
-            {Object.entries(FILE_CONFIGS).map(([k, c]) => (
-              <option key={k} value={k}>{c.icon} {c.label}</option>
-            ))}
-          </select>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <select value={logFilter} onChange={e => setLogFilter(e.target.value)} style={{ fontSize: '12px', padding: '4px 8px' }}>
+              <option value="">All file types</option>
+              {Object.entries(FILE_CONFIGS).map(([k, c]) => (
+                <option key={k} value={k}>{c.icon} {c.label}</option>
+              ))}
+            </select>
+            <span style={{ fontSize: '11px', color: 'var(--tx3)' }}>Date</span>
+            <input type="date" value={logFrom} max={logTo || undefined} onChange={e => setLogFrom(e.target.value)} style={{ fontSize: '12px', padding: '4px 8px' }} />
+            <span style={{ fontSize: '11px', color: 'var(--tx3)' }}>to</span>
+            <input type="date" value={logTo} min={logFrom || undefined} onChange={e => setLogTo(e.target.value)} style={{ fontSize: '12px', padding: '4px 8px' }} />
+            {(logFrom || logTo) && <button type="button" className="btn sm" onClick={() => { setLogFrom(''); setLogTo(''); }}>Clear</button>}
+          </div>
         </div>
 
         {filteredLogs.length === 0 ? (
