@@ -35,6 +35,7 @@ const Client360 = () => {
   const [showDropdown, setShowDropdown] = useState(false);
   const [searching, setSearching]       = useState(false);
   const [clientLoading, setClientLoading] = useState(false);
+  const [chartView, setChartView]       = useState('chart'); // 'chart' | 'table'
 
   // On mount — load first client or navigate-passed UCC
   useEffect(() => {
@@ -278,8 +279,16 @@ const Client360 = () => {
             </div>
           ) : (
             <>
-              <div className="slbl">Monthly trading averages — last 6 months</div>
+              <div className="slbl" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Monthly trading averages — last 6 months</span>
+                <span style={{ display: 'inline-flex', gap: '4px' }}>
+                  <button className="btn sm" style={{ opacity: chartView === 'chart' ? 1 : 0.5 }} onClick={() => setChartView('chart')}>Chart</button>
+                  <button className="btn sm" style={{ opacity: chartView === 'table' ? 1 : 0.5 }} onClick={() => setChartView('table')}>Table</button>
+                </span>
+              </div>
 
+              {chartView === 'chart' ? (
+              <>
               {/* Turnover by segment */}
               <div className="panel">
                 <div className="ptitle">Turnover by Segment (₹/month)</div>
@@ -349,6 +358,80 @@ const Client360 = () => {
                   </ResponsiveContainer>
                 </div>
               </div>
+              </>
+              ) : (
+              <>
+                {/* Turnover by segment — TABLE */}
+                <div className="panel">
+                  <div className="ptitle">Turnover by Segment (₹/month)</div>
+                  <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
+                    <thead>
+                      <tr style={{ color: 'var(--tx3)', textAlign: 'right' }}>
+                        <th style={{ textAlign: 'left' }}>Month</th>
+                        <th>Eq Cash</th><th>Eq Futures</th><th>Eq Options</th><th>Comm Fut</th><th>Total</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {chartData.map((r, i) => (
+                        <tr key={i} style={{ borderTop: '1px solid var(--br)', textAlign: 'right' }}>
+                          <td style={{ textAlign: 'left', padding: '6px 0' }}>{r.month}</td>
+                          <td>{FMT(r.eq_cash)}</td>
+                          <td>{FMT(r.eq_futures)}</td>
+                          <td>{FMT(r.eq_options)}</td>
+                          <td>{FMT(r.comm_fut)}</td>
+                          <td style={{ fontWeight: 600 }}>{FMT((r.eq_cash || 0) + (r.eq_futures || 0) + (r.eq_options || 0) + (r.comm_fut || 0))}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="tc2">
+                  {/* Opening balance — TABLE */}
+                  <div className="panel">
+                    <div className="ptitle">Opening Balance (₹ avg/month)</div>
+                    <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ color: 'var(--tx3)' }}>
+                          <th style={{ textAlign: 'left' }}>Month</th>
+                          <th style={{ textAlign: 'right' }}>Avg Opening Balance</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {chartData.map((r, i) => (
+                          <tr key={i} style={{ borderTop: '1px solid var(--br)' }}>
+                            <td style={{ padding: '6px 0' }}>{r.month}</td>
+                            <td style={{ textAlign: 'right' }}>{FMT(r.avg_balance)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+
+                  {/* MTF & holding — TABLE */}
+                  <div className="panel">
+                    <div className="ptitle">MTF Interest & Holding Value</div>
+                    <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
+                      <thead>
+                        <tr style={{ color: 'var(--tx3)', textAlign: 'right' }}>
+                          <th style={{ textAlign: 'left' }}>Month</th>
+                          <th>MTF Interest</th><th>Holding Value</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {chartData.map((r, i) => (
+                          <tr key={i} style={{ borderTop: '1px solid var(--br)', textAlign: 'right' }}>
+                            <td style={{ textAlign: 'left', padding: '6px 0' }}>{r.month}</td>
+                            <td>₹{(r.mtf_interest || 0).toLocaleString('en-IN')}</td>
+                            <td>{FMT(r.holding_value)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+              )}
             </>
           )}
           {client && (

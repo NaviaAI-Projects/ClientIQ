@@ -226,7 +226,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
     } finally {
       setLoading(false);
     }
-  }, [ucc, token]);
+  }, [ucc, token, days]);
 
   useEffect(() => { fetchData(); }, [fetchData, days]); // eslint-disable-line
 
@@ -620,7 +620,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                     <tr key={i}>
                       <td style={{ padding: '11px 13px' }}><ITag name={r.instrument} type={r.total_pnl >= 0 ? 'best' : 'worst'} /></td>
                       <td style={{ padding: '11px 13px' }}>{r.trades}</td>
-                      <td style={{ padding: '11px 13px' }}>{r.lots}</td>
+                      <td style={{ padding: '11px 13px' }}>{r.lots > 0 ? r.lots.toLocaleString('en-IN') : '—'}</td>
                       <td style={{ padding: '11px 13px' }}><Badge text={r.win_rate != null ? r.win_rate + '%' : '—'} type={r.win_rate >= 60 ? 'g' : r.win_rate >= 50 ? 'a' : 'r'} /></td>
                       <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: r.avg_pnl >= 0 ? C.green : C.red }}>{FMTP(r.avg_pnl)}</td>
                       <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '700', color: r.total_pnl >= 0 ? C.green : C.red }}>{FMTP(r.total_pnl)}</td>
@@ -698,7 +698,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-            <Panel title="Lot sizing behaviour" sub="Average lots per trade — after wins vs after losses">
+            <Panel title="Lot sizing behaviour" sub="Average lots — after a winning day vs a losing day">
               <div style={{ height: '224px' }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={patterns.lot_sizing || []} margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
@@ -715,10 +715,10 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                 </ResponsiveContainer>
               </div>
               <div style={{ marginTop: '14px' }}>
-                <SRow label="Avg lots after a winning trade"  value={`${(patterns.lots_after_win || 0).toFixed(1)} lots`}  color={C.green} />
-                <SRow label="Avg lots after a losing trade"   value={`${(patterns.lots_after_loss || 0).toFixed(1)} lots`} color={C.red} />
-                <SRow label="Win rate on trades after a loss" value={`${patterns.wr_after_loss || 0}%`}                    color={C.amber} />
-                <SRow label="Win rate on trades after a win"  value={`${patterns.wr_after_win || 0}%`}                     color={C.green} />
+                <SRow label="Avg lots after a winning day"  value={patterns.lots_after_win  != null ? `${patterns.lots_after_win.toFixed(1)} lots`  : '—'} color={C.green} />
+                <SRow label="Avg lots after a losing day"   value={patterns.lots_after_loss != null ? `${patterns.lots_after_loss.toFixed(1)} lots` : '—'} color={C.red} />
+                <SRow label="Win rate after a loss day"     value={patterns.wr_after_loss   != null ? `${patterns.wr_after_loss}%` : '—'}               color={C.amber} />
+                <SRow label="Win rate after a win day"      value={patterns.wr_after_win    != null ? `${patterns.wr_after_win}%`  : '—'}               color={C.green} />
               </div>
             </Panel>
 

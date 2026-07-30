@@ -282,7 +282,11 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const clientType  = String(row['Client Type'] || row['Type'] || 'RI').trim();
         const regdDate    = parseDate(row['Regd Date']);
         const lastTrade   = parseDate(String(row['Last Trade\nAccross Exch'] || row['Last TradeAccross Exch'] || '').trim());
-        const isActive    = status.toLowerCase().includes('active');
+        // "Active" vs "Inactive": note that "inactive" CONTAINS "active", so a plain
+        // includes('active') flags inactive clients as active. Active only when the
+        // status reads active and is NOT inactive.
+        const _st         = status.toLowerCase();
+        const isActive    = _st.includes('active') && !_st.includes('inactive');
         uccMap[ucc] = { ucc, name, clientType, regdDate, lastTrade, isActive, status: status || 'Active' };
       }
 
@@ -362,6 +366,8 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const isOption  = ot === 'CE' || ot === 'PE';
         const bs        = String(row[24] ?? '').trim().toUpperCase().startsWith('S') ? 'S' : 'B'; // BuySellInd
         const qty       = parseFloat(row[25]) || 0;                  // TradQty
+        const brdLot    = parseFloat(row[26]) || 0;                  // NewBrdLotQty (lot/board-lot size)
+        const lots      = brdLot > 0 ? qty / brdLot : null;          // number of lots (null when lot size absent → shown as "—")
         const price     = parseFloat(row[27]) || 0;                  // Pric
         const value     = qty * price;                               // traded value = qty × price
         if (qty <= 0 && value <= 0) { skipped++; continue; }         // nothing to record
@@ -382,7 +388,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         //  buy_sell, trade_qty, trade_price, traded_value, product_type, order_type, option_type,
         //  strike_price, expiry_date, trade_id, order_no, pan_number)
         tradeRows.push([ucc, '', tradeDate, transTime, exchange, symbol, instrName,
-          bs, qty, price, value, seg, null, ot, strike, expiry, null, null, null]);
+          bs, qty, price, value, seg, null, ot, strike, expiry, null, null, null, lots]);
 
         // Aggregate for daily_trades, split by segment.
         const key = `${ucc}__${tradeDate}`;
@@ -404,6 +410,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       // Ensure indexes exist (created once, kept across imports). Previously they were DROPPED
       // and REBUILT on every upload, which re-indexed the WHOLE trades table each time and got
       // slower as data grew — unworkable at 180-day scale. Keep them; incremental inserts are fine.
+      await dbClient.query('ALTER TABLE trades ADD COLUMN IF NOT EXISTS lots NUMERIC');
       await dbClient.query('CREATE INDEX IF NOT EXISTS idx_trades_ucc ON trades(ucc)');
       await dbClient.query('CREATE INDEX IF NOT EXISTS idx_trades_date ON trades(trade_date)');
       await dbClient.query('CREATE INDEX IF NOT EXISTS idx_trades_ucc_date ON trades(ucc, trade_date)');
@@ -415,13 +422,13 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const values = [], params = [];
         let pi = 1;
         for (const t of batch) {
-          values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
+          values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
           params.push(...t);
         }
         await dbClient.query(`
           INSERT INTO trades (ucc, client_name, trade_date, trans_time, exchange, trading_symbol,
             instrument_name, buy_sell, trade_qty, trade_price, traded_value, product_type,
-            order_type, option_type, strike_price, expiry_date, trade_id, order_no, pan_number)
+            order_type, option_type, strike_price, expiry_date, trade_id, order_no, pan_number, lots)
           VALUES ${values.join(',')}
         `, params);
       }
@@ -484,7 +491,8 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
             SUM(CASE WHEN UPPER(buy_sell) LIKE 'B%' THEN traded_value ELSE 0 END)::float AS bv,
             SUM(CASE WHEN UPPER(buy_sell) LIKE 'S%' THEN traded_value ELSE 0 END)::float AS sv,
             SUM(CASE WHEN UPPER(buy_sell) LIKE 'B%' THEN trade_qty    ELSE 0 END)::float AS bq,
-            SUM(CASE WHEN UPPER(buy_sell) LIKE 'S%' THEN trade_qty    ELSE 0 END)::float AS sq
+            SUM(CASE WHEN UPPER(buy_sell) LIKE 'S%' THEN trade_qty    ELSE 0 END)::float AS sq,
+            SUM(lots)::float AS lots
           FROM trades
           WHERE trade_date = ANY($1::date[])
           GROUP BY ucc, trade_date, trading_symbol
@@ -515,7 +523,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
                    ELSE 0 END) AS realized_pnl,
           jsonb_agg(jsonb_build_object(
             's', s, 'ot', ot, 'pt', pt, 'ex', ex,
-            'bv', bv, 'sv', sv, 'bq', bq, 'sq', sq, 'to', to_, 'n', n)) AS symbols,
+            'bv', bv, 'sv', sv, 'bq', bq, 'sq', sq, 'to', to_, 'n', n, 'lots', lots)) AS symbols,
           NOW()
         FROM sym
         GROUP BY ucc, trade_date
@@ -577,6 +585,31 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
             top_instrument_type     = EXCLUDED.top_instrument_type,
             call_put_ratio          = EXCLUDED.call_put_ratio
         `, params);
+      }
+
+      // 2b. Correct the segment turnover from the raw `trades` table (source of truth).
+      // The per-file upsert above overwrites each day's row per exchange (CM file, then
+      // FO file, etc. each replace the whole row), so only the last-imported segment
+      // survived — understating turnover. Rebuild the four turnover columns as the FULL
+      // sum across all segments for the affected dates. brokerage/top_instrument untouched.
+      if (dates.size > 0) {
+        await dbClient.query(`
+          UPDATE daily_trades dt SET
+            eq_cash_turnover         = s.cash,
+            eq_fo_turnover           = s.fo,
+            commodity_fo_turnover    = s.co,
+            options_premium_turnover = s.opt
+          FROM (
+            SELECT ucc, trade_date,
+              SUM(CASE WHEN product_type='CM' THEN traded_value ELSE 0 END) AS cash,
+              SUM(CASE WHEN product_type='FO' THEN traded_value ELSE 0 END) AS fo,
+              SUM(CASE WHEN product_type='CO' THEN traded_value ELSE 0 END) AS co,
+              SUM(CASE WHEN UPPER(COALESCE(option_type,'')) IN ('CE','PE') THEN traded_value ELSE 0 END) AS opt
+            FROM trades WHERE trade_date = ANY($1::date[])
+            GROUP BY ucc, trade_date
+          ) s
+          WHERE dt.ucc = s.ucc AND dt.trade_date = s.trade_date
+        `, [Array.from(dates)]);
       }
 
       // 3. Update permanent monthly summaries (per document)

@@ -32,10 +32,11 @@ async function buildInsightsData(ucc, days = 90) {
            SUM(x.sq)::float AS sell_qty,
            SUM(x.bq)::float AS buy_qty,
            SUM(x.n)::int    AS trades,
-           SUM(x."to")::float AS turnover
+           SUM(x."to")::float AS turnover,
+           SUM(x.lots)::float AS lots
     FROM trade_summary_90d t
     CROSS JOIN LATERAL jsonb_to_recordset(t.symbols)
-      AS x(s text, ot text, pt text, ex text, bv float, sv float, bq float, sq float, "to" float, n int)
+      AS x(s text, ot text, pt text, ex text, bv float, sv float, bq float, sq float, "to" float, n int, lots float)
     WHERE t.ucc = $1 AND t.trade_date >= CURRENT_DATE - ($2 * INTERVAL '1 day')
     GROUP BY x.s
   `, [ucc, D]);
@@ -73,10 +74,10 @@ async function buildInsightsData(ucc, days = 90) {
   const dayRes = await pool.query(`
     SELECT t.trade_date::text AS d,
            EXTRACT(DOW FROM t.trade_date)::int AS dow,
-           x.s AS sym, x.ot AS ot, x.bv AS bv, x.sv AS sv, x.bq AS bq, x.sq AS sq, x.n AS n
+           x.s AS sym, x.ot AS ot, x.bv AS bv, x.sv AS sv, x.bq AS bq, x.sq AS sq, x.n AS n, x.lots AS lots
     FROM trade_summary_90d t
     CROSS JOIN LATERAL jsonb_to_recordset(t.symbols)
-      AS x(s text, ot text, pt text, ex text, bv float, sv float, bq float, sq float, "to" float, n int)
+      AS x(s text, ot text, pt text, ex text, bv float, sv float, bq float, sq float, "to" float, n int, lots float)
     WHERE t.ucc = $1 AND t.trade_date >= CURRENT_DATE - ($2 * INTERVAL '1 day')
     ORDER BY t.trade_date ASC
   `, [ucc, D]);
@@ -94,6 +95,7 @@ async function buildInsightsData(ucc, days = 90) {
       option_type: (r.option_type || '').toUpperCase(),
       trades: Number(r.trades) || 0,
       turnover: Number(r.turnover) || 0,
+      lots: Number(r.lots) || 0,     // restored from NewBrdLotQty; 0 when lot size unavailable → shown as "—"
       pnl: Math.round(realized),
       closed: matched > 0,
     };
@@ -104,6 +106,7 @@ async function buildInsightsData(ucc, days = 90) {
   const losses      = closed.filter(i => i.pnl < 0).length;
   const winRate     = (wins + losses) > 0 ? Math.round((wins / (wins + losses)) * 100) : 0;
   const netPnl      = instruments.reduce((s, i) => s + i.pnl, 0);
+  const totalLots   = instruments.reduce((s, i) => s + (i.lots || 0), 0);   // real lots (from NewBrdLotQty), not qty
   const grossProfit = instruments.filter(i => i.pnl > 0).reduce((s, i) => s + i.pnl, 0);
   const grossLoss   = instruments.filter(i => i.pnl < 0).reduce((s, i) => s + i.pnl, 0);
   const avgWin      = wins   > 0 ? grossProfit / wins   : 0;
@@ -117,6 +120,7 @@ async function buildInsightsData(ucc, days = 90) {
   const posBook = {};                 // sym -> { qty, cost }  (cost = basis of the held qty)
   const dayAgg  = {};                 // date -> { dow, trades, pnl, isExpiry }
   const symWL   = {};                 // sym -> { wins, losses } across closed days (for per-instrument win rate)
+  const symPnl  = {};                 // sym -> summed per-day realized P&L (same basis as win rate, so the two agree)
   const cpMonth = {};                 // month -> { month, calls, puts }  realized P&L split (CE/PE only)
   const moLbl   = (ds) => { const dt = new Date(ds); return dt.toLocaleString('en-IN', { month: 'short', year: '2-digit', timeZone: 'UTC' }); };
   dayRes.rows.forEach(r => {
@@ -125,8 +129,11 @@ async function buildInsightsData(ucc, days = 90) {
     const bq = Number(r.bq) || 0, sq = Number(r.sq) || 0;
     const bv = Number(r.bv) || 0, sv = Number(r.sv) || 0;
     const n  = Number(r.n)  || 0;
-    if (!dayAgg[date]) dayAgg[date] = { dow: Number(r.dow), trades: 0, pnl: 0, isExpiry: false };
+    if (!dayAgg[date]) dayAgg[date] = { dow: Number(r.dow), trades: 0, pnl: 0, lots: 0, optTrades: 0, optPnl: 0, optLots: 0, isExpiry: false };
     dayAgg[date].trades += n;
+    dayAgg[date].lots += Number(r.lots) || 0;      // total derivative lots this day (for lot-sizing behaviour)
+    const isOpt = (ot === 'CE' || ot === 'PE');
+    if (isOpt) { dayAgg[date].optTrades += n; dayAgg[date].optLots += Number(r.lots) || 0; }
     // Approximate expiry-day flag: the contract expiry is embedded in the symbol name
     // (e.g. "GOLDPETAL FUT 2026-06-30"); a day counts as an expiry day if a contract
     // traded that day expires on that date.
@@ -141,8 +148,10 @@ async function buildInsightsData(ucc, days = 90) {
       const avgSell  = sv / sq;
       const realized = (avgSell - avgCost) * sellable;
       dayAgg[date].pnl += realized;
+      if (isOpt) dayAgg[date].optPnl += realized;
       if (!symWL[sym]) symWL[sym] = { wins: 0, losses: 0 };   // count this closed day as a win/loss for the symbol
       if (realized > 0) symWL[sym].wins++; else if (realized < 0) symWL[sym].losses++;
+      symPnl[sym] = (symPnl[sym] || 0) + realized;            // per-day realized P&L per instrument (consistent w/ win rate)
       if (ot === 'CE' || ot === 'PE') {                        // call/put realized P&L by month (options only)
         const mo = moLbl(date);
         if (!cpMonth[mo]) cpMonth[mo] = { month: mo, calls: 0, puts: 0 };
@@ -163,18 +172,52 @@ async function buildInsightsData(ucc, days = 90) {
   const callputMonthly = Object.values(cpMonth).slice(-6).map(m => ({ month: m.month, calls: Math.round(m.calls), puts: Math.round(m.puts) }));
   const dayRows = Object.keys(dayAgg).sort().map(date => ({
     date, dow: dayAgg[date].dow, trades: dayAgg[date].trades, pnl: Math.round(dayAgg[date].pnl),
+    optTrades: dayAgg[date].optTrades, optPnl: Math.round(dayAgg[date].optPnl),
+    optLots: dayAgg[date].optLots, lots: dayAgg[date].lots,
     isExpiry: dayAgg[date].isExpiry,
   }));
+
+  // ── Lot-sizing behaviour (day-level, real) ──
+  // Position-level "after each trade" needs execution-time ordering (not stored for most
+  // trades), so this measures the day AFTER a winning day vs AFTER a losing day, using the
+  // real per-day lots restored from NewBrdLotQty. Null when there is no such prior day.
+  const lsAfterWin = [], lsAfterLoss = [];
+  for (let i = 1; i < dayRows.length; i++) {
+    (dayRows[i - 1].pnl > 0 ? lsAfterWin : lsAfterLoss).push(dayRows[i]);
+  }
+  const _avgLots = (arr) => arr.length ? Number((arr.reduce((s, d) => s + d.lots, 0) / arr.length).toFixed(1)) : null;
+  const _dayWr   = (arr) => { const c = arr.filter(d => d.pnl !== 0); return c.length ? Math.round(c.filter(d => d.pnl > 0).length / c.length * 100) : null; };
+  const lotsAfterWin  = _avgLots(lsAfterWin);
+  const lotsAfterLoss = _avgLots(lsAfterLoss);
+  const wrAfterWin    = _dayWr(lsAfterWin);
+  const wrAfterLoss   = _dayWr(lsAfterLoss);
+  const lotSizing = [
+    { label: 'After a win day',  lots: lotsAfterWin  != null ? lotsAfterWin  : 0 },
+    { label: 'After a loss day', lots: lotsAfterLoss != null ? lotsAfterLoss : 0 },
+  ];
+
+  // Headline realized P&L = sum of the per-day running-book P&L, so the header Net P&L
+  // reconciles with the cumulative-trend chart, calendar and expiry-week widgets (which
+  // all use these same day-level figures). Previously the header summed per-instrument
+  // window-aggregate P&L, giving a different total from the chart it sits above.
+  const dailyNet = dayRows.reduce((s, d) => s + d.pnl, 0);
+  // Longest run of consecutive winning trading days (was hardcoded null → shown as 0).
+  let maxWinStreak = 0, _winRun = 0;
+  dayRows.forEach(d => { if (d.pnl > 0) { _winRun++; if (_winRun > maxWinStreak) maxWinStreak = _winRun; } else _winRun = 0; });
 
   // Expiry day vs non-expiry (approximate — expiry inferred from the contract in the symbol name).
   const expDays  = dayRows.filter(d => d.isExpiry);
   const normDays = dayRows.filter(d => !d.isExpiry);
-  const dayWr = (arr) => { const c = arr.filter(d => d.pnl !== 0); return c.length ? Math.round(c.filter(d => d.pnl > 0).length / c.length * 100) : null; };
-  const avgTr = (arr) => arr.length ? Math.round(arr.reduce((s, d) => s + d.trades, 0) / arr.length) : null;
+  // Options-only, since this panel lives on the Options-Insights tab: win rate and
+  // trades/day are computed from each day's options P&L / options trade count only.
+  const dayWr = (arr) => { const c = arr.filter(d => d.optPnl !== 0); return c.length ? Math.round(c.filter(d => d.optPnl > 0).length / c.length * 100) : null; };
+  const avgTr = (arr) => arr.length ? Math.round(arr.reduce((s, d) => s + d.optTrades, 0) / arr.length) : null;
+  // Average options lots/day (restored from NewBrdLotQty). null when no lot data on those days → "—".
+  const avgLots = (arr) => { const c = arr.filter(d => d.optLots > 0); return c.length ? Math.round(c.reduce((s, d) => s + d.optLots, 0) / c.length) : null; };
   const expiryStats = {
     expiry_wr: dayWr(expDays),   normal_wr: dayWr(normDays),
     expiry_trades: avgTr(expDays), normal_trades: avgTr(normDays),
-    expiry_lots: null, normal_lots: null,
+    expiry_lots: avgLots(expDays), normal_lots: avgLots(normDays),
   };
   let cum = 0;
   const pnlTrend = dayRows.map((d, i) => { cum += d.pnl; return { day: i + 1, pnl: Math.round(cum) }; });
@@ -215,16 +258,38 @@ async function buildInsightsData(ucc, days = 90) {
   const top5    = byPnl.slice(0, 5);
   const worst5  = byPnl.filter(i => i.pnl < 0).slice(-5).reverse();
   const byTO    = [...instruments].sort((a, b) => b.turnover - a.turnover);
-  const bestStrike = byTO[0]?.instrument || '—';
+  // Options-only instrument set for the Options-Insights tab (win rate, most-traded, top table).
+  // Previously these used ALL instruments, so futures/equity (e.g. GOLDPETAL FUT) appeared as "options".
+  const optInstr   = instruments.filter(i => i.option_type === 'CE' || i.option_type === 'PE');
+  const optClosed  = optInstr.filter(i => i.closed);
+  const optWins    = optClosed.filter(i => i.pnl > 0).length;
+  const optLosses  = optClosed.filter(i => i.pnl < 0).length;
+  const optWinRate = (optWins + optLosses) > 0 ? Math.round(optWins / (optWins + optLosses) * 100) : 0;
+  const optByTO    = [...optInstr].sort((a, b) => b.turnover - a.turnover);
+  const bestStrike = optByTO[0]?.instrument || '—';
+  // Table is labelled "Ranked by P&L contribution" → sort by realized P&L magnitude,
+  // not turnover (turnover ordering is only used for the "most-traded" strike above).
+  const optByPnl   = [...optInstr].sort((a, b) => Math.abs(b.pnl) - Math.abs(a.pnl));
 
-  const topInstrumentsOptions = byTO.slice(0, 5).map(r => ({
-    instrument: r.instrument, trades: r.trades, lots: 0,
+  const topInstrumentsOptions = optByPnl.slice(0, 5).map(r => ({
+    instrument: r.instrument, trades: r.trades, lots: Math.round(r.lots) || 0,
     win_rate: symWinRate(r.instrument), avg_pnl: r.trades > 0 ? Math.round(r.pnl / r.trades) : 0,
     total_pnl: r.pnl, bias: r.option_type === 'CE' ? 'Calls' : r.option_type === 'PE' ? 'Puts' : '—',
   }));
-  const topInstrumentsBW   = top5.map(r => ({ instrument: r.instrument, pnl: r.pnl, win_rate: symWinRate(r.instrument), trades: r.trades }));
-  const worstInstrumentsBW = worst5.length ? worst5.map(r => ({ instrument: r.instrument, pnl: r.pnl, win_rate: symWinRate(r.instrument), trades: r.trades }))
-                                           : [{ instrument: 'No closed losing positions', pnl: 0, win_rate: null, trades: 0 }];
+  // Best/Worst instrument cards: rank & show P&L on the SAME per-day realized basis as the win rate,
+  // so Net P&L and Win Rate always agree (no more "+P&L with 0% wins"). Instruments that never closed
+  // a position (only buys) have no realized P&L and are excluded from these cards.
+  const realizedRanked = Object.keys(symPnl)
+    .map(sym => {
+      const inst = instruments.find(i => i.instrument === sym);
+      return { instrument: sym, pnl: Math.round(symPnl[sym]), trades: inst ? inst.trades : 0 };
+    })
+    .sort((a, b) => b.pnl - a.pnl);
+  const top5BW   = realizedRanked.slice(0, 5);
+  const worst5BW = realizedRanked.filter(i => i.pnl < 0).slice(-5).reverse();
+  const topInstrumentsBW   = top5BW.map(r => ({ instrument: r.instrument, pnl: r.pnl, win_rate: symWinRate(r.instrument), trades: r.trades }));
+  const worstInstrumentsBW = worst5BW.length ? worst5BW.map(r => ({ instrument: r.instrument, pnl: r.pnl, win_rate: symWinRate(r.instrument), trades: r.trades }))
+                                             : [{ instrument: 'No closed losing positions', pnl: 0, win_rate: null, trades: 0 }];
 
   // ── Day-of-week (real) ──
   const dowMap = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri' };
@@ -288,7 +353,7 @@ async function buildInsightsData(ucc, days = 90) {
       model: 'llama-3.1-8b-instant', max_tokens: 220, temperature: 0.5,
       messages: [{ role: 'user', content:
         `Analyse this Indian retail trader's realized performance in 3 sentences with specific numbers, then one actionable tip.
-Client: ${client.name} | Realized P&L: ${inr(netPnl)} | Win rate: ${winRate}% (${wins}W/${losses}L closed positions)
+Client: ${client.name} | Realized P&L: ${inr(dailyNet)} | Win rate: ${winRate}% (${wins}W/${losses}L closed positions)
 Total trades: ${A.total_trades} over ${tradeDays} day(s) | Turnover: ${inr(totalTO)}
 Segment mix by turnover: ${segmentLabel}${hasOptions ? ` | Call/Put: ${callPct}% calls` : ''}
 Top instruments: ${topNames}.
@@ -296,7 +361,7 @@ Rules: Use ONLY the numbers above; do not invent any. This client's activity is 
     });
     aiInsights.summary = completion.choices[0]?.message?.content || '';
   } catch (e) {
-    aiInsights.summary = `${client.name} traded ${A.total_trades} times across ${tradeDays} day(s), with realized P&L of ${inr(netPnl)} and a ${winRate}% win rate on ${closed.length} closed position${closed.length === 1 ? '' : 's'}, mainly in ${topNames}. ${netPnl >= 0 ? 'The book is net positive on closed trades.' : 'Closed trades are net negative — review entries on the losing instruments.'}`;
+    aiInsights.summary = `${client.name} traded ${A.total_trades} times across ${tradeDays} day(s), with realized P&L of ${inr(dailyNet)} and a ${winRate}% win rate on ${closed.length} closed position${closed.length === 1 ? '' : 's'}, mainly in ${topNames}. ${dailyNet >= 0 ? 'The book is net positive on closed trades.' : 'Closed trades are net negative — review entries on the losing instruments.'}`;
   }
 
   return {
@@ -311,22 +376,22 @@ Rules: Use ONLY the numbers above; do not invent any. This client's activity is 
     },
     period: { days: D, from_date: dayRows[0]?.date || null, to_date: dayRows[dayRows.length - 1]?.date || null, trade_days: tradeDays },
     summary: {
-      net_pnl: Math.round(netPnl),
-      pnl_pct: totalTO > 0 ? parseFloat((netPnl / totalTO * 100).toFixed(2)) : 0,
+      net_pnl: Math.round(dailyNet),
+      pnl_pct: totalTO > 0 ? parseFloat((dailyNet / totalTO * 100).toFixed(2)) : 0,
       win_rate: winRate, wins, losses,
       premium_to: Math.round(totalTO),
-      lots: Math.round(Number(A.total_qty) || 0),
+      lots: Math.round(totalLots),   // real number of lots (was total_qty, which is quantity not lots)
       trades: Number(A.total_trades) || 0,
       avg_win: Math.round(avgWin), avg_loss: Math.round(avgLoss),
       profit_factor: parseFloat(Number(profitFactor).toFixed(2)),
       best_day: bestDays[0]?.pnl || 0, worst_day: worstDays[0]?.pnl || 0,
       avg_trades_per_day: tradeDays > 0 ? Math.round((Number(A.total_trades) || 0) / tradeDays) : 0,
-      max_win_streak: null,   // needs intra-day sequencing not available
+      max_win_streak: maxWinStreak,   // longest run of consecutive winning trading days
       pnl_trend: pnlTrend, weekly_pnl: weeklyPnl, segment_mix: segmentMix,
     },
     options_stats: {
       has_options: hasOptions,
-      win_rate: hasOptions ? winRate : null, wins: hasOptions ? wins : 0, losses: hasOptions ? losses : 0,
+      win_rate: hasOptions ? optWinRate : null, wins: hasOptions ? optWins : 0, losses: hasOptions ? optLosses : 0,
       call_pct: hasOptions ? callPct : null,
       best_strike: bestStrike, best_strike_wr: null, avg_hold_hrs: null,
       strike_table: [],          // ITM/ATM/OTM needs an underlying spot price — not in the feed
@@ -337,8 +402,8 @@ Rules: Use ONLY the numbers above; do not invent any. This client's activity is 
     patterns: {
       dow: dowData,
       tod,                       // trade activity by market hour (real execution time)
-      lot_sizing: [],            // position-sizing sequence not reliably derivable — omitted
-      lots_after_win: null, lots_after_loss: null, wr_after_win: null, wr_after_loss: null, escalation: null,
+      lot_sizing: lotSizing,     // real day-level lots: after a winning day vs a losing day
+      lots_after_win: lotsAfterWin, lots_after_loss: lotsAfterLoss, wr_after_win: wrAfterWin, wr_after_loss: wrAfterLoss, escalation: null,
       monthly_pnl: monthlyPnl,
     },
     best_worst: {
