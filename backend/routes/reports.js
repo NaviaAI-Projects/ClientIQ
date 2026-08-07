@@ -117,7 +117,9 @@ router.get('/revenue-streams', auth, async (req, res) => {
       SELECT
         TO_CHAR(ledger_date, 'Mon''YY') AS month,
         DATE_TRUNC('month', ledger_date) AS month_start,
-        SUM(opening_balance) * 0.065 / 12 AS float_income
+        SUM(opening_balance * COALESCE(
+          (SELECT rate FROM float_rate_history h WHERE h.effective_from <= daily_ledger.ledger_date ORDER BY h.effective_from DESC LIMIT 1),
+          (SELECT value::numeric FROM settings WHERE key='fd_rate'), 6.5)) / 100 / 12 AS float_income
       FROM daily_ledger
       WHERE ledger_date >= NOW() - INTERVAL '8 months'
       GROUP BY DATE_TRUNC('month', ledger_date), TO_CHAR(ledger_date, 'Mon''YY')
@@ -489,7 +491,7 @@ router.get('/client-analytics', auth, async (req, res) => {
         trade_date,
         COUNT(DISTINCT CASE WHEN dt.brokerage_earned > 0 THEN dt.ucc END) AS profitable_clients,
         COUNT(DISTINCT CASE WHEN dt.brokerage_earned = 0 OR dt.brokerage_earned IS NULL THEN dt.ucc END) AS loss_clients,
-        COUNT(DISTINCT CASE WHEN c.client_type IN ('NRI','NRE','NRO','NRE-HV','NRO-HV') THEN dt.ucc END) AS nri_clients,
+        COUNT(DISTINCT CASE WHEN UPPER(dt.ucc) LIKE 'N%' THEN dt.ucc END) AS nri_clients,  -- NRI = UCC starts with 'N'
         COUNT(DISTINCT dt.ucc) AS total_clients
       FROM daily_trades dt
       JOIN clients c ON dt.ucc = c.ucc
@@ -518,7 +520,7 @@ router.get('/daily-mis', auth, async (req, res) => {
   try {
     const { days = 17 } = req.query;
     // Real float-income estimate from the latest ledger snapshot, and MTF by month — no placeholders.
-    const fdRow  = await pool.query(`SELECT COALESCE(fd_rate,6.5) AS fd_rate FROM pipeline_settings ORDER BY id DESC LIMIT 1`);
+    const fdRow  = await pool.query(`SELECT COALESCE((SELECT rate FROM float_rate_history h WHERE h.effective_from <= (SELECT MAX(ledger_date) FROM daily_ledger) ORDER BY h.effective_from DESC LIMIT 1), (SELECT value::numeric FROM settings WHERE key='fd_rate'), 6.5) AS fd_rate`);
     const fdRate = parseFloat(fdRow.rows[0]?.fd_rate ?? 6.5);
     const ledRow = await pool.query(`SELECT COALESCE(SUM(opening_balance),0)::float AS bal FROM daily_ledger WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)`);
     const dailyFloat = Math.round(Number(ledRow.rows[0]?.bal || 0) * (fdRate / 100) / 365);

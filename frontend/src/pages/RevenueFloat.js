@@ -47,13 +47,17 @@ const RevenueFloat = () => {
     ? Math.round(500000 * (footnotes.avg_mtf_rate / 100) / 12)
     : null;
 
-  // Per-month stream figures (Options clearing not in data → 0; brokerage/float/mtf real)
+  // Per-month stream figures. Clearing (commission), brokerage, float and MTF are all real.
   const streamMonthly = monthly.map(m => ({
     month: m.month,
     trade_days: m.trade_days,
-    options_clearing: 0,
+    // Float is earned every calendar day the balance sits — use the month's ledger-day count
+    // (from backend), not trading days, so the total matches the Company Dashboard.
+    float_days: m.float_days != null ? m.float_days : m.trade_days,
+    float_income_day: m.float_income_day || 0,
+    options_clearing: m.commission || 0,
     equity_brokerage: m.brokerage,
-    float_income: (m.float_income_day || 0) * m.trade_days,
+    float_income: (m.float_income_day || 0) * (m.float_days != null ? m.float_days : m.trade_days),
     mtf_interest: m.mtf_interest,
   }));
 
@@ -72,7 +76,7 @@ const RevenueFloat = () => {
     const d = m.trade_days || 1;
     if (key === 'options_clearing') return m.options_clearing / d;
     if (key === 'equity_brokerage') return m.equity_brokerage / d;
-    if (key === 'float_income')     return m.trade_days ? m.float_income / d : 0;
+    if (key === 'float_income')     return m.float_income_day || 0;   // ₹/day rate (not total ÷ trade_days)
     if (key === 'mtf_interest')     return m.mtf_interest / 30;
     return 0;
   };
@@ -86,7 +90,7 @@ const RevenueFloat = () => {
   const ytd = (key) => streamMonthly.reduce((s, m) => s + m[key], 0);
 
   const streamRows = [
-    { key: 'options_clearing', name: 'Options clearing (Eq + Comm)', share: 'b-act', hl: 'var(--ibg)' },
+    { key: 'options_clearing', name: 'Clearing charges (commission)', share: 'b-act', hl: 'var(--ibg)' },
     { key: 'equity_brokerage', name: 'Equity brokerage',            share: 'b-hv',  hl: 'inherit' },
     { key: 'float_income',     name: 'Float income (estimated)',    share: 'b-lead', hl: 'var(--pbg)' },
     { key: 'mtf_interest',     name: 'MTF interest',                share: 'b-nri', hl: 'inherit' },
@@ -139,7 +143,7 @@ const RevenueFloat = () => {
           <div className="csub">Est. daily income {inr(kpis.float_daily_income)}</div>
         </div>
         <div className="card cp">
-          <div className="clbl">MTF book</div>
+          <div className="clbl">MTF book (est.)<InfoBtn text="Estimated outstanding MTF funding, back-calculated from the interest export (balance = interest ÷ rate% ÷ days ÷ 365) because that file carries no principal column. Approximate — chargeable days can differ from the stated window. An MTF funding/exposure file would give the exact book." /></div>
           <div className="cval">{rupee(kpis.mtf_book_balance)}</div>
           <div className="csub">{kpis.mtf_clients} clients · {inr(kpis.mtf_daily_interest)}/day interest</div>
         </div>
@@ -247,7 +251,7 @@ const RevenueFloat = () => {
           <div className="tw"><table>
             <thead><tr><th>Metric</th><th>{mtf_book.month || '—'}</th><th>—</th><th>—</th><th>3M avg</th></tr></thead>
             <tbody>
-              <tr><td>Net MTF funding (₹Cr)</td><td>{(mtf_book.balance / 1e7).toFixed(2)}</td><td>—</td><td>—</td><td>—</td></tr>
+              <tr><td>Net MTF funding — est. (₹Cr)</td><td>{(mtf_book.balance / 1e7).toFixed(2)}</td><td>—</td><td>—</td><td>—</td></tr>
               <tr><td>MTF interest income (₹/day)</td><td>{Math.round(mtf_book.interest / 30).toLocaleString('en-IN')}</td><td>—</td><td>—</td><td>—</td></tr>
               <tr><td>MTF clients</td><td>{mtf_book.clients.toLocaleString('en-IN')}</td><td>—</td><td>—</td><td>—</td></tr>
               <tr><td>Avg MTF per client (₹L)</td><td>{(mtf_book.avg_per_client / 1e5).toFixed(2)}</td><td>—</td><td>—</td><td>—</td></tr>

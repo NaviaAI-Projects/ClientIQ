@@ -33,10 +33,11 @@ const SupervisorDashboard = () => {
   if (error)   return <div className="ph"><h2>Company dashboard</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
   const { meta, totals, revenue, pipeline, churn, rm_table, pending_top, trend, company_turnover } = data;
+  const commissionTracked = !(meta && meta.commission_loaded === false);
   const chartData = trend.map(t => ({
     month: t.month,
     Brokerage: +L(t.Brokerage).toFixed(2),
-    Commission: +L(t.Commission).toFixed(2),
+    Commission: t.Commission == null ? 0 : +L(t.Commission).toFixed(2),
     MTF: +L(t.MTF).toFixed(2),
     Other: +L(t.Other).toFixed(2),
   }));
@@ -53,7 +54,7 @@ const SupervisorDashboard = () => {
 
       <div className="cards">
         <div className="card ci"><div className="clbl">Total clients</div><div className="cval">{totals.total_clients.toLocaleString('en-IN')}</div><div className="csub">Mapped {totals.mapped.toLocaleString('en-IN')} · Unmapped {totals.unmapped.toLocaleString('en-IN')}</div></div>
-        <div className="card cs"><div className="clbl">Company revenue · avg/day<InfoBtn text="Average brokerage revenue per trading day over the selected date range (total ÷ trading days), not the running total. Change the range with the filter above." /></div><div className="cval">{rupee(revenue.avg_rev_per_day)}<span style={{ fontSize: 12, fontWeight: 400, color: 'var(--tx3)' }}>/day</span></div><div className="csub">{meta.range ? `${meta.range.from} – ${meta.range.to} · ` : ''}Total {rupee(revenue.total_rev)} over {meta.range?.trading_days ?? 0} trading days</div></div>
+        <div className="card cs"><div className="clbl">Company revenue · avg/day<InfoBtn text="Average TOTAL company revenue per trading day over the selected date range (total ÷ trading days). Total revenue = brokerage + commission/clearing (daily_trades) + MTF interest (mtf_interest) + estimated float income (ledger balance × FD rate ÷ 365). Change the range with the filter above." /></div><div className="cval">{rupee(revenue.avg_rev_per_day)}<span style={{ fontSize: 12, fontWeight: 400, color: 'var(--tx3)' }}>/day</span></div><div className="csub">{meta.range ? `${meta.range.from} – ${meta.range.to} · ` : ''}Total {rupee(revenue.total_rev)} over {meta.range?.trading_days ?? 0} trading days</div></div>
         <div className="card cw"><div className="clbl">Active leads in pipeline</div><div className="cval">{pipeline.active_leads.toLocaleString('en-IN')}</div><div className="csub">Pending approvals: {pipeline.pending_approvals}</div></div>
         <div className="card cd"><div className="clbl">Churn risk (mapped)</div><div className="cval">{churn.churn_high.toLocaleString('en-IN')}</div><div className="csub">High risk across {churn.rms_affected} RMs</div></div>
       </div>
@@ -111,7 +112,7 @@ const SupervisorDashboard = () => {
       </div>
 
       <div className="panel">
-        <div className="ptitle">📊 Company revenue trend<InfoBtn text="Monthly company revenue by stream, in ₹ lakh: Brokerage (from daily_trades), MTF interest, estimated Float income, and Commission. Streams read ₹0 until their source file is imported." /></div>
+        <div className="ptitle">📊 Company revenue trend<InfoBtn text="Monthly company revenue by stream, in ₹ lakh: Brokerage and Commission/clearing (from daily_trades), MTF interest (mtf_monthly) and estimated Float income (from each month's ledger balances). Brokerage reads ₹0 until the brokerage file is imported for that month." /></div>
         <ViewToggle
           chart={
             <ResponsiveContainer width="100%" height={220}>
@@ -132,7 +133,7 @@ const SupervisorDashboard = () => {
               <thead><tr><th>Month</th><th>Brokerage (₹L)</th><th>Commission (₹L)</th><th>MTF (₹L)</th><th>Other (₹L)</th></tr></thead>
               <tbody>
                 {chartData.map(r => (
-                  <tr key={r.month}><td>{r.month}</td><td>{r.Brokerage}</td><td>{r.Commission}</td><td>{r.MTF}</td><td>{r.Other}</td></tr>
+                  <tr key={r.month}><td>{r.month}</td><td>{r.Brokerage}</td><td>{commissionTracked ? r.Commission : '—'}</td><td>{r.MTF}</td><td>{r.Other}</td></tr>
                 ))}
                 {chartData.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
               </tbody>

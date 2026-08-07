@@ -80,7 +80,7 @@ const LeadPipeline = () => {
                   <td style={{color:urgent?'var(--dc)':'inherit',fontWeight:urgent?'500':'normal'}}>
                     {exp?exp.toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'—'}{urgent?'!':''}
                   </td>
-                  <td>{l.reassign_count||0}</td>
+                  <td>{l.reassigns == null ? '—' : l.reassigns}</td>
                 </tr>
               );
             })}

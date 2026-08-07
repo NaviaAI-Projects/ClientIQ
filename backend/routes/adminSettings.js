@@ -205,6 +205,24 @@ router.put('/', auth, adminOnly, async (req, res) => {
     }
     await client.query('COMMIT');
     client.release();
+
+    // If the float deployment rate was saved, record it as an effective-dated period
+    // so float income for each date uses the rate in effect on that date.
+    if (settings.fd_rate != null && settings.fd_rate !== '') {
+      await pool.query(`CREATE TABLE IF NOT EXISTS float_rate_history (
+        id SERIAL PRIMARY KEY, effective_from DATE NOT NULL UNIQUE,
+        rate NUMERIC NOT NULL, created_at TIMESTAMP DEFAULT now())`);
+      let eff = settings.effective_from || null;
+      if (eff && /^\d{2}-\d{2}-\d{4}$/.test(eff)) {          // DD-MM-YYYY → YYYY-MM-DD
+        const [d, m, y] = eff.split('-'); eff = `${y}-${m}-${d}`;
+      }
+      if (!eff) eff = new Date().toISOString().slice(0, 10);
+      await pool.query(
+        `INSERT INTO float_rate_history (effective_from, rate) VALUES ($1, $2)
+         ON CONFLICT (effective_from) DO UPDATE SET rate = EXCLUDED.rate`,
+        [eff, parseFloat(settings.fd_rate)]);
+    }
+
     res.json({ success: true, message: 'Settings saved successfully' });
   } catch (err) { res.status(500).json({ success: false, error: err.message }); }
 });

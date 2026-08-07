@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 // ── Info (ⓘ) button ─────────────────────────────────────────────
@@ -108,29 +108,47 @@ export const ClientLink = ({ ucc, name }) => {
 
 export const DateRange = ({ value, onChange, bounds, active }) => {
   const v = value || { key: 'month' };
+  // Local pending dates — the query only fires when the user clicks Apply (no live re-query
+  // on every keystroke). Kept in sync when the parent value changes (e.g. a Quick preset).
+  const [from, setFrom] = useState(v.from || '');
+  const [to, setTo] = useState(v.to || '');
+  useEffect(() => { setFrom(v.from || ''); setTo(v.to || ''); }, [v.from, v.to, v.key]);
+
   const presets = [['month', 'This month'], ['30d', 'Last 30 days'], ['3m', 'Last 3 months'], ['fy', 'This FY'], ['all', 'All']];
-  const btn = (isActive) => ({
-    cursor: 'pointer', border: '1px solid var(--br2, #cbd5e1)',
-    background: isActive ? 'var(--pc, #185fa5)' : 'var(--card, #fff)',
-    color: isActive ? '#fff' : 'var(--tx2, #475569)',
-    borderRadius: 6, fontSize: 11, fontWeight: 600, padding: '4px 10px',
-  });
-  const inp = { border: '1px solid var(--br2, #cbd5e1)', borderRadius: 6, fontSize: 11, padding: '3px 6px', color: 'var(--tx2, #334155)' };
   const bMin = bounds && bounds.min, bMax = bounds && bounds.max;
+  const inp = { border: '1px solid var(--br2, #cbd5e1)', borderRadius: 6, fontSize: 12, padding: '6px 8px', color: 'var(--tx2, #334155)' };
+  const chip = (isActive) => ({
+    cursor: 'pointer', border: '1px solid var(--br2, #cbd5e1)',
+    background: isActive ? 'var(--pc, #185fa5)' : 'transparent',
+    color: isActive ? '#fff' : 'var(--tx3, #64748b)',
+    borderRadius: 999, fontSize: 11, fontWeight: 600, padding: '3px 10px',
+  });
+  const lbl = { fontSize: 11, color: 'var(--tx3)', marginBottom: 4 };
+  const apply = () => { if (from && to && from <= to) onChange({ key: 'custom', from, to }); };
+  const clear = () => { setFrom(''); setTo(''); onChange({ key: 'month' }); };
+
   return (
-    <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginBottom: 12 }}>
-      <span style={{ fontSize: 11, color: 'var(--tx3)', fontWeight: 600 }}>📅 Range:</span>
-      {presets.map(([k, label]) => (
-        <button key={k} type="button" style={btn(v.key === k)} onClick={() => onChange({ key: k })}>{label}</button>
-      ))}
-      <span style={{ fontSize: 11, color: 'var(--tx3)' }}>or custom</span>
-      <input type="date" style={inp} value={v.from || ''} min={bMin || undefined} max={v.to || bMax || undefined}
-        onChange={e => onChange({ key: 'custom', from: e.target.value, to: v.to || '' })} />
-      <span style={{ fontSize: 11, color: 'var(--tx3)' }}>→</span>
-      <input type="date" style={inp} value={v.to || ''} min={v.from || bMin || undefined} max={bMax || undefined}
-        onChange={e => onChange({ key: 'custom', from: v.from || '', to: e.target.value })} />
+    <div className="panel" style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap', marginBottom: 12, padding: '12px 14px' }}>
+      <div>
+        <div style={lbl}>From</div>
+        <input type="date" style={inp} value={from} min={bMin || undefined} max={to || bMax || undefined}
+          onChange={e => setFrom(e.target.value)} />
+      </div>
+      <div>
+        <div style={lbl}>To</div>
+        <input type="date" style={inp} value={to} min={from || bMin || undefined} max={bMax || undefined}
+          onChange={e => setTo(e.target.value)} />
+      </div>
+      <button className="btn bp" disabled={!from || !to || from > to} onClick={apply}>Apply</button>
+      {(v.key === 'custom' || from || to) && <button className="btn" onClick={clear}>Clear</button>}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <span style={{ fontSize: 11, color: 'var(--tx3)' }}>Quick:</span>
+        {presets.map(([k, label]) => (
+          <button key={k} type="button" style={chip(v.key === k)} onClick={() => onChange({ key: k })}>{label}</button>
+        ))}
+      </div>
       {active && active.from && (
-        <span style={{ fontSize: 11, color: 'var(--tx2, #475569)', fontWeight: 600, marginLeft: 4 }}>
+        <span style={{ fontSize: 11, color: 'var(--tx2, #475569)', fontWeight: 600, marginLeft: 'auto' }}>
           Showing {active.from} – {active.to}{active.trading_days != null ? ` · ${active.trading_days} trading days` : ''}
         </span>
       )}

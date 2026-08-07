@@ -3,25 +3,35 @@ import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 import api from '../api';
 import { InfoBtn, ViewToggle } from '../components/ui';
 
-const inr = (n) => (n == null ? '—' : '₹' + Math.round(Number(n)).toLocaleString('en-IN'));
+const inr = (n) => (n == null ? '—' : '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const vsColor = (n) => (n == null ? 'var(--tx2)' : n >= 0 ? 'var(--sc)' : 'var(--dc)');
 const vsFmt = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n + '%');
 const num = (n) => (n == null ? '—' : Number(n).toLocaleString('en-IN'));
+const cr  = (n) => (n == null ? '0.00' : (Number(n) / 1e7).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const MIX_COLORS = ['#185fa5', '#9FE1CB', '#AFA9EC', '#FAC775', '#e0803a'];
 
 const DailyMIS = () => {
   const [data, setData]   = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [from, setFrom]   = useState('');
+  const [to, setTo]       = useState('');
 
-  useEffect(() => {
-    api.get('/analytics/daily-mis').then(r => setData(r.data)).catch(() => setError('Could not load daily MIS.')).finally(() => setLoading(false));
-  }, []);
+  const load = (f, t) => {
+    setLoading(true); setError('');
+    const q = (f && t) ? `?from=${f}&to=${t}` : '';
+    api.get('/analytics/daily-mis' + q)
+      .then(r => setData(r.data))
+      .catch(() => setError('Could not load daily MIS.'))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load('', ''); }, []);
 
   if (loading) return <div className="ph"><h2>Corporate daily MIS</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Corporate daily MIS</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { meta, income, volume, activity, mtf, revenue_mix, trend } = data;
+  const { meta, income, volume, activity, mtf, revenue_mix, trend, range } = data;
 
   return (
     <div>
@@ -29,6 +39,71 @@ const DailyMIS = () => {
         <h2>Corporate daily MIS</h2>
         <p>As of {meta.today} · All income lines · Today vs MTD avg vs Prior 3-month avg · Expiry days highlighted in red</p>
       </div>
+
+      {/* ── Date-range validation filter ── */}
+      <div className="panel" style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 4 }}>From</div>
+          <input type="date" value={from} onChange={e => setFrom(e.target.value)}
+            style={{ padding: '6px 8px', border: '1px solid var(--br)', borderRadius: 6 }} />
+        </div>
+        <div>
+          <div style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 4 }}>To</div>
+          <input type="date" value={to} onChange={e => setTo(e.target.value)}
+            style={{ padding: '6px 8px', border: '1px solid var(--br)', borderRadius: 6 }} />
+        </div>
+        <button className="btn bp" disabled={!from || !to || from > to} onClick={() => load(from, to)}>Validate range</button>
+        {range && <button className="btn" onClick={() => { setFrom(''); setTo(''); load('', ''); }}>Clear</button>}
+        <span style={{ fontSize: 11, color: 'var(--tx3)' }}>Pick a From & To date to validate MTF interest, brokerage, clearing and float per day for that window.</span>
+      </div>
+
+      {range && (
+        <div className="panel">
+          <div className="ptitle">🔎 Selected range — daily revenue validation ({range.from} → {range.to})<InfoBtn text="Every calendar day in the selected range with its real MTF interest, equity brokerage, clearing commission and float income, plus the range totals. Days with no data read ₹0. MTF interest is each period's interest spread evenly across its days." /></div>
+          <div className="tw"><table>
+            <thead><tr><th style={{ width: 120 }}>Date</th><th>MTF interest</th><th>Equity brokerage</th><th>Clearing (commission)</th><th>Float income</th><th>Day total</th></tr></thead>
+            <tbody>
+              {range.days.map(d => (
+                <tr key={d.date}>
+                  <td><strong>{d.label}</strong></td>
+                  <td>{inr(d.mtf_interest)}</td><td>{inr(d.brokerage)}</td>
+                  <td>{inr(d.commission)}</td><td>{inr(d.float_income)}</td>
+                  <td>{inr(d.total)}</td>
+                </tr>
+              ))}
+              <tr style={{ fontWeight: 600, borderTop: '.5px solid var(--br)' }}>
+                <td><strong>Total ({range.days.length} days)</strong></td>
+                <td>{inr(range.totals.mtf_interest)}</td><td>{inr(range.totals.brokerage)}</td>
+                <td>{inr(range.totals.commission)}</td><td>{inr(range.totals.float_income)}</td>
+                <td>{inr(range.totals.total)}</td>
+              </tr>
+            </tbody>
+          </table></div>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>MTF interest is sourced from the mtf_interest periods, each period's interest spread evenly across its inclusive days — the same source used by the daily income line above.</p>
+
+          <div className="ptitle" style={{ marginTop: 16 }}>📊 Selected range — segment turnover (₹Cr)<InfoBtn text="Per-day traded turnover by segment for the selected range (₹ crore): equity cash, equity futures, equity options premium, commodity futures, commodity options. Same raw-trades source as the daily volume table. BSE trades are included inside the NSE segments." /></div>
+          <div className="tw"><table>
+            <thead><tr><th style={{ width: 120 }}>Date</th><th>Eq Cash</th><th>Eq Futures</th><th>Eq Options (prem)</th><th>Comm Futures</th><th>Comm Options</th><th>Total TO</th><th>Clients</th></tr></thead>
+            <tbody>
+              {range.days.map(d => (
+                <tr key={d.date}>
+                  <td><strong>{d.label}</strong></td>
+                  <td>₹{cr(d.eq_cash)}Cr</td><td>₹{cr(d.eq_fut)}Cr</td><td>₹{cr(d.eq_opt)}Cr</td>
+                  <td>₹{cr(d.comm_fut)}Cr</td><td>₹{cr(d.comm_opt)}Cr</td>
+                  <td>₹{cr(d.turnover)}Cr</td><td>{num(d.clients)}</td>
+                </tr>
+              ))}
+              <tr style={{ fontWeight: 600, borderTop: '.5px solid var(--br)' }}>
+                <td><strong>Total ({range.days.length} days)</strong></td>
+                <td>₹{cr(range.totals.eq_cash)}Cr</td><td>₹{cr(range.totals.eq_fut)}Cr</td><td>₹{cr(range.totals.eq_opt)}Cr</td>
+                <td>₹{cr(range.totals.comm_fut)}Cr</td><td>₹{cr(range.totals.comm_opt)}Cr</td>
+                <td>₹{cr(range.totals.turnover)}Cr</td><td>—</td>
+              </tr>
+            </tbody>
+          </table></div>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>Turnover = qty × price × lot size, from raw trades. Equity segments (lot size 1) match the source files to the rupee; commodity turnover applies each contract's lot size. Trades for UCCs not in the client master are excluded.</p>
+        </div>
+      )}
 
       {meta.is_expiry
         ? <div className="alert a-w"><strong>Today is a weekly expiry day</strong> — volume and client count typically 25–30% above normal. Figures shown in trend context.</div>

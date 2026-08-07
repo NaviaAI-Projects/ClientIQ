@@ -36,7 +36,9 @@ router.get('/float-stats', auth, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT SUM(opening_balance) as total_float,
-        ROUND(SUM(opening_balance) * 6.5 / 100 / 365, 2) as daily_income
+        ROUND(SUM(opening_balance * COALESCE(
+          (SELECT rate FROM float_rate_history h WHERE h.effective_from <= daily_ledger.ledger_date ORDER BY h.effective_from DESC LIMIT 1),
+          (SELECT value::numeric FROM settings WHERE key='fd_rate'), 6.5)) / 100 / 365, 2) as daily_income
       FROM daily_ledger
       WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)
     `);
@@ -56,7 +58,7 @@ router.get('/rm', auth, async (req, res) => {
       return res.json({ my_clients: 0, my_leads: 0, interactions_30d: 0 });
     }
 
-    const [clients, leads, interactions, asOf] = await Promise.all([
+    const [clients, leads, interactions, asOf, rev, monthlyBrok, monthlyMtf, top] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM clients WHERE assigned_rm_id = $1', [rmId]),
       pool.query("SELECT COUNT(*) FROM lead_pool WHERE assigned_to_rm = $1 AND status = 'assigned'", [rmId]),
       pool.query(`
@@ -65,16 +67,144 @@ router.get('/rm', auth, async (req, res) => {
         AND created_at >= NOW() - INTERVAL '30 days'
       `, [req.user.id]),
       // Latest date that actually has trade data (#12 "As of Date")
-      pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') AS d FROM daily_trades`)
+      pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') AS d FROM daily_trades`),
+      // RM-scoped revenue: MTD + YTD brokerage from this RM's assigned clients, and MTD MTF interest.
+      pool.query(`
+        WITH mx AS (SELECT MAX(trade_date) AS md FROM daily_trades),
+        fy AS (SELECT make_date(
+                 CASE WHEN EXTRACT(MONTH FROM (SELECT md FROM mx)) >= 4
+                      THEN EXTRACT(YEAR FROM (SELECT md FROM mx))::int
+                      ELSE EXTRACT(YEAR FROM (SELECT md FROM mx))::int - 1 END, 4, 1) AS fystart)
+        SELECT
+          COALESCE(SUM(dt.brokerage_earned) FILTER (
+            WHERE date_trunc('month',dt.trade_date) = date_trunc('month',(SELECT md FROM mx))),0)::float AS mtd_brokerage,
+          COALESCE(SUM(dt.brokerage_earned) FILTER (
+            WHERE dt.trade_date >= (SELECT fystart FROM fy)),0)::float AS ytd_brokerage,
+          COUNT(DISTINCT dt.ucc) FILTER (
+            WHERE date_trunc('month',dt.trade_date) = date_trunc('month',(SELECT md FROM mx))
+            AND dt.brokerage_earned > 0)::int AS revenue_clients
+        FROM daily_trades dt
+        JOIN clients c ON c.ucc = dt.ucc AND c.assigned_rm_id = $1
+      `, [rmId]),
+      // Monthly brokerage (last 6 months) for this RM's clients
+      pool.query(`
+        SELECT to_char(to_date(cms.month_year||'-01','YYYY-MM-DD'),'Mon'' 'YY') AS month,
+               to_date(cms.month_year||'-01','YYYY-MM-DD') AS ms,
+               COALESCE(SUM(cms.brokerage),0)::float AS brokerage
+        FROM client_monthly_summary cms
+        JOIN clients c ON c.ucc = cms.ucc AND c.assigned_rm_id = $1
+        WHERE cms.month_year >= to_char((SELECT MAX(trade_date) FROM daily_trades) - INTERVAL '6 months','YYYY-MM')
+        GROUP BY 1, 2 ORDER BY ms
+      `, [rmId]),
+      // Monthly MTF interest for this RM's clients
+      pool.query(`
+        SELECT m.month_year AS ym, COALESCE(SUM(m.interest_earned),0)::float AS mtf
+        FROM mtf_monthly m
+        JOIN clients c ON c.ucc = m.ucc AND c.assigned_rm_id = $1
+        GROUP BY 1 ORDER BY 1
+      `, [rmId]),
+      // Top 5 clients by MTD brokerage for this RM
+      pool.query(`
+        SELECT dt.ucc, c.name, COALESCE(SUM(dt.brokerage_earned),0)::float AS mtd_revenue
+        FROM daily_trades dt
+        JOIN clients c ON c.ucc = dt.ucc AND c.assigned_rm_id = $1
+        WHERE date_trunc('month',dt.trade_date) = date_trunc('month',(SELECT MAX(trade_date) FROM daily_trades))
+        GROUP BY dt.ucc, c.name
+        HAVING COALESCE(SUM(dt.brokerage_earned),0) > 0
+        ORDER BY mtd_revenue DESC LIMIT 5
+      `, [rmId]),
     ]);
+
+    // Build a month->{Brokerage,MTF} series. Month label maps from 'YYYY-MM' for MTF join.
+    const MONF = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const mtfByYm = {}; monthlyMtf.rows.forEach(r => { mtfByYm[r.ym] = Number(r.mtf); });
+    const monthly = monthlyBrok.rows.map(r => {
+      const d = new Date(r.ms);
+      const ym = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
+      return { month: `${MONF[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(2)}`,
+               Brokerage: Number(r.brokerage), MTF: mtfByYm[ym] || 0 };
+    });
+    const r0 = rev.rows[0] || {};
+    const mtdBrok = Number(r0.mtd_brokerage || 0);
+    const mtdMtf  = monthly.length ? monthly[monthly.length-1].MTF : 0;
+    const mtdTotal = mtdBrok + mtdMtf;
 
     res.json({
       rm_name:          userName || 'RM',
       data_as_of:       asOf.rows[0]?.d || null,
       my_clients:       parseInt(clients.rows[0].count),
       my_leads:         parseInt(leads.rows[0].count),
-      interactions_30d: parseInt(interactions.rows[0].count)
+      interactions_30d: parseInt(interactions.rows[0].count),
+      // Real revenue figures (null-safe; will be 0 when the RM has no mapped clients yet)
+      mtd_revenue:      mtdTotal,
+      ytd_revenue:      Number(r0.ytd_brokerage || 0) + monthlyMtf.rows.reduce((s,r)=>s+Number(r.mtf),0),
+      revenue_clients:  parseInt(r0.revenue_clients || 0),
+      brokerage_share:  mtdTotal > 0 ? Math.round(mtdBrok / mtdTotal * 100) : null,
+      monthly,          // [{month, Brokerage, MTF}]
+      top_clients:      top.rows.map(t => ({ ucc: t.ucc, name: t.name || t.ucc, mtd_revenue: Number(t.mtd_revenue) })),
     });
+  } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
+});
+
+// ── RM monthly performance (My Performance page) ──────────────────
+// Real per-month series for the logged-in RM. Revenue, leads assigned, converted and
+// interactions are computed from the DB. Target / achieved% / clients-EOM have no data
+// source in the system, so they are returned as null (rendered "—", never fabricated).
+router.get('/rm-performance', auth, async (req, res) => {
+  try {
+    const userResult = await pool.query('SELECT name FROM users WHERE id = $1 LIMIT 1', [req.user.id]);
+    const userName   = userResult.rows[0]?.name || '';
+    const rmResult   = await pool.query('SELECT id FROM rm_master WHERE LOWER(rm_name) = LOWER($1) LIMIT 1', [userName]);
+    const rmId       = rmResult.rows[0]?.id || null;
+    if (!rmId) return res.json({ rm_name: userName || 'RM', months: [] });
+
+    const [brok, mtf, leadsAssigned, converted, inter] = await Promise.all([
+      pool.query(`
+        SELECT cms.month_year AS ym, COALESCE(SUM(cms.brokerage),0)::float AS brokerage
+        FROM client_monthly_summary cms JOIN clients c ON c.ucc = cms.ucc AND c.assigned_rm_id = $1
+        WHERE cms.month_year >= to_char((SELECT MAX(trade_date) FROM daily_trades) - INTERVAL '6 months','YYYY-MM')
+        GROUP BY 1`, [rmId]),
+      pool.query(`
+        SELECT m.month_year AS ym, COALESCE(SUM(m.interest_earned),0)::float AS mtf
+        FROM mtf_monthly m JOIN clients c ON c.ucc = m.ucc AND c.assigned_rm_id = $1
+        GROUP BY 1`, [rmId]),
+      pool.query(`
+        SELECT to_char(date_trunc('month',assigned_at),'YYYY-MM') AS ym, COUNT(*)::int AS n
+        FROM lead_pool WHERE COALESCE(assigned_rm_id, assigned_to_rm) = $1 AND assigned_at IS NOT NULL
+        GROUP BY 1`, [rmId]),
+      pool.query(`
+        SELECT to_char(date_trunc('month',updated_at),'YYYY-MM') AS ym, COUNT(*)::int AS n
+        FROM lead_pool WHERE COALESCE(assigned_rm_id, assigned_to_rm) = $1 AND status = 'mapped'
+        GROUP BY 1`, [rmId]),
+      pool.query(`
+        SELECT to_char(date_trunc('month',created_at),'YYYY-MM') AS ym, COUNT(*)::int AS n
+        FROM interactions WHERE rm_id = $1 GROUP BY 1`, [req.user.id]),
+    ]);
+
+    // Build a 6-month spine anchored to the latest trade month.
+    const maxRow = await pool.query(`SELECT MAX(trade_date) AS md FROM daily_trades`);
+    const md = maxRow.rows[0]?.md ? new Date(maxRow.rows[0].md) : new Date(Date.UTC(2026, 6, 1));
+    const MONF = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const map = (rows) => { const m = {}; rows.forEach(r => { m[r.ym] = Number(r.brokerage ?? r.mtf ?? r.n); }); return m; };
+    const bM = map(brok.rows), mM = map(mtf.rows), laM = map(leadsAssigned.rows), cM = map(converted.rows), iM = map(inter.rows);
+
+    const months = [];
+    for (let k = 5; k >= 0; k--) {
+      const d = new Date(Date.UTC(md.getUTCFullYear(), md.getUTCMonth() - k, 1));
+      const ym = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
+      const revenue = (bM[ym] || 0) + (mM[ym] || 0);
+      months.push({
+        month: `${MONF[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(2)}`,
+        revenue,
+        target: null,           // no targets table in the system
+        achieved_pct: null,     // needs target
+        leads_assigned: laM[ym] || 0,
+        converted: cM[ym] || 0,
+        clients_eom: null,      // needs historical mapping snapshots
+        interactions: iM[ym] || 0,
+      });
+    }
+    res.json({ rm_name: userName || 'RM', months });
   } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
 });
 

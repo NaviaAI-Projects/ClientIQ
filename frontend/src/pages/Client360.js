@@ -280,7 +280,7 @@ const Client360 = () => {
           ) : (
             <>
               <div className="slbl" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span>Monthly trading averages — last 6 months</span>
+                <span>Daily trading activity — last 30 days</span>
                 <span style={{ display: 'inline-flex', gap: '4px' }}>
                   <button className="btn sm" style={{ opacity: chartView === 'chart' ? 1 : 0.5 }} onClick={() => setChartView('chart')}>Chart</button>
                   <button className="btn sm" style={{ opacity: chartView === 'table' ? 1 : 0.5 }} onClick={() => setChartView('table')}>Table</button>
@@ -291,11 +291,11 @@ const Client360 = () => {
               <>
               {/* Turnover by segment */}
               <div className="panel">
-                <div className="ptitle">Turnover by Segment (₹/month)</div>
+                <div className="ptitle">Turnover by Segment (₹/day)</div>
                 <ResponsiveContainer width="100%" height={220}>
                   <BarChart data={chartData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-                    <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+                    <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" minTickGap={20} />
                     <YAxis tick={{ fontSize: 10 }} tickFormatter={v => {
                       if (v >= 100000) return '₹' + (v/100000).toFixed(1) + 'L';
                       if (v >= 1000)   return '₹' + (v/1000).toFixed(0) + 'K';
@@ -319,11 +319,11 @@ const Client360 = () => {
               <div className="tc2">
                 {/* Opening balance */}
                 <div className="panel">
-                  <div className="ptitle">Opening Balance (₹ avg/month)</div>
+                  <div className="ptitle">Opening Balance (₹/day)</div>
                   <ResponsiveContainer width="100%" height={180}>
                     <LineChart data={chartData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-                      <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+                      <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" minTickGap={20} />
                       <YAxis tick={{ fontSize: 10 }} tickFormatter={v => {
                         if (v >= 100000) return '₹' + (v/100000).toFixed(1) + 'L';
                         if (v >= 1000)   return '₹' + (v/1000).toFixed(0) + 'K';
@@ -342,7 +342,7 @@ const Client360 = () => {
                   <ResponsiveContainer width="100%" height={180}>
                     <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-                      <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+                      <XAxis dataKey="date" tick={{ fontSize: 10 }} interval="preserveStartEnd" minTickGap={20} />
                       <YAxis yAxisId="left"  tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v.toLocaleString('en-IN')} />
                       <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} tickFormatter={v => {
                         if (v >= 100000) return '₹' + (v/100000).toFixed(1) + 'L';
@@ -353,7 +353,8 @@ const Client360 = () => {
                       <Legend wrapperStyle={{ fontSize: 10 }} iconSize={10} />
                       <Bar  yAxisId="left"  dataKey="mtf_interest"  name="MTF interest"  fill="#9FE1CB" />
                       <Line yAxisId="right" dataKey="holding_value" name="Holding value"
-                        type="monotone" stroke="#854f0b" strokeWidth={1.5} dot={{ r: 3 }} />
+                        type="monotone" stroke="#854f0b" strokeWidth={1.5} dot={{ r: 3 }}
+                        connectNulls />
                     </ComposedChart>
                   </ResponsiveContainer>
                 </div>
@@ -363,11 +364,11 @@ const Client360 = () => {
               <>
                 {/* Turnover by segment — TABLE */}
                 <div className="panel">
-                  <div className="ptitle">Turnover by Segment (₹/month)</div>
+                  <div className="ptitle">Turnover by Segment (₹/day)</div>
                   <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
                     <thead>
                       <tr style={{ color: 'var(--tx3)', textAlign: 'right' }}>
-                        <th style={{ textAlign: 'left' }}>Month</th>
+                        <th style={{ textAlign: 'left' }}>Date</th>
                         <th>Eq Cash</th><th>Eq Futures</th><th>Eq Options</th><th>Comm Fut</th><th>Total</th>
                       </tr>
                     </thead>
@@ -389,12 +390,12 @@ const Client360 = () => {
                 <div className="tc2">
                   {/* Opening balance — TABLE */}
                   <div className="panel">
-                    <div className="ptitle">Opening Balance (₹ avg/month)</div>
+                    <div className="ptitle">Month-End Balance (₹)</div>
                     <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
                       <thead>
                         <tr style={{ color: 'var(--tx3)' }}>
-                          <th style={{ textAlign: 'left' }}>Month</th>
-                          <th style={{ textAlign: 'right' }}>Avg Opening Balance</th>
+                          <th style={{ textAlign: 'left' }}>Date</th>
+                          <th style={{ textAlign: 'right' }}>Month-End Balance</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -414,7 +415,7 @@ const Client360 = () => {
                     <table style={{ width: '100%', fontSize: '12px', borderCollapse: 'collapse' }}>
                       <thead>
                         <tr style={{ color: 'var(--tx3)', textAlign: 'right' }}>
-                          <th style={{ textAlign: 'left' }}>Month</th>
+                          <th style={{ textAlign: 'left' }}>Date</th>
                           <th>MTF Interest</th><th>Holding Value</th>
                         </tr>
                       </thead>

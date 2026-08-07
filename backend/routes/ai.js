@@ -471,7 +471,7 @@ Format as:
 
     const insightText = await callGroq(systemPrompt, userPrompt, 400);
 
-    const [highPriorityRes, churnRes] = await Promise.all([
+    const [highPriorityRes, churnRes, oppRes] = await Promise.all([
       pool.query(`SELECT c.ucc, c.name, a.lead_score, a.churn_risk_score, u.name as rm_name
         FROM clients c LEFT JOIN ai_scores a ON c.ucc = a.ucc
         LEFT JOIN rm_master rm ON rm.id = c.assigned_rm_id
@@ -481,8 +481,23 @@ Format as:
         FROM clients c LEFT JOIN ai_scores a ON c.ucc = a.ucc
         LEFT JOIN rm_master rm ON rm.id = c.assigned_rm_id
         LEFT JOIN users u ON LOWER(u.name) = LOWER(rm.rm_name)
-        WHERE a.churn_risk_score >= 6 ORDER BY a.churn_risk_score DESC LIMIT 5`)
+        WHERE a.churn_risk_score >= 6 ORDER BY a.churn_risk_score DESC LIMIT 5`),
+      // Real, company-wide cross-sell opportunity counts (no hardcoding)
+      pool.query(`
+        WITH dt AS (SELECT ucc, SUM(options_premium_turnover) AS opt, SUM(eq_cash_turnover) AS eqc FROM daily_trades GROUP BY ucc),
+             h  AS (SELECT ucc, SUM(total_holding_value) AS hv FROM holdings_summary GROUP BY ucc),
+             l  AS (SELECT ucc, AVG(opening_balance) AS bal FROM daily_ledger GROUP BY ucc)
+        SELECT
+          COUNT(*) FILTER (WHERE COALESCE(h.hv,0) > 0 AND COALESCE(l.bal,0) < COALESCE(h.hv,0)*0.2)::int AS mtf_candidates,
+          COUNT(*) FILTER (WHERE COALESCE(dt.eqc,0) > 0 AND COALESCE(dt.opt,0) = 0)::int             AS options_candidates,
+          COUNT(*) FILTER (WHERE COALESCE(dt.eqc,0) > 0 AND COALESCE(dt.opt,0) = 0 AND COALESCE(h.hv,0) > 0)::int AS equity_holders
+        FROM clients c
+        LEFT JOIN dt ON dt.ucc = c.ucc
+        LEFT JOIN h  ON h.ucc  = c.ucc
+        LEFT JOIN l  ON l.ucc  = c.ucc
+      `)
     ]);
+    const opp = oppRes.rows[0] || {};
 
     res.json({
       narrative: insightText,
@@ -499,9 +514,12 @@ Format as:
       high_priority_clients: highPriorityRes.rows,
       churn_risk_clients:    churnRes.rows,
       opportunities: [
-        { title: 'MTF Activation', description: 'Clients with high holdings but low balance can leverage MTF for enhanced returns.' },
-        { title: 'Plan Upgrade', description: 'High-volume zero-brokerage clients may benefit from a flat-fee plan.' },
-        { title: 'Options Introduction', description: 'Active equity traders with no options exposure are good F&O onboarding candidates.' }
+        { title: 'MTF Activation', count: Number(opp.mtf_candidates || 0),
+          description: `${Number(opp.mtf_candidates || 0).toLocaleString('en-IN')} clients hold stock (DP) but keep low cash balance — candidates to leverage MTF.` },
+        { title: 'Options Introduction', count: Number(opp.options_candidates || 0),
+          description: `${Number(opp.options_candidates || 0).toLocaleString('en-IN')} active equity-cash clients have no options exposure — F&O onboarding candidates.` },
+        { title: 'Holdings Deployment', count: Number(opp.equity_holders || 0),
+          description: `${Number(opp.equity_holders || 0).toLocaleString('en-IN')} equity-only clients hold DP stock but don't trade derivatives — capital to activate.` }
       ]
     });
   } catch (err) {

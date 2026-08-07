@@ -5,11 +5,23 @@ import { InfoBtn, ViewToggle } from '../components/ui';
 
 const spct = (c, p) => (p ? (((c - p) / p) * 100).toFixed(1) + '%' : '—');
 const smom = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n + '%');
-const Pending = ({ h = 200 }) => (
+const pctCell = (v) => (v == null ? '—' : v.toFixed(1) + '%');
+// heat tint: red (0%) → green (100%)
+const heat = (v) => {
+  if (v == null) return {};
+  const t = Math.max(0, Math.min(100, v)) / 100;
+  const r = Math.round(216 + (47 - 216) * t);
+  const g = Math.round(90 + (158 - 90) * t);
+  const b = Math.round(90 + (111 - 90) * t);
+  return { background: `rgba(${r},${g},${b},0.16)`, color: '#333', fontWeight: 600 };
+};
+const Pending = ({ h = 200, note }) => (
   <div style={{ height: h, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--tx3)', fontSize: 13, textAlign: 'center', padding: '0 20px' }}>
-    Pending — needs multi-month per-client activity history (only ~2–3 months of trades available).
+    {note || 'Pending — needs multi-month per-client activity history.'}
   </div>
 );
+
+const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
 const Retention = () => {
   const [data, setData] = useState(null);
@@ -23,7 +35,9 @@ const Retention = () => {
   if (loading) return <div className="ph"><h2>Client retention &amp; cohort analysis</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Client retention &amp; cohort analysis</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { meta, cards, monthly_active, cohorts, segment_trend } = data;
+  const { meta, cards, monthly_active, cohorts, retention_curve = [], segment_trend } = data;
+  const curve = (retention_curve || []).map(c => ({ label: c.label || `M${c.m}`, pct: c.pct }));
+  const obs = (meta && meta.observed_months) || [];
 
   return (
     <div>
@@ -34,9 +48,9 @@ const Retention = () => {
 
       <div className="cards">
         <div className="card ci"><div className="clbl">Monthly active clients</div><div className="cval">{cards.monthly_active.toLocaleString('en-IN')}</div><div className="csub">vs prior {cards.monthly_active_prev.toLocaleString('en-IN')} · {spct(cards.monthly_active, cards.monthly_active_prev)} · traded ≥1 day</div></div>
-        <div className="card cs"><div className="clbl">30-day retention (new clients)</div><div className="cval">—</div><div className="csub">needs post-opening activity history</div></div>
-        <div className="card cw"><div className="clbl">90-day retention</div><div className="cval">—</div><div className="csub">needs post-opening activity history</div></div>
-        <div className="card cd"><div className="clbl">Churn this month</div><div className="cval">{cards.churn == null ? '—' : cards.churn.toLocaleString('en-IN')}</div><div className="csub">Active prior month, not this month</div></div>
+        <div className="card cs"><div className="clbl">30-day retention (new clients)</div><div className="cval">{cards.retention_30 == null ? '—' : cards.retention_30.toFixed(1) + '%'}</div><div className="csub">{cards.retention_30 == null ? 'needs the month after opening observed' : 'traded in the month after account opening (M1)'}</div></div>
+        <div className="card cw"><div className="clbl">90-day retention</div><div className="cval">{cards.retention_90 == null ? '—' : cards.retention_90.toFixed(1) + '%'}</div><div className="csub">{cards.retention_90 == null ? 'needs 3rd month after opening observed' : 'still trading ~3 months after opening (M3)'}</div></div>
+        <div className="card cd"><div className="clbl">Churn this month</div><div className="cval">{cards.churn == null ? '—' : cards.churn.toLocaleString('en-IN')}</div><div className="csub">{cards.churn == null ? 'needs the prior month observed' : 'Active prior month, not this month'}</div></div>
       </div>
 
       <div className="panel">
@@ -67,27 +81,46 @@ const Retention = () => {
       </div>
 
       <div className="panel">
-        <div className="ptitle">📊 Cohort retention heatmap — % still trading at N months after opening<InfoBtn text="Groups clients by account-opening month; each row shows the % still trading 1, 3, 6, 9, 12 months later. Cohort sizes are live; retention % fills in as trade history accumulates." /></div>
+        <div className="ptitle">📊 Cohort retention heatmap — % still trading at N months after opening<InfoBtn text="Groups clients by account-opening month; each row shows the % of that cohort who traded 1…12 months later. A cell shows a number only for a month we actually hold trade files for; all other cells are unknown (—), never assumed 0%." /></div>
         <div className="tw"><table>
-          <thead><tr><th>Opening cohort</th><th>Accounts opened</th><th>M1 active %</th><th>M3 active %</th><th>M6 active %</th><th>M9 active %</th><th>M12 active %</th></tr></thead>
+          <thead><tr><th>Opening cohort</th><th>Accounts opened</th>{MONTHS.map(k => <th key={k}>M{k} %</th>)}</tr></thead>
           <tbody>
             {cohorts.map(r => (
-              <tr key={r.cohort}><td>{r.cohort}</td><td>{r.opened.toLocaleString('en-IN')}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+              <tr key={r.cohort}>
+                <td>{r.cohort}</td>
+                <td>{r.opened.toLocaleString('en-IN')}</td>
+                {MONTHS.map(k => {
+                  const v = r.ret ? r.ret[k] : null;
+                  return <td key={k} style={heat(v)}>{pctCell(v)}</td>;
+                })}
+              </tr>
             ))}
           </tbody>
         </table></div>
-        <div className="alert a-i" style={{ marginTop: 10 }}>💡 Cohort sizes are live from account-open dates; the retention % columns fill in as post-opening trade history accumulates (only ~2–3 months available today).</div>
+        <div className="alert a-i" style={{ marginTop: 10 }}>💡 Cohort sizes are live from account-open dates. A retention % appears wherever the target month has trade data{obs.length ? ` (observed: ${obs.join(', ')})` : ''}; the rest fill in as more monthly files are loaded.</div>
       </div>
 
       <div className="tc2">
         <div className="panel">
-          <div className="ptitle">📈 Retention curve — cohort<InfoBtn text="Percentage of a cohort still active as months elapse since account opening. Pending: needs multi-month per-client activity history." /></div>
-          <Pending />
+          <div className="ptitle">📈 Retention curve — blended cohort<InfoBtn text="Percentage of clients still active as months elapse since account opening, pooled across all cohorts and weighted by accounts opened. M0 = opening month. Only elapsed months with trade data are plotted." /></div>
+          {curve.length ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={curve} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+                <XAxis dataKey="label" tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} unit="%" domain={[0, 100]} />
+                <Tooltip formatter={(v) => v + '%'} />
+                <Line dataKey="pct" stroke="#185fa5" strokeWidth={2} name="Still active" dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <Pending note="Pending — needs at least one elapsed month with trade data after a cohort's opening." />
+          )}
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>M0 = opening month. Blended across cohorts, weighted by accounts opened; only elapsed months with trade data are shown.</p>
         </div>
         <div className="panel">
-          <div className="ptitle">🔄 Reactivation — dormant clients who returned<InfoBtn text="Dormant clients (no trade for 60+ days) who then traded again. Tracks RM reactivation effectiveness. Pending: needs longer activity history." /></div>
-          <Pending />
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Dormant = no trade for 60+ days then traded again. Tracks RM reactivation effectiveness.</p>
+          <div className="ptitle">🔄 Reactivation — dormant clients who returned<InfoBtn text="Dormant clients (no trade in the prior calendar month) who then traded again. Tracks RM reactivation effectiveness. Needs at least two consecutive observed months of trades." /></div>
+          <Pending note="Pending — needs two consecutive months of trade data to detect a dormant client returning (only one month observed so far)." />
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Dormant = no trade in the prior calendar month, then traded again. Tracks RM reactivation effectiveness.</p>
         </div>
       </div>
 

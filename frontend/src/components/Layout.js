@@ -75,10 +75,12 @@ const Layout = () => {
         }));
       }
       if (user?.role === 'supervisor' || user?.role === 'admin') {
-        const [approvalRes] = await Promise.all([api.get('/leads/mapping-pool')]);
+        // Badge must match the Mapping Approvals page — pending approval requests,
+        // NOT the whole scored unmapped pool (/leads/mapping-pool returned ~7824).
+        const [approvalRes] = await Promise.all([api.get('/analytics/mapping-approvals')]);
         setCounts(prev => ({
           ...prev,
-          mapping_approvals: (approvalRes.data || []).length,
+          mapping_approvals: (approvalRes.data?.rows || []).length,
         }));
       }
     } catch (e) { console.error('Count fetch error:', e); }

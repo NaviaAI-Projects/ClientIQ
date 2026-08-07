@@ -101,87 +101,89 @@ router.get('/:ucc/chart-data', auth, async (req, res) => {
   try {
     const { ucc } = req.params;
 
-    const [trades, ledger, mtf] = await Promise.all([
+    // Day-wise chart data over the last 30 days: turnover per segment (daily_trades),
+    // opening balance per day (daily_ledger), holding value per day (holdings_summary),
+    // and MTF interest per day (mtf_interest periods spread evenly across their days).
+    const [trades, ledger, holdings, mtf] = await Promise.all([
       pool.query(`
-        SELECT
-          TO_CHAR(trade_date, 'Mon''YY') AS month,
-          DATE_TRUNC('month', trade_date) AS month_start,
-          SUM(eq_cash_turnover) AS eq_cash,
-          SUM(eq_fo_turnover) AS eq_fo,
-          SUM(options_premium_turnover) AS eq_options,
-          SUM(commodity_fo_turnover) AS comm_fut
+        SELECT trade_date AS d,
+          SUM(eq_cash_turnover)          AS eq_cash,
+          SUM(eq_fo_turnover)            AS eq_fo,
+          SUM(options_premium_turnover)  AS eq_options,
+          SUM(commodity_fo_turnover)     AS comm_fut
         FROM daily_trades
-        WHERE ucc = $1
-          AND trade_date >= NOW() - INTERVAL '3 months'
-        GROUP BY DATE_TRUNC('month', trade_date), TO_CHAR(trade_date, 'Mon''YY')
-        ORDER BY month_start ASC
+        WHERE ucc = $1 AND trade_date >= NOW() - INTERVAL '30 days'
+        GROUP BY trade_date
       `, [ucc]),
 
       pool.query(`
-        SELECT
-          TO_CHAR(ledger_date, 'Mon''YY') AS month,
-          DATE_TRUNC('month', ledger_date) AS month_start,
-          AVG(opening_balance) AS avg_balance
+        SELECT ledger_date AS d, opening_balance AS bal
         FROM daily_ledger
-        WHERE ucc = $1
-          AND ledger_date >= NOW() - INTERVAL '3 months'
-        GROUP BY DATE_TRUNC('month', ledger_date), TO_CHAR(ledger_date, 'Mon''YY')
-        ORDER BY month_start ASC
+        WHERE ucc = $1 AND ledger_date >= NOW() - INTERVAL '30 days'
       `, [ucc]),
 
       pool.query(`
-        SELECT
-          month_year AS month,
-          interest_earned AS mtf_interest
-        FROM mtf_monthly
-        WHERE ucc = $1
-          AND month_year >= TO_CHAR(NOW() - INTERVAL '3 months', 'YYYY-MM')
-        ORDER BY month_year ASC
-      `, [ucc])
+        SELECT holding_date AS d, total_holding_value AS hv
+        FROM holdings_summary
+        WHERE ucc = $1 AND holding_date >= NOW() - INTERVAL '30 days'
+      `, [ucc]),
+
+      pool.query(`
+        SELECT gs::date AS d, SUM(interest / (GREATEST((to_date - from_date), 0) + 1)) AS mtf
+        FROM mtf_interest, LATERAL generate_series(from_date, to_date, interval '1 day') gs
+        WHERE ucc = $1 AND gs::date >= NOW() - INTERVAL '30 days'
+        GROUP BY gs::date
+      `, [ucc]),
     ]);
 
-    // Merge all into unified month list
-    const monthMap = {};
-    trades.rows.forEach(r => {
-      monthMap[r.month] = {
-        month: r.month,
-        eq_cash:    parseFloat(r.eq_cash)    || 0,
-        eq_futures: parseFloat(r.eq_fo)      || 0,
-        eq_options: parseFloat(r.eq_options) || 0,
-        comm_fut:   parseFloat(r.comm_fut)   || 0,
-        comm_opt:   0,
-        avg_balance: 0,
-        mtf_interest: 0,
-        holding_value: 0
-      };
-    });
-
-    ledger.rows.forEach(r => {
-      if (monthMap[r.month]) {
-        monthMap[r.month].avg_balance = parseFloat(r.avg_balance) || 0;
-      } else {
-        monthMap[r.month] = { month: r.month, eq_cash: 0, eq_futures: 0, eq_options: 0, comm_fut: 0, comm_opt: 0, avg_balance: parseFloat(r.avg_balance) || 0, mtf_interest: 0, holding_value: 0 };
+    const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    // node-postgres parses a DATE column into a JS Date at the SERVER's local midnight.
+    // Using toISOString() here would re-interpret that instant in UTC and, on any server
+    // ahead of UTC (e.g. IST +5:30), shift the date back one day (27 Jul -> 26 Jul).
+    // Read the LOCAL components instead, which faithfully recover the stored date.
+    const iso = (d) => {
+      if (d instanceof Date) {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
       }
+      return String(d).slice(0, 10);
+    };
+    const dayLabel = (k) => { const dt = new Date(k + 'T00:00:00Z'); return `${dt.getUTCDate()} ${MON[dt.getUTCMonth()]}`; };
+
+    const dayMap = {};
+    // avg_balance is a ledger snapshot: it starts null and we carry the last known value
+    // forward (LOCF) so the line stays flat on days the ledger file wasn't uploaded.
+    // holding_value defaults to 0 on days with no holdings file, so gap days read as ₹0 and
+    // the line runs continuously across the window (no carry-forward of a stale prior value).
+    // mtf_interest is a per-day FLOW, so it correctly stays 0 on days with no MTF period.
+    const ensure = (k) => (dayMap[k] = dayMap[k] || {
+      _k: k, eq_cash: 0, eq_futures: 0, eq_options: 0, comm_fut: 0, comm_opt: 0,
+      avg_balance: null, mtf_interest: 0, holding_value: 0,
     });
+    trades.rows.forEach(r => { const o = ensure(iso(r.d));
+      o.eq_cash = parseFloat(r.eq_cash) || 0; o.eq_futures = parseFloat(r.eq_fo) || 0;
+      o.eq_options = parseFloat(r.eq_options) || 0; o.comm_fut = parseFloat(r.comm_fut) || 0; });
+    ledger.rows.forEach(r => { ensure(iso(r.d)).avg_balance = parseFloat(r.bal) || 0; });
+    holdings.rows.forEach(r => { ensure(iso(r.d)).holding_value = parseFloat(r.hv) || 0; });
+    mtf.rows.forEach(r => { ensure(iso(r.d)).mtf_interest = parseFloat(r.mtf) || 0; });
 
-    mtf.rows.forEach(r => {
-      const monthLabel = new Date(r.month + '-01').toLocaleString('en-US', { month: 'short', year: '2-digit' });
-      if (monthMap[monthLabel]) {
-        monthMap[monthLabel].mtf_interest = parseFloat(r.mtf_interest) || 0;
-      }
-    });
+    // Seed the ledger carry-forward from the most recent balance BEFORE the window,
+    // so days at the very start of the window aren't blank.
+    const [seedBal] = await Promise.all([
+      pool.query(`SELECT opening_balance AS v FROM daily_ledger WHERE ucc = $1 AND ledger_date < NOW() - INTERVAL '30 days' ORDER BY ledger_date DESC LIMIT 1`, [ucc]),
+    ]);
+    let lastBal = seedBal.rows[0] ? parseFloat(seedBal.rows[0].v) || 0 : 0;
 
-    // Get latest holding value
-    const holding = await pool.query(
-      'SELECT total_holding_value FROM holdings_summary WHERE ucc = $1 ORDER BY holding_date DESC LIMIT 1',
-      [ucc]
-    );
-    const holdingVal = parseFloat(holding.rows[0]?.total_holding_value) || 0;
-
-    const chartData = Object.values(monthMap);
-    if (chartData.length > 0) {
-      chartData[chartData.length - 1].holding_value = holdingVal;
-    }
+    const chartData = Object.values(dayMap)
+      .sort((a, b) => (a._k < b._k ? -1 : 1))
+      .map(o => {
+        // Opening balance is a daily ledger snapshot present on (almost) every day, so we
+        // carry the last known value forward to keep the line continuous.
+        if (o.avg_balance == null) o.avg_balance = lastBal; else lastBal = o.avg_balance;
+        // Holding value: show ONLY the actual holdings snapshots that exist in the DB.
+        // Days with no holdings file stay null (no carry-forward), so the chart plots the
+        // real snapshot dates and does NOT paint a stale prior value onto later days.
+        return { date: dayLabel(o._k), month: dayLabel(o._k), ...o };
+      });
 
     res.json(chartData);
   } catch (err) {

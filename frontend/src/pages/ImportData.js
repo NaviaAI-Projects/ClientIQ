@@ -4,17 +4,24 @@ import api from '../api';
 const FILE_CONFIGS = {
   client_master: { label: 'Client Master',  section: 'Client Master', icon: '👤', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',  step: 1, sample: 'client_master_sample.ods', keywords: ['clientmaster','client_master','clientmst'] },
 
+  // CM MTM Prices — per-ISIN market price source for valuing Holdings. A single rolling
+  // snapshot (re-upload replaces it). Listed before the trade files so its filename
+  // (CM_MTM_Prices…) is matched here first rather than mis-detected as a trade file.
+  mtm_prices:    { label: 'CM MTM Prices',   section: 'Other Files', icon: '💹', color: '#08905C', bg: '#E6FAF3', freq: 'As needed', step: 5, sample: 'cm_mtm_prices_sample.csv', keywords: ['cmmtmprices','cmmtm','mtmprices','mtmprice'] },
+
   // ── Trade — grouped by exchange (NSE / BSE / MCX), each with its Cash + F&O file ──
   nse_cm: { label: 'NSE Cash', section: 'Trade · NSE', icon: '📈', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily', step: 2, sample: 'trade_nse_cm_sample.csv', keywords: ['tradensecm','nsecm'] },
   nse_fo: { label: 'NSE F&O',  section: 'Trade · NSE', icon: '📊', color: '#6D3B9E', bg: '#F0E9F8', freq: 'Daily', step: 2, sample: 'trade_nse_fo_sample.csv', keywords: ['tradensefo','nsefo'] },
-  bse_cm: { label: 'BSE Cash', section: 'Trade · BSE', icon: '📈', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily', step: 2, sample: 'trade_bse_cm_sample.csv', keywords: ['tradebsecm','bsecm'] },
-  bse_fo: { label: 'BSE F&O',  section: 'Trade · BSE', icon: '📊', color: '#6D3B9E', bg: '#F0E9F8', freq: 'Daily', step: 2, sample: 'trade_bse_fo_sample.csv', keywords: ['tradebsefo','bsefo'] },
+  // BSE slots disabled — NSE trade files already include BSE-exchange trades. Re-enable
+  // by uncommenting these two lines (and restoring bse_cm/bse_fo in the backend gate).
+  // bse_cm: { label: 'BSE Cash', section: 'Trade · BSE', icon: '📈', color: '#3B6D11', bg: '#EAF3DE', freq: 'Daily', step: 2, sample: 'trade_bse_cm_sample.csv', keywords: ['tradebsecm','bsecm'] },
+  // bse_fo: { label: 'BSE F&O',  section: 'Trade · BSE', icon: '📊', color: '#6D3B9E', bg: '#F0E9F8', freq: 'Daily', step: 2, sample: 'trade_bse_fo_sample.csv', keywords: ['tradebsefo','bsefo'] },
   mcx:    { label: 'MCX',      section: 'Trade · MCX',         icon: '🛢️', color: '#9E5B1E', bg: '#FBEFE0', freq: 'Daily', step: 2, sample: 'trade_mcx_sample.csv',    keywords: ['trademcx','mcxco','mcx'] },
 
   brokerage:     { label: 'Brokerage File',  section: 'Other Files', icon: '🧾', color: '#854F0B', bg: '#FAEEDA', freq: 'Daily',  step: 3, sample: 'brokerage_sample.xlsx', keywords: ['brokerage','brokerge','brok'] },
   ledger:        { label: 'Ledger File',     section: 'Other Files', icon: '🏦', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',  step: 4, sample: 'ledger_sample.txt',      keywords: ['ledger','ledgr','basecapital','base_capital','rmslimit','rms_limit','rms','limit','capital'] },
-  holdings:      { label: 'Holdings',        section: 'Other Files', icon: '📁', color: '#08905C', bg: '#E6FAF3', freq: 'Daily',  step: 5, sample: 'holdings_sample.xlsx',   keywords: ['holding','dp','dpholding'] },
-  mtf:           { label: 'MTF File',        section: 'Other Files', icon: '💰', color: '#854F0B', bg: '#FAEEDA', freq: 'Weekly', step: 6, sample: 'mtf_sample.xlsx',        keywords: ['mtf','margintrade','mtfinterest'] },
+  holdings:      { label: 'Holdings',        section: 'Other Files', icon: '📁', color: '#08905C', bg: '#E6FAF3', freq: 'Daily',  step: 6, sample: 'holdings_sample.xlsx',   keywords: ['holding','dp','dpholding'] },
+  mtf:           { label: 'MTF File',        section: 'Other Files', icon: '💰', color: '#854F0B', bg: '#FAEEDA', freq: 'Weekly', step: 7, sample: 'mtf_sample.xlsx',        keywords: ['mtf','margintrade','mtfinterest'] },
 };
 
 // Ordered list of section names, used to group the individual upload cards.
@@ -61,6 +68,8 @@ const ImportData = () => {
   const [queued, setQueued]         = useState([]);
   const [bulkRunning, setBulkRunning] = useState(false);
   const [rescoring, setRescoring]   = useState(false);
+  const [rebuilding, setRebuilding] = useState(false);
+  const [rebuildMsg, setRebuildMsg] = useState(null);
   const [statusMsg, setStatusMsg]   = useState(null);
   const [rescoreMsg, setRescoreMsg] = useState(null);
   const [conflict, setConflict]     = useState(null);
@@ -85,13 +94,31 @@ const ImportData = () => {
   const getLastImport = type =>
     logs.find(l => l.file_type === type && ['success','partial'].includes(l.status)) || null;
 
+  // Trade files are inserted raw only (defer=true); daily_trades is built afterward via
+  // the "Rebuild daily data" button — much faster than aggregating on every upload.
+  const TRADE_TYPES = ['nse_cm', 'nse_fo', 'bse_cm', 'bse_fo', 'mcx'];
+
   const uploadFile = async (file, fileType, overwrite = false) => {
     const fd = new FormData();
     fd.append('file', file);
     if (fileType) fd.append('file_type', fileType);
     if (overwrite) fd.append('overwrite', 'true');
+    if (TRADE_TYPES.includes(fileType)) fd.append('defer', 'true');
     const res = await api.post('/import/upload', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
     return res.data;
+  };
+
+  const doRebuild = async (all = false) => {
+    setRebuilding(true); setRebuildMsg(null);
+    try {
+      const res = await api.post('/import/rebuild-daily', all ? { all: true } : {});
+      setRebuildMsg({ success: true, text: res.data.message || 'Daily data rebuilt.' });
+      fetchLogs();
+    } catch (err) {
+      setRebuildMsg({ success: false, text: err.response?.data?.message || 'Rebuild failed.' });
+    } finally {
+      setRebuilding(false);
+    }
   };
 
   // Single-card upload. overwrite=true is used after the user confirms a duplicate replace.
@@ -124,7 +151,7 @@ const ImportData = () => {
       else unrecognised.push(file.name);
     });
     if (unrecognised.length > 0) {
-      setStatusMsg({ success: false, text: `Could not detect type for: ${unrecognised.join(', ')}. Filenames should include: clientmaster, Trade_NSE_CM / Trade_BSE_CM / Trade_NSE_FO / Trade_BSE_FO / Trade_MCX, brokerage, ledger, holdings, or mtf.` });
+      setStatusMsg({ success: false, text: `Could not detect type for: ${unrecognised.join(', ')}. Filenames should include: clientmaster, Trade_NSE_CM / Trade_BSE_CM / Trade_NSE_FO / Trade_BSE_FO / Trade_MCX, brokerage, ledger, CM_MTM_Prices, holdings, or mtf.` });
       setTimeout(() => setStatusMsg(null), 7000);
     }
     newItems.sort((a, b) => FILE_CONFIGS[a.type].step - FILE_CONFIGS[b.type].step);
@@ -206,10 +233,31 @@ const ImportData = () => {
 
   return (
     <div>
-      <div className="ph">
-        <h2>Daily Data Import</h2>
-        <p>Upload all 6 Symphony files together or one by one — type is auto-detected from the filename</p>
+      <div className="ph" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <h2>Daily Data Import</h2>
+          <p>Upload all 6 Symphony files together or one by one — type is auto-detected from the filename</p>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <button className="btn bp" disabled={rebuilding} onClick={() => doRebuild(false)} title="Compute daily data for the newly uploaded trade dates only">
+            {rebuilding ? '⏳ Rebuilding…' : '🔄 Rebuild daily data'}
+          </button>
+          <div style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4, maxWidth: 240 }}>
+            Trade files upload raw first (fast). Click this after uploading to compute daily data for the <strong>new dates only</strong>.
+            {' '}
+            <span style={{ color: 'var(--pc)', cursor: rebuilding ? 'default' : 'pointer', textDecoration: 'underline' }}
+                  onClick={() => { if (!rebuilding) doRebuild(true); }}>
+              Rebuild everything
+            </span> (use after a rate/config change).
+          </div>
+        </div>
       </div>
+
+      {rebuildMsg && (
+        <div className={`alert ${rebuildMsg.success ? 'a-s' : 'a-d'}`} style={{ marginBottom: '14px' }}>
+          {rebuildMsg.text}
+        </div>
+      )}
 
       {/* Upload status — top banner (unchanged from your original) */}
       {statusMsg && (
@@ -299,7 +347,7 @@ const ImportData = () => {
         <div className="ptitle">Import All Files</div>
         <p style={{ fontSize: '12px', color: 'var(--tx2)', marginBottom: '14px', lineHeight: 1.6 }}>
           Select all your files at once. The system reads each filename and automatically assigns it to the correct parser.
-          Upload order: <strong>Client Master → Trade (NSE/BSE Cash, NSE/BSE F&amp;O, MCX) → Brokerage → Ledger → Holdings → MTF</strong>.
+          Upload order: <strong>Client Master → Trade (NSE/BSE Cash, NSE/BSE F&amp;O, MCX) → Brokerage → Ledger → CM MTM Prices → Holdings → MTF</strong>.
         </p>
 
         {/* Drop zone */}

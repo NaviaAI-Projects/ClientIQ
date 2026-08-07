@@ -185,18 +185,18 @@ const OptionsAnalytics = () => {
                 <td>{m.month}</td>
                 <td>{m.eq_opt_to_cr}</td>
                 <td>{m.eq_opt_clients.toLocaleString('en-IN')}</td>
-                <td>—</td>
+                <td>₹{(m.eq_opt_clearing || 0).toLocaleString('en-IN')}</td>
                 <td>{m.comm_opt_to_cr}</td>
                 <td>{m.comm_opt_clients.toLocaleString('en-IN')}</td>
-                <td>—</td>
-                <td>—</td>
+                <td>₹{(m.comm_opt_clearing || 0).toLocaleString('en-IN')}</td>
+                <td>₹{(m.total_options_rev || 0).toLocaleString('en-IN')}</td>
                 <td style={{ color: colorOf(m.mom_pct) }}>{spct(m.mom_pct)}</td>
               </tr>
             ))}
             {monthly.length === 0 && <tr><td colSpan={9} style={{ color: 'var(--tx3)' }}>No options data.</td></tr>}
           </tbody>
         </table></div>
-        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Clearing-fee revenue columns populate once brokerage/clearing data is imported; turnover and client counts are live.</p>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Clearing columns = options turnover × the configured options commission rate ÷ 100 (Admin → Commission Rates). Total options rev = Eq + Comm clearing per day.</p>
       </div>
 
       <div className="tc2">
@@ -221,7 +221,7 @@ const OptionsAnalytics = () => {
           </table></div>
         </div>
         <div className="panel">
-          <div className="ptitle">⭐ Top 10 options clients by premium TO (MTD)<InfoBtn text="Highest equity-options premium turnover this month (sum of traded_value per client, current month). Lots = traded quantity. Unmapped high-TO clients are flagged as priority leads." /></div>
+          <div className="ptitle">⭐ Top 10 options clients by premium TO (MTD)<InfoBtn text="Highest equity-options premium turnover this month (sum of traded_value per client, current month). Lots = number of contracts (traded quantity ÷ board lot). Unmapped high-TO clients are flagged as priority leads." /></div>
           <div className="tw"><table>
             <thead><tr><th>UCC</th><th>Client</th><th>Type</th><th>Eq Opt TO</th><th>Lots</th><th>RM</th></tr></thead>
             <tbody>
@@ -237,7 +237,7 @@ const OptionsAnalytics = () => {
               {top_clients.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tx3)' }}>No options data.</td></tr>}
             </tbody>
           </table></div>
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>Unmapped high-TO clients flagged as priority leads in AI scoring. "Lots" shows traded quantity (lot size not in feed).</p>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>Unmapped high-TO clients flagged as priority leads in AI scoring. "Lots" = number of contracts (traded quantity ÷ board lot).</p>
         </div>
       </div>
     </div>

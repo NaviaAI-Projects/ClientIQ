@@ -39,7 +39,7 @@ const ClientAnalytics = () => {
   if (loading && !data) return <div className="ph"><h2>Client analytics</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Client analytics</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { meta, cards, daily_fo, breakdown, hv_watch } = data;
+  const { meta, cards, daily_fo, daily_pnl = [], pnl_available, breakdown, hv_watch } = data;
   const tradedDelta = pctDelta(cards.total_traded, cards.total_traded_prev);
 
   return (
@@ -58,20 +58,33 @@ const ClientAnalytics = () => {
 
       <div className="cards">
         <div className="card ci"><div className="clbl">Total clients traded (avg/day)</div><div className="cval">{cards.total_traded.toLocaleString('en-IN')}</div><div className="csub">vs prior {cards.total_traded_prev.toLocaleString('en-IN')} · {spct(tradedDelta)}</div></div>
-        <div className="card cs"><div className="clbl">Profitable clients (avg/day)</div><div className="cval">—</div><div className="csub">P&amp;L not available in feed</div></div>
-        <div className="card cd"><div className="clbl">Loss clients (avg/day)</div><div className="cval">—</div><div className="csub">P&amp;L not available in feed</div></div>
-        <div className="card cp"><div className="clbl">NRI clients (F&amp;O avg/day)</div><div className="cval">{cards.nri.toLocaleString('en-IN')}</div><div className="csub">{(cards.nri_total || 0).toLocaleString('en-IN')} NRI in book (by Client Country)</div></div>
+        <div className="card cs"><div className="clbl">Profitable clients (in period)</div><div className="cval">{pnl_available ? cards.profitable.toLocaleString('en-IN') : '—'}</div><div className="csub">{pnl_available ? 'Realized P&L > 0 · matched buy/sell' : 'No matched round-trips in range'}</div></div>
+        <div className="card cd"><div className="clbl">Loss clients (in period)</div><div className="cval">{pnl_available ? cards.loss.toLocaleString('en-IN') : '—'}</div><div className="csub">{pnl_available ? 'Realized P&L < 0 · matched buy/sell' : 'No matched round-trips in range'}</div></div>
+        <div className="card cp"><div className="clbl">NRI clients (F&amp;O avg/day)</div><div className="cval">{cards.nri.toLocaleString('en-IN')}</div><div className="csub">{(cards.nri_total || 0).toLocaleString('en-IN')} NRI in book (UCC starts with 'N')</div></div>
       </div>
 
       <div className="tc2">
         <div className="panel">
-          <div className="ptitle">📊 Profitable vs loss clients — daily F&amp;O trend<InfoBtn text="Daily count of F&O clients ending in profit vs loss. Empty until realised P&L per trade is imported into the feed." /></div>
-          <div style={{ color: 'var(--tx3)', fontSize: 13, padding: '40px 0', textAlign: 'center' }}>
-            No P&amp;L data in the feed (<code>realised_pnl</code> is empty) — this populates once realised P&amp;L is imported per trade.
-          </div>
+          <div className="ptitle">📊 Profitable vs loss clients — daily F&amp;O trend<InfoBtn text="Daily count of clients whose same-day matched (round-trip) realized P&L ended positive vs negative. Uses same-day buy/sell matching; positions carried across days are not counted until closed." /></div>
+          {pnl_available ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={daily_pnl} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+                <XAxis dataKey="date" tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} allowDecimals={false} />
+                <Tooltip /><Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
+                <Bar dataKey="Profit" fill="#2f9e6f" name="Profitable clients" radius={[3, 3, 0, 0]} />
+                <Bar dataKey="Loss" fill="#d85a5a" name="Loss clients" radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div style={{ color: 'var(--tx3)', fontSize: 13, padding: '40px 0', textAlign: 'center' }}>
+              No same-day matched round-trips in this range yet — this counts clients whose intraday buy/sell netted a realized gain or loss.
+            </div>
+          )}
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Same-day matched (round-trip) realized P&amp;L. Delivery/carry positions count only once closed.</p>
         </div>
         <div className="panel">
-          <div className="ptitle">📈 NRI vs Resident F&amp;O clients — daily trend<InfoBtn text="Daily trend of active F&O clients split into Resident vs NRI, derived from Client Country in the client master." /></div>
+          <div className="ptitle">📈 NRI vs Resident F&amp;O clients — daily trend<InfoBtn text="Daily trend of active F&O clients split into Resident vs NRI. NRI = UCC beginning with 'N'." /></div>
           <ViewToggle
             chart={
           <ResponsiveContainer width="100%" height={220}>
@@ -96,7 +109,7 @@ const ClientAnalytics = () => {
           </table>
             }
           />
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>NRI vs Resident derived from Client Country in the client master (re-import to refresh).</p>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>NRI vs Resident derived from the UCC — clients whose UCC begins with 'N' are counted as NRI.</p>
         </div>
       </div>
 
@@ -119,7 +132,7 @@ const ClientAnalytics = () => {
             ))}
           </tbody>
         </table></div>
-        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Breaks out by client type — RI vs NRI is live (from Client Country). NRE/NRO/FN and the -HV suffix appear when that data is loaded.</p>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Breaks out by client type — NRI = UCC beginning with 'N', all others Resident (RI).</p>
       </div>
 
       <div className="tc2">
