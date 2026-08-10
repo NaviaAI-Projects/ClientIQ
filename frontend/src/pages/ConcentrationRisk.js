@@ -222,9 +222,9 @@ const ConcentrationRisk = () => {
       </div>
 
       <div className="panel">
-        <div className="ptitle">📋 Float concentration — top 20 clients by opening balance<InfoBtn text="Clients ranked by average opening ledger balance, showing each one's % of total float, cumulative %, and whether they traded this month (idle float = cross-sell opportunity)." /></div>
+        <div className="ptitle">📋 Float concentration — top 20 clients by opening balance<InfoBtn text="Clients ranked by their latest opening ledger balance, showing each one's % of total float, cumulative %, and whether they traded this month (idle float = cross-sell opportunity)." /></div>
         <div className="tw"><table>
-          <thead><tr><th>Rank</th><th>UCC</th><th>Client</th><th>Type</th><th>Avg opening balance</th><th>% of total float</th><th>Cum %</th><th>Trading activity</th><th>Float utilisation</th></tr></thead>
+          <thead><tr><th>Rank</th><th>UCC</th><th>Client</th><th>Type</th><th>Opening balance</th><th>% of total float</th><th>Cum %</th><th>Trading activity</th><th>Float utilisation</th></tr></thead>
           <tbody>
             {float_top.map(r => (
               <tr key={r.ucc}>

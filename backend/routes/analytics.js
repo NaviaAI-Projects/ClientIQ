@@ -252,7 +252,9 @@ router.get('/concentration', auth, async (req, res) => {
       ),
       ranked AS (
         SELECT ucc, opt_to, total_to, brokerage,
-               ROW_NUMBER() OVER (ORDER BY opt_to DESC) AS rn,
+               -- NULLS LAST: clients who traded but have no options turnover sum to NULL;
+               -- without this Postgres (DESC = NULLS FIRST) ranks them 1,2,3… on top.
+               ROW_NUMBER() OVER (ORDER BY opt_to DESC NULLS LAST) AS rn,
                SUM(opt_to) OVER () AS grand
         FROM mtd
       )
@@ -262,7 +264,7 @@ router.get('/concentration', auth, async (req, res) => {
       FROM ranked r
       LEFT JOIN clients c ON c.ucc = r.ucc
       LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
-      WHERE r.rn <= 20
+      WHERE r.rn <= 20 AND r.opt_to > 0
       ORDER BY r.rn
     `, [rng.from, rng.to]);
 
@@ -274,7 +276,7 @@ router.get('/concentration', auth, async (req, res) => {
         WHERE trade_date::date BETWEEN $1 AND $2
         GROUP BY ucc
       ),
-      ranked AS (SELECT opt_to, ROW_NUMBER() OVER (ORDER BY opt_to DESC) rn, SUM(opt_to) OVER () grand FROM mtd)
+      ranked AS (SELECT opt_to, ROW_NUMBER() OVER (ORDER BY opt_to DESC NULLS LAST) rn, SUM(opt_to) OVER () grand FROM mtd)
       SELECT MAX(grand)::float AS total, COUNT(*)::int AS client_count,
              COALESCE(SUM(opt_to) FILTER (WHERE rn<=10),0)::float  AS t10,
              COALESCE(SUM(opt_to) FILTER (WHERE rn<=25),0)::float  AS t25,
@@ -289,11 +291,13 @@ router.get('/concentration', auth, async (req, res) => {
     // Monthly concentration trend (top10 / top50 % of that month's options TO)
     const monthlyTrend = await pool.query(`
       WITH mm AS (
+        -- options_premium_turnover > 0 drops months that only carry zero-turnover snapshot
+        -- rows (e.g. the Aug-6 holdings snapshot), which otherwise plot a phantom 0% point.
         SELECT to_char(trade_date,'YYYY-MM') AS mon, ucc, SUM(options_premium_turnover) AS opt_to
-        FROM daily_trades GROUP BY 1,2
+        FROM daily_trades WHERE options_premium_turnover > 0 GROUP BY 1,2
       ),
       rr AS (
-        SELECT mon, opt_to, ROW_NUMBER() OVER (PARTITION BY mon ORDER BY opt_to DESC) rn,
+        SELECT mon, opt_to, ROW_NUMBER() OVER (PARTITION BY mon ORDER BY opt_to DESC NULLS LAST) rn,
                SUM(opt_to) OVER (PARTITION BY mon) grand
         FROM mm
       )
@@ -303,12 +307,19 @@ router.get('/concentration', auth, async (req, res) => {
       FROM rr GROUP BY mon ORDER BY mon
     `);
 
-    // Revenue-stream mix (doughnut) — real streams (options clearing unavailable → 0)
+    // Revenue-stream mix (doughnut) for the SELECTED RANGE. Previously this pinned itself to
+    // "latest month" via MAX(trade_date); once a zero-turnover Aug-6 snapshot became the max
+    // trade_date, the mix collapsed onto an empty August — brokerage/options ≈ 0 — which hid
+    // options clearing (the primary revenue) and made MTF look like it dominated. Now every
+    // stream is measured over the same [from,to] the rest of the page uses.
     const revMix = await pool.query(`
-      WITH latestT AS (SELECT MAX(trade_date) d FROM daily_trades),
-      brok AS (
-        SELECT COALESCE(SUM(brokerage_earned),0)::float AS v, COUNT(DISTINCT trade_date)::int AS days
-        FROM daily_trades WHERE trade_date >= date_trunc('month',(SELECT d FROM latestT))
+      WITH brok AS (
+        SELECT COALESCE(SUM(brokerage_earned),0)::float AS v
+        FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2
+      ),
+      opt AS (
+        SELECT COALESCE(SUM(options_premium_turnover),0)::float AS v
+        FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2
       ),
       fl AS (
         SELECT COALESCE(SUM(opening_balance),0)::float AS bal FROM daily_ledger
@@ -316,18 +327,15 @@ router.get('/concentration', auth, async (req, res) => {
       ),
       mtf AS (
         SELECT COALESCE(SUM(interest_earned),0)::float AS v FROM mtf_monthly
-        WHERE month_year = (SELECT MAX(month_year) FROM mtf_monthly)
-      ),
-      opt AS (
-        SELECT COALESCE(SUM(options_premium_turnover),0)::float AS v
-        FROM daily_trades WHERE trade_date >= date_trunc('month',(SELECT d FROM latestT))
+        WHERE month_year BETWEEN to_char($1::date,'YYYY-MM') AND to_char($2::date,'YYYY-MM')
       )
-      SELECT (SELECT v FROM brok) AS brokerage, (SELECT days FROM brok) AS days,
-             (SELECT bal FROM fl) AS ledger_bal, (SELECT v FROM mtf) AS mtf_interest,
-             (SELECT v FROM opt) AS opt_premium
-    `);
+      SELECT (SELECT v FROM brok) AS brokerage, (SELECT bal FROM fl) AS ledger_bal,
+             (SELECT v FROM mtf) AS mtf_interest, (SELECT v FROM opt) AS opt_premium
+    `, [rng.from, rng.to]);
     const rm = revMix.rows[0] || {};
-    const floatMonthIncome = Number(rm.ledger_bal || 0) * (fdRate / 100) / 365 * Number(rm.days || 0);
+    // Float income over the range = current ledger balance × FD rate ÷ 365 × calendar days in range.
+    const rangeDays = Math.max(1, Math.round((new Date(rng.to) - new Date(rng.from)) / 86400000) + 1);
+    const floatMonthIncome = Number(rm.ledger_bal || 0) * (fdRate / 100) / 365 * rangeDays;
     // Options clearing revenue = premium turnover × clearing rate (same 0.0005 basis used in MIS/reports).
     const OPT_CLEARING_RATE = 0.0005;
     const optClearing = Number(rm.opt_premium || 0) * OPT_CLEARING_RATE;
@@ -687,7 +695,12 @@ router.get('/new-business', auth, async (req, res) => {
       FROM clients c
       LEFT JOIN traded t ON t.ucc = c.ucc
       LEFT JOIN led     ON led.ucc = c.ucc
-      WHERE c.account_open_date IS NOT NULL AND c.account_open_date::date BETWEEN $1 AND $2
+      -- Monthly report: the range selects which MONTHS appear, but each month's count is the
+      -- FULL month (not truncated to the range's days). This keeps the acquisition cards on the
+      -- same population as the full-month new-client segment distribution below, so the "N new
+      -- clients trading" card can never be smaller than a per-segment count in that distribution.
+      WHERE c.account_open_date IS NOT NULL
+        AND to_char(c.account_open_date,'YYYY-MM') BETWEEN to_char($1::date,'YYYY-MM') AND to_char($2::date,'YYYY-MM')
       GROUP BY 1 ORDER BY 1 DESC LIMIT 15
     `, [rng.from, rng.to]);
     const maxOpenRow = await pool.query(`SELECT MAX(account_open_date) d FROM clients`);
@@ -783,54 +796,63 @@ router.get('/new-business', auth, async (req, res) => {
 // latest holdings_summary snapshot. Per-security stock counts are not stored.
 router.get('/inactive', auth, async (req, res) => {
   try {
+    // Date-driven: $1 (from) = the activity cutoff — a client is "inactive" if their last trade
+    // is before it (i.e. no trade since `from`). $2 (to) = the "as of" anchor — holdings, the
+    // day-count and the duration bands are all measured to it. Default range (from the frontend)
+    // is the last 30 days ending at the latest data date, so the headline matches the old
+    // "no trade in last 30 days" behaviour; the picker lets the user move both ends.
+    const rng = await resolveRange(req);
+    const P = [rng.from, rng.to];   // $1 = from (cutoff), $2 = to (as-of)
     const HOLD = `SELECT ucc, total_holding_value FROM holdings_summary
-                  WHERE holding_date = (SELECT MAX(holding_date) FROM holdings_summary)
+                  WHERE holding_date = (SELECT MAX(holding_date) FROM holdings_summary WHERE holding_date <= $2::date)
                     AND total_holding_value > 0`;
 
     const summary = await pool.query(`
       WITH h AS (${HOLD})
       SELECT
-        COUNT(*) FILTER (WHERE c.last_trade_date IS NULL OR c.last_trade_date < CURRENT_DATE - 30)::int AS inactive_total,
-        COUNT(*) FILTER (WHERE (c.last_trade_date IS NULL OR c.last_trade_date < CURRENT_DATE - 30) AND h.ucc IS NOT NULL)::int AS inactive_with_dp,
-        COALESCE(SUM(h.total_holding_value) FILTER (WHERE (c.last_trade_date IS NULL OR c.last_trade_date < CURRENT_DATE - 30) AND h.ucc IS NOT NULL),0)::float AS inactive_dp_value,
+        COUNT(*) FILTER (WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date)::int AS inactive_total,
+        COUNT(*) FILTER (WHERE (c.last_trade_date IS NULL OR c.last_trade_date < $1::date) AND h.ucc IS NOT NULL)::int AS inactive_with_dp,
+        COALESCE(SUM(h.total_holding_value) FILTER (WHERE (c.last_trade_date IS NULL OR c.last_trade_date < $1::date) AND h.ucc IS NOT NULL),0)::float AS inactive_dp_value,
         COUNT(*) FILTER (WHERE c.last_trade_date IS NULL)::int AS never_traded,
         COUNT(*) FILTER (WHERE c.last_trade_date IS NULL AND h.ucc IS NOT NULL)::int AS never_with_dp,
-        COUNT(*) FILTER (WHERE c.last_trade_date IS NULL AND c.account_open_date > CURRENT_DATE - 90)::int AS never_recent
+        COUNT(*) FILTER (WHERE c.last_trade_date IS NULL AND c.account_open_date > $2::date - 90)::int AS never_recent
       FROM clients c LEFT JOIN h ON h.ucc = c.ucc
-    `);
+    `, P);
 
     const bands = await pool.query(`
       WITH h AS (${HOLD}),
       b AS (
         SELECT
           CASE WHEN c.last_trade_date IS NULL                        THEN 'Never traded'
-               WHEN c.last_trade_date >= CURRENT_DATE - 90           THEN '30–90 days'
-               WHEN c.last_trade_date >= CURRENT_DATE - 180          THEN '90–180 days'
-               WHEN c.last_trade_date >= CURRENT_DATE - 365          THEN '180–365 days'
+               WHEN c.last_trade_date >= $2::date - 90               THEN '30–90 days'
+               WHEN c.last_trade_date >= $2::date - 180              THEN '90–180 days'
+               WHEN c.last_trade_date >= $2::date - 365              THEN '180–365 days'
                ELSE '365+ days' END AS band,
           (h.ucc IS NOT NULL) AS has_dp
         FROM clients c LEFT JOIN h ON h.ucc = c.ucc
-        WHERE c.last_trade_date IS NULL OR c.last_trade_date < CURRENT_DATE - 30
+        WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date
       )
       SELECT band, COUNT(*) FILTER (WHERE has_dp)::int AS with_dp,
              COUNT(*) FILTER (WHERE NOT has_dp)::int AS no_dp
       FROM b GROUP BY band
-    `);
+    `, P);
 
     const byType = await pool.query(`
       WITH h AS (${HOLD})
-      SELECT COALESCE(c.client_type,'RI') AS client_type, COUNT(*)::int AS n
+      -- NRI = UCC begins with 'N' (same rule as Client Analytics / Daily MIS). The client_type
+      -- column is unloaded, so reading it flattened everyone to RI and hid the ~1,100 NRI holders.
+      SELECT CASE WHEN UPPER(c.ucc) LIKE 'N%' THEN 'NRI' ELSE 'RI' END AS client_type, COUNT(*)::int AS n
       FROM clients c JOIN h ON h.ucc = c.ucc
-      WHERE c.last_trade_date IS NULL OR c.last_trade_date < CURRENT_DATE - 30
+      WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date
       GROUP BY 1 ORDER BY n DESC
-    `);
+    `, P);
 
     const valueDist = await pool.query(`
       WITH h AS (${HOLD}),
       inact AS (
         SELECT h.total_holding_value AS v
         FROM clients c JOIN h ON h.ucc = c.ucc
-        WHERE c.last_trade_date IS NULL OR c.last_trade_date < CURRENT_DATE - 30
+        WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date
       )
       SELECT
         COUNT(*) FILTER (WHERE v < 50000)::int                      AS b1,
@@ -840,30 +862,29 @@ router.get('/inactive', auth, async (req, res) => {
         COUNT(*) FILTER (WHERE v >= 1000000 AND v < 2500000)::int   AS b5,
         COUNT(*) FILTER (WHERE v >= 2500000)::int                   AS b6
       FROM inact
-    `);
+    `, P);
 
     const priority = await pool.query(`
       WITH h AS (${HOLD})
-      SELECT c.ucc, c.name, COALESCE(c.client_type,'RI') AS client_type,
+      SELECT c.ucc, c.name, CASE WHEN UPPER(c.ucc) LIKE 'N%' THEN 'NRI' ELSE 'RI' END AS client_type,
              c.last_trade_date, h.total_holding_value::float AS holding_value,
              c.account_open_date, rm.rm_name,
-             (CURRENT_DATE - c.last_trade_date) AS days_inactive
+             ($2::date - c.last_trade_date) AS days_inactive
       FROM clients c
       JOIN h ON h.ucc = c.ucc
       LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
-      WHERE c.last_trade_date IS NOT NULL AND c.last_trade_date < CURRENT_DATE - 30
+      WHERE c.last_trade_date IS NOT NULL AND c.last_trade_date < $1::date
       ORDER BY h.total_holding_value DESC
       LIMIT 100
-    `);
+    `, P);
 
     const s = summary.rows[0] || {};
     const bandOrder = ['30–90 days', '90–180 days', '180–365 days', '365+ days', 'Never traded'];
     const bandMap = {}; bands.rows.forEach(r => { bandMap[r.band] = r; });
     const vd = valueDist.rows[0] || {};
 
-    const asOfIn = await pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') a FROM daily_trades`);
     res.json({
-      meta: { basis: 'no trade in last 30 days', as_of: asOfIn.rows[0]?.a || null },
+      meta: { basis: 'no trade since the From date', as_of: fmtFullDate(rng.to), range: rangeMeta(rng) },
       summary: {
         inactive_total: Number(s.inactive_total || 0),
         inactive_with_dp: Number(s.inactive_with_dp || 0),
@@ -2090,15 +2111,123 @@ router.get('/retention', auth, async (req, res) => {
 // ── CLIENT REVENUE RAMP ─────────────────────────────────────────
 router.get('/revenue-ramp', auth, async (req, res) => {
   try {
-    const cohorts = await pool.query(`
-      SELECT to_char(account_open_date,'YYYY-MM') AS mon, COUNT(*)::int AS clients
-      FROM clients WHERE account_open_date IS NOT NULL GROUP BY 1 ORDER BY 1 DESC LIMIT 6
-    `);
-    const asOfRamp = await pool.query(`SELECT to_char(MAX(account_open_date),'FMDD Mon YYYY') a FROM clients`);
+    // Date range filters the OPENING cohorts shown (account_open_date in [from,to]).
+    // Default = current FY, so the FY cohorts (Apr…) are on screen with their computable diagonal.
+    const rng = await resolveRange(req, 'clients', 'account_open_date');
+    const fromD = rng.from, toD = rng.to;
+    const addMonths = (ym, k) => {
+      const [y, m] = ym.split('-').map(Number);
+      const idx = (y * 12 + (m - 1)) + k;
+      return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, '0')}`;
+    };
+
+    // Months we can actually measure revenue in = any month with trades (brokerage) or MTF interest.
+    const dataMonthsQ = await pool.query(`
+      SELECT DISTINCT m FROM (
+        SELECT to_char(date_trunc('month', trade_date),'YYYY-MM') m FROM daily_trades WHERE turnover > 0
+        UNION SELECT month_year m FROM mtf_monthly
+      ) z`);
+    const dataMonths = new Set(dataMonthsQ.rows.map(r => r.m));
+
+    // Cohort sizes for ALL opening months. The headline cards + ramp curve are a full-book metric
+    // (so M6/M12 fill from older cohorts even when the table is filtered to recent months); the
+    // date range below only scopes which cohort ROWS the table shows.
+    const cohortSizeQ = await pool.query(`
+      SELECT to_char(account_open_date,'YYYY-MM') AS cmon, COUNT(*)::int AS clients
+      FROM clients WHERE account_open_date IS NOT NULL GROUP BY 1`);
+    const cohortSize = {}; cohortSizeQ.rows.forEach(r => { cohortSize[r.cmon] = Number(r.clients); });
+
+    // Per cohort × elapsed-month k: total revenue (options clearing + brokerage + MTF) across clients.
+    const rampQ = await pool.query(`
+      WITH cohort AS (
+        SELECT ucc, to_char(account_open_date,'YYYY-MM') AS cmon
+        FROM clients WHERE account_open_date IS NOT NULL
+      ),
+      rev AS (
+        -- Revenue per client-month = options clearing (premium × 0.0005, Navia's primary stream)
+        -- + brokerage + MTF interest — the same three streams the Concentration Risk doughnut uses.
+        SELECT ucc, mon, SUM(rev)::float AS rev FROM (
+          SELECT ucc, to_char(date_trunc('month', trade_date),'YYYY-MM') AS mon,
+                 (COALESCE(brokerage_earned,0) + COALESCE(options_premium_turnover,0) * 0.0005)::float AS rev
+          FROM daily_trades WHERE turnover > 0
+          UNION ALL
+          SELECT ucc, month_year AS mon, COALESCE(interest_earned,0)::float AS rev FROM mtf_monthly
+        ) s GROUP BY ucc, mon
+      )
+      SELECT c.cmon,
+        ( (split_part(r.mon,'-',1)::int*12 + split_part(r.mon,'-',2)::int)
+        - (split_part(c.cmon,'-',1)::int*12 + split_part(c.cmon,'-',2)::int) ) AS k,
+        SUM(r.rev)::float AS total_rev
+      FROM cohort c JOIN rev r ON r.ucc = c.ucc
+      GROUP BY 1, 2`);
+    const revByCK = {};   // cmon -> { k -> total revenue }
+    for (const r of rampQ.rows) { const k = Number(r.k); if (k < 0) continue; (revByCK[r.cmon] ||= {})[k] = Number(r.total_rev); }
+
+    // First options-trade date per cohort client (for the 60-day activation metric).
+    const optQ = await pool.query(`
+      WITH cohort AS (
+        SELECT ucc, account_open_date, to_char(account_open_date,'YYYY-MM') AS cmon
+        FROM clients WHERE account_open_date IS NOT NULL
+      ),
+      firstopt AS (SELECT ucc, MIN(trade_date) d FROM daily_trades WHERE options_premium_turnover > 0 GROUP BY ucc)
+      SELECT c.cmon,
+        COUNT(*) FILTER (WHERE f.d IS NOT NULL AND f.d >= c.account_open_date AND f.d - c.account_open_date <= 60)::int AS activated
+      FROM cohort c LEFT JOIN firstopt f ON f.ucc = c.ucc
+      GROUP BY 1`);
+    const activatedByC = {}; optQ.rows.forEach(r => { activatedByC[r.cmon] = Number(r.activated); });
+
+    const cmons = Object.keys(cohortSize).sort();   // ALL opening months (curve/cards blend over these)
+    const cohortsAll = cmons.map(cmon => {
+      const size = cohortSize[cmon];
+      const cell = (k) => {
+        if (!dataMonths.has(addMonths(cmon, k))) return null;                 // elapsed month not observed → "—"
+        const tr = (revByCK[cmon] && revByCK[cmon][k]) || 0;
+        return size ? Math.round(tr / size) : null;                          // avg revenue per client (₹)
+      };
+      // Options activation is only trustworthy when the whole 0–60-day window is observed; a
+      // single loaded month can't confirm "within 60 days", so it stays null until history deepens.
+      const windowObserved = dataMonths.has(addMonths(cmon, 0)) && dataMonths.has(addMonths(cmon, 1)) && dataMonths.has(addMonths(cmon, 2));
+      const opt = (windowObserved && size) ? +(((activatedByC[cmon] || 0) / size) * 100).toFixed(1) : null;
+      return { cohort: monLbl(cmon), cmon, clients: size,
+               m1: cell(1), m2: cell(2), m3: cell(3), m6: cell(6), m12: cell(12), opt_activation: opt };
+    });
+    // Table = only the cohorts whose opening month falls in the selected range.
+    const fromM = fromD.slice(0, 7), toM = toD.slice(0, 7);
+    const cohorts = cohortsAll.filter(c => c.cmon >= fromM && c.cmon <= toM);
+
+    // Blended ramp curve M0..M12 (weighted by clients opened; only observed elapsed months).
+    const curve = [];
+    for (let k = 0; k <= 12; k++) {
+      let num = 0, den = 0;
+      for (const cmon of cmons) {
+        if (!dataMonths.has(addMonths(cmon, k))) continue;
+        num += (revByCK[cmon] && revByCK[cmon][k]) || 0;
+        den += cohortSize[cmon];
+      }
+      if (den > 0) curve.push({ m: `M${k}`, rev: Math.round(num / den) });
+    }
+    const curveRev = (k) => { const p = curve.find(c => c.m === `M${k}`); return p ? p.rev : null; };
+
+    // Blended options-activation by M2 across cohorts whose full 0–60-day window is observed.
+    let optNum = 0, optDen = 0;
+    for (const cmon of cmons) {
+      const windowObserved = dataMonths.has(addMonths(cmon, 0)) && dataMonths.has(addMonths(cmon, 1)) && dataMonths.has(addMonths(cmon, 2));
+      if (windowObserved) { optNum += activatedByC[cmon] || 0; optDen += cohortSize[cmon]; }
+    }
+    const optCard = optDen > 0 ? +((optNum / optDen) * 100).toFixed(1) : null;
+
+    const asOfRamp = await pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') a FROM daily_trades`);
     res.json({
-      meta: { insufficient_history: true, reason: 'Per-cohort revenue at M1/M3/M6 needs revenue (brokerage) and multi-month post-opening history, neither available yet.', as_of: asOfRamp.rows[0]?.a || null },
-      cards: { m1: null, m3: null, m6: null, opt_activation: null },
-      cohorts: cohorts.rows.slice().reverse().map(r => ({ cohort: monLbl(r.mon), clients: Number(r.clients) })),
+      meta: {
+        insufficient_history: dataMonths.size < 3,
+        observed_months: [...dataMonths].sort(),
+        as_of: asOfRamp.rows[0]?.a || null,
+        range: rangeMeta(rng),
+      },
+      cards: { m1: curveRev(1), m3: curveRev(3), m6: curveRev(6), opt_activation: optCard },
+      cohorts,
+      ramp_curve: curve,
+      opt_activation_by_cohort: cohorts.map(c => ({ cohort: c.cohort, pct: c.opt_activation })),
     });
   } catch (err) { console.error('REVENUE-RAMP ERROR:', err.message); res.status(500).json({ message: 'Server error' }); }
 });

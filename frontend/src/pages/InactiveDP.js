@@ -3,7 +3,7 @@ import {
   BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
 import api from '../api';
-import { InfoBtn, ViewToggle, ClientLink } from '../components/ui';
+import { InfoBtn, ViewToggle, ClientLink, DateRange, rangeParams } from '../components/ui';
 
 const rupee = (n) => {
   const v = Number(n) || 0;
@@ -32,15 +32,18 @@ const InactiveDP = () => {
   const [sortBy, setSortBy]   = useState('holding');
   const [durFilter, setDurFilter]   = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
+  const [range, setRange]     = useState({ key: '30d' });
 
   useEffect(() => {
-    api.get('/analytics/inactive')
+    if (range.key === 'custom' && !(range.from && range.to)) return;
+    setLoading(true);
+    api.get('/analytics/inactive', { params: rangeParams(range) })
       .then(res => setData(res.data))
       .catch(() => setError('Could not load inactive/DP data.'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [range]);
 
-  if (loading) return <div className="ph"><h2>Inactive accounts &amp; DP holdings</h2><p>Loading…</p></div>;
+  if (loading && !data) return <div className="ph"><h2>Inactive accounts &amp; DP holdings</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Inactive accounts &amp; DP holdings</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
   const { meta, summary, bands, by_type, value_dist, priority } = data;
@@ -79,12 +82,15 @@ const InactiveDP = () => {
         <p>Accounts with no trades — segmented by inactivity duration and whether they hold securities in DP. Highest-priority reactivation opportunity.{meta && meta.as_of ? ` · As of ${meta.as_of}` : ''}</p>
       </div>
 
+      <DateRange value={range} onChange={setRange} bounds={meta && meta.range ? { min: meta.range.data_min, max: meta.range.data_max } : undefined} active={meta && meta.range} />
+      {loading && <div style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 8 }}>Updating…</div>}
+
       <div className="alert a-w">
         ⚠️ Clients with DP holdings are significantly more valuable to reactivate — they have assets already custodied with you. An options or equity trade from these clients is one conversation away.
       </div>
 
       <div className="cards">
-        <div className="card cd"><div className="clbl">Total inactive accounts</div><div className="cval">{summary.inactive_total.toLocaleString('en-IN')}</div><div className="csub">No trade in last 30 days</div></div>
+        <div className="card cd"><div className="clbl">Total inactive accounts</div><div className="cval">{summary.inactive_total.toLocaleString('en-IN')}</div><div className="csub">No trade in the selected window</div></div>
         <div className="card cw"><div className="clbl">Inactive with DP holdings</div><div className="cval">{summary.inactive_with_dp.toLocaleString('en-IN')}</div><div className="csub">Hold securities — highest priority</div></div>
         <div className="card cp"><div className="clbl">Holding value (inactive DP)</div><div className="cval">{rupee(summary.inactive_dp_value)}</div><div className="csub">Avg {rupee(summary.inactive_dp_avg)} per inactive DP client</div></div>
       </div>
@@ -119,7 +125,7 @@ const InactiveDP = () => {
           />
         </div>
         <div className="panel">
-          <div className="ptitle">🥧 Inactive with DP holdings — by client type<InfoBtn text="Inactive clients holding DP securities broken down by client type (RI, RI-HV, NRE/NRO). All import as RI until client types are loaded." /></div>
+          <div className="ptitle">🥧 Inactive with DP holdings — by client type<InfoBtn text="Inactive clients holding DP securities split into Resident vs NRI. NRI = UCC beginning with 'N'." /></div>
           {typePie.length === 0 ? <div style={{ color: 'var(--tx3)', fontSize: 13, padding: '20px 0' }}>No data.</div> : (
             <ViewToggle
               chart={
@@ -146,7 +152,7 @@ const InactiveDP = () => {
               }
             />
           )}
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Client-type segmentation reflects the current master (all clients import as RI until types are loaded).</p>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>NRI vs Resident derived from the UCC — clients whose UCC begins with 'N' are counted as NRI.</p>
         </div>
       </div>
 

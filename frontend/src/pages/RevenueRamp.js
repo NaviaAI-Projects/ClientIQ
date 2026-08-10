@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import api from '../api';
-import { InfoBtn } from '../components/ui';
+import { InfoBtn, DateRange, rangeParams } from '../components/ui';
 
 const rupee = (n) => {
   if (n == null) return '—';
@@ -20,12 +20,16 @@ const RevenueRamp = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [range, setRange] = useState({ key: 'fy' });
 
   useEffect(() => {
-    api.get('/analytics/revenue-ramp').then(r => setData(r.data)).catch(() => setError('Could not load revenue ramp.')).finally(() => setLoading(false));
-  }, []);
+    if (range.key === 'custom' && !(range.from && range.to)) return;
+    setLoading(true);
+    api.get('/analytics/revenue-ramp', { params: rangeParams(range) })
+      .then(r => setData(r.data)).catch(() => setError('Could not load revenue ramp.')).finally(() => setLoading(false));
+  }, [range]);
 
-  if (loading) return <div className="ph"><h2>Client revenue ramp</h2><p>Loading…</p></div>;
+  if (loading && !data) return <div className="ph"><h2>Client revenue ramp</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Client revenue ramp</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
   const { meta, cards, cohorts, ramp_curve = [], opt_activation_by_cohort = [] } = data;
@@ -38,6 +42,9 @@ const RevenueRamp = () => {
         <p>How quickly do new clients generate revenue? Average monthly contribution at M1, M3, M6, M12 by opening cohort{meta && meta.as_of ? ` · As of ${meta.as_of}` : ''}</p>
       </div>
 
+      <DateRange value={range} onChange={setRange} bounds={meta && meta.range ? { min: meta.range.data_min, max: meta.range.data_max } : undefined} active={meta && meta.range} />
+      {loading && <div style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 8 }}>Updating…</div>}
+
       <div className="cards">
         <div className="card ci"><div className="clbl">Avg M1 revenue/new client</div><div className="cval">{rupee(cards.m1)}</div><div className="csub">Month 1 after account opening</div></div>
         <div className="card cs"><div className="clbl">Avg M3 revenue/new client</div><div className="cval">{rupee(cards.m3)}</div><div className="csub">Month 3</div></div>
@@ -46,7 +53,7 @@ const RevenueRamp = () => {
       </div>
 
       <div className="panel">
-        <div className="ptitle">📈 Revenue ramp curve — avg monthly revenue per client from opening month<InfoBtn text="Average revenue (brokerage + MTF interest) per client each elapsed month from their account-opening month onward, blended across cohorts. Only elapsed months with loaded trade history are plotted." /></div>
+        <div className="ptitle">📈 Revenue ramp curve — avg monthly revenue per client from opening month<InfoBtn text="Average revenue (options clearing + brokerage + MTF interest) per client each elapsed month from their account-opening month onward, blended across cohorts. Only elapsed months with loaded trade history are plotted." /></div>
         {ramp_curve.length ? (
           <ResponsiveContainer width="100%" height={220}>
             <LineChart data={ramp_curve} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
@@ -56,7 +63,7 @@ const RevenueRamp = () => {
             </LineChart>
           </ResponsiveContainer>
         ) : <Pending />}
-        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Revenue = brokerage + MTF interest. M0 = opening month; blended across cohorts, weighted by clients opened. Only elapsed months with trade data are shown.</p>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Revenue = options clearing + brokerage + MTF interest. M0 = opening month; blended across cohorts, weighted by clients opened. Only elapsed months with trade data are shown.</p>
       </div>
 
       <div className="tc2">
@@ -96,7 +103,7 @@ const RevenueRamp = () => {
             {cohorts.length === 0 && <tr><td colSpan={8} style={{ color: 'var(--tx3)' }}>No cohorts.</td></tr>}
           </tbody>
         </table></div>
-        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Revenue = brokerage + MTF interest per client. Cells blank where the elapsed month is beyond loaded trade history (never shown as a fake ₹0).</p>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Revenue = options clearing + brokerage + MTF interest per client. Cells blank where the elapsed month is beyond loaded trade history (never shown as a fake ₹0).</p>
       </div>
     </div>
   );
