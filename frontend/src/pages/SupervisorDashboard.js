@@ -10,7 +10,6 @@ const rupee = (n) => {
   if (Math.abs(v) >= 1e5) return '₹' + (v / 1e5).toFixed(2) + 'L';
   return '₹' + Math.round(v).toLocaleString('en-IN');
 };
-const L = (n) => (Number(n) || 0) / 1e5;
 const scoreClass = (s) => (s == null ? 'ais l' : s >= 75 ? 'ais h' : s >= 60 ? 'ais m' : 'ais l');
 
 const SupervisorDashboard = () => {
@@ -34,19 +33,20 @@ const SupervisorDashboard = () => {
 
   const { meta, totals, revenue, pipeline, churn, rm_table, pending_top, trend, company_turnover } = data;
   const commissionTracked = !(meta && meta.commission_loaded === false);
+  // Daily trend (one point per calendar day in the selected range), amounts in ₹.
   const chartData = trend.map(t => ({
-    month: t.month,
-    Brokerage: +L(t.Brokerage).toFixed(2),
-    Commission: t.Commission == null ? 0 : +L(t.Commission).toFixed(2),
-    MTF: +L(t.MTF).toFixed(2),
-    Other: +L(t.Other).toFixed(2),
+    month: t.month,          // day label, e.g. "7 Aug"
+    Brokerage: Math.round(Number(t.Brokerage) || 0),
+    Commission: t.Commission == null ? 0 : Math.round(Number(t.Commission) || 0),
+    MTF: Math.round(Number(t.MTF) || 0),
+    Float: Math.round(Number(t.Other) || 0),   // float income (carry-forward on weekends/holidays)
   }));
 
   return (
     <div>
       <div className="ph">
         <h2>Company dashboard</h2>
-        <p>All {totals.total_clients.toLocaleString('en-IN')} clients · All RMs · {meta.latest_month || ''}{meta.data_as_of ? ` · As of ${meta.data_as_of}` : ''}</p>
+        <p>All {totals.total_clients.toLocaleString('en-IN')} clients · All RMs{meta.data_as_of ? ` · Trade date: ${meta.data_as_of}` : ''}</p>
       </div>
 
       <DateRange value={range} onChange={setRange} bounds={meta && meta.range ? { min: meta.range.data_min, max: meta.range.data_max } : undefined} active={meta && meta.range} />
@@ -57,6 +57,37 @@ const SupervisorDashboard = () => {
         <div className="card cs"><div className="clbl">Company revenue · avg/day<InfoBtn text="Average TOTAL company revenue per trading day over the selected date range (total ÷ trading days). Total revenue = brokerage + commission/clearing (daily_trades) + MTF interest (mtf_interest) + estimated float income (ledger balance × FD rate ÷ 365). Change the range with the filter above." /></div><div className="cval">{rupee(revenue.avg_rev_per_day)}<span style={{ fontSize: 12, fontWeight: 400, color: 'var(--tx3)' }}>/day</span></div><div className="csub">{meta.range ? `${meta.range.from} – ${meta.range.to} · ` : ''}Total {rupee(revenue.total_rev)} over {meta.range?.trading_days ?? 0} trading days</div></div>
         <div className="card cw"><div className="clbl">Active leads in pipeline</div><div className="cval">{pipeline.active_leads.toLocaleString('en-IN')}</div><div className="csub">Pending approvals: {pipeline.pending_approvals}</div></div>
         <div className="card cd"><div className="clbl">Churn risk (mapped)</div><div className="cval">{churn.churn_high.toLocaleString('en-IN')}</div><div className="csub">High risk across {churn.rms_affected} RMs</div></div>
+      </div>
+
+      <div className="panel">
+        <div className="ptitle">📊 Company revenue trend — daily<InfoBtn text="Daily company revenue by stream for the selected date range: Brokerage and Commission/clearing (from daily_trades), MTF interest spread to each day, and estimated Float income (ledger balance × FD rate ÷ 365, carried forward on weekends/holidays). One bar per calendar day in the range — no all-time total." /></div>
+        <ViewToggle
+          chart={
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart data={chartData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+                <XAxis dataKey="month" tick={{ fontSize: 10 }} interval="preserveStartEnd" minTickGap={16} />
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={rupee} width={64} />
+                <Tooltip formatter={v => rupee(v)} /><Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
+                <Bar dataKey="Brokerage"  stackId="s" fill="#185fa5" />
+                <Bar dataKey="Commission" stackId="s" fill="#9FE1CB" />
+                <Bar dataKey="MTF"        stackId="s" fill="#FAC775" />
+                <Bar dataKey="Float"      stackId="s" fill="#AFA9EC" radius={[4, 4, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          }
+          table={
+            <table>
+              <thead><tr><th>Date</th><th>Brokerage</th><th>Commission</th><th>MTF</th><th>Float</th></tr></thead>
+              <tbody>
+                {chartData.map(r => (
+                  <tr key={r.month}><td>{r.month}</td><td>{rupee(r.Brokerage)}</td><td>{commissionTracked ? rupee(r.Commission) : '—'}</td><td>{rupee(r.MTF)}</td><td>{rupee(r.Float)}</td></tr>
+                ))}
+                {chartData.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tx3)' }}>No data in range.</td></tr>}
+              </tbody>
+            </table>
+          }
+        />
       </div>
 
       <div className="tc2">
@@ -109,37 +140,6 @@ const SupervisorDashboard = () => {
           </table>
           <div style={{ marginTop: 8 }}><button className="btn bp" onClick={() => navigate('/mapping-approvals')}>➡️ View all approvals</button></div>
         </div>
-      </div>
-
-      <div className="panel">
-        <div className="ptitle">📊 Company revenue trend<InfoBtn text="Monthly company revenue by stream, in ₹ lakh: Brokerage and Commission/clearing (from daily_trades), MTF interest (mtf_monthly) and estimated Float income (from each month's ledger balances). Brokerage reads ₹0 until the brokerage file is imported for that month." /></div>
-        <ViewToggle
-          chart={
-            <ResponsiveContainer width="100%" height={220}>
-              <BarChart data={chartData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-                <XAxis dataKey="month" tick={{ fontSize: 10 }} />
-                <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v + 'L'} />
-                <Tooltip formatter={v => '₹' + v + 'L'} /><Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
-                <Bar dataKey="Brokerage"  stackId="s" fill="#185fa5" />
-                <Bar dataKey="Commission" stackId="s" fill="#9FE1CB" />
-                <Bar dataKey="MTF"        stackId="s" fill="#FAC775" />
-                <Bar dataKey="Other"      stackId="s" fill="#AFA9EC" radius={[4, 4, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          }
-          table={
-            <table>
-              <thead><tr><th>Month</th><th>Brokerage (₹L)</th><th>Commission (₹L)</th><th>MTF (₹L)</th><th>Other (₹L)</th></tr></thead>
-              <tbody>
-                {chartData.map(r => (
-                  <tr key={r.month}><td>{r.month}</td><td>{r.Brokerage}</td><td>{commissionTracked ? r.Commission : '—'}</td><td>{r.MTF}</td><td>{r.Other}</td></tr>
-                ))}
-                {chartData.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
-              </tbody>
-            </table>
-          }
-        />
       </div>
     </div>
   );

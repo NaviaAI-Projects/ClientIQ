@@ -498,7 +498,8 @@ router.get('/options', auth, async (req, res) => {
       SELECT trade_date::text AS d,
              SUM(traded_value)::float          AS eq_opt_to,
              COUNT(DISTINCT ucc)::int          AS clients,
-             BOOL_OR(expiry_date = trade_date) AS is_expiry,
+             -- Weekly index expiries fall on Tuesday (NSE) and Thursday (BSE) only.
+             BOOL_OR(expiry_date = trade_date AND EXTRACT(DOW FROM trade_date) IN (2,4)) AS is_expiry,
              SUM(trade_qty)::float             AS qty
       FROM trades WHERE ${EQ} AND trade_date::date BETWEEN $1 AND $2
       GROUP BY trade_date ORDER BY trade_date
@@ -543,7 +544,7 @@ router.get('/options', auth, async (req, res) => {
     const expDays = eqRows.filter(r => r.is_expiry);
     const nonExp  = eqRows.filter(r => !r.is_expiry);
     const mean    = (arr, f) => arr.length ? arr.reduce((s, r) => s + f(r), 0) / arr.length : 0;
-    const expiryPremiumPct = nonExp.length && mean(nonExp, r => r.to) > 0
+    const expiryPremiumPct = (nonExp.length && mean(nonExp, r => r.to) > 0 && mean(expDays, r => r.to) > 0)
       ? (mean(expDays, r => r.to) - mean(nonExp, r => r.to)) / mean(nonExp, r => r.to) * 100 : 0;
 
     // Monthly aggregation
@@ -625,16 +626,17 @@ router.get('/options', auth, async (req, res) => {
     const cliEq      = (k) => k && months[k].eq_days ? Math.round(months[k].eq_cli / months[k].eq_days) : 0;
     const momPct = (cur, prev) => (prev ? ((cur - prev) / prev) * 100 : null);
 
-    // Expiry-day analysis — monthly expiry = last expiry date in its month
-    const expByMonth = {};
-    expDays.forEach(r => { const k = ym(r.d); if (!expByMonth[k] || r.d > expByMonth[k]) expByMonth[k] = r.d; });
+    // Expiry-day analysis. No monthly/weekly split — monthly and weekly expiries
+    // fall on the same Tue/Thu days, so every expiry is treated the same.
     const expiry_analysis = expDays.map(r => ({
       date: dLabel(r.d),
-      type: String(r.d) === String(expByMonth[ym(r.d)]) ? 'Monthly' : 'Weekly',
       eq_opt_to_cr: +(r.to / 1e7).toFixed(1),
-      vs_mtd_pct: avgTo > 0 ? +(((r.to - avgTo) / avgTo) * 100).toFixed(0) : 0,
+      // Guard: an expiry date with zero options turnover (e.g. a commodity-only
+      // expiry, or an expiry with no eq-options trades) would compute -100% here.
+      // Show 0 in that case instead of a misleading -100.
+      vs_mtd_pct: (avgTo > 0 && r.to > 0) ? +(((r.to - avgTo) / avgTo) * 100).toFixed(0) : 0,
       clients: r.clients,
-      clients_vs_mtd_pct: avgCli > 0 ? +(((r.clients - avgCli) / avgCli) * 100).toFixed(0) : 0,
+      clients_vs_mtd_pct: (avgCli > 0 && r.clients > 0) ? +(((r.clients - avgCli) / avgCli) * 100).toFixed(0) : 0,
     }));
 
     res.json({
@@ -701,7 +703,7 @@ router.get('/new-business', auth, async (req, res) => {
       -- clients trading" card can never be smaller than a per-segment count in that distribution.
       WHERE c.account_open_date IS NOT NULL
         AND to_char(c.account_open_date,'YYYY-MM') BETWEEN to_char($1::date,'YYYY-MM') AND to_char($2::date,'YYYY-MM')
-      GROUP BY 1 ORDER BY 1 DESC LIMIT 15
+      GROUP BY 1 ORDER BY 1 DESC
     `, [rng.from, rng.to]);
     const maxOpenRow = await pool.query(`SELECT MAX(account_open_date) d FROM clients`);
     const SEGCASE = `CASE
@@ -722,12 +724,34 @@ router.get('/new-business', auth, async (req, res) => {
       GROUP BY mon, segment ORDER BY mon, segment
     `);
 
+    // Per opening-month turnover by the new-client cohort (all their trades, all segments) — the
+    // "traded turnover (₹Cr)" volume figure shown beside new accounts / new clients trading.
+    const acqTOq = await pool.query(`
+      WITH newc AS (SELECT ucc, to_char(account_open_date,'YYYY-MM') AS omon FROM clients WHERE account_open_date IS NOT NULL)
+      SELECT n.omon AS mon, COALESCE(SUM(t.traded_value),0)::float AS turnover
+      FROM trades t JOIN newc n ON n.ucc = t.ucc GROUP BY 1
+    `);
+    const acqTO = {}; acqTOq.rows.forEach(r => { acqTO[r.mon] = Number(r.turnover); });
+    // Per opening-month × segment: new-client trading count + turnover — drives the table-view
+    // segment filter (scopes "New clients trading" and "Turnover" to the chosen segment).
+    const acqSegQ = await pool.query(`
+      WITH newc AS (SELECT ucc, to_char(account_open_date,'YYYY-MM') AS omon FROM clients WHERE account_open_date IS NOT NULL),
+      st AS (SELECT n.omon, ${SEGCASE} AS segment, t.ucc, t.traded_value FROM trades t JOIN newc n ON n.ucc = t.ucc)
+      SELECT omon AS mon, segment, COUNT(DISTINCT ucc)::int AS trading, COALESCE(SUM(traded_value),0)::float AS turnover
+      FROM st WHERE segment <> 'Other' GROUP BY omon, segment
+    `);
+    const acqSeg = {};
+    acqSegQ.rows.forEach(r => { (acqSeg[r.mon] ||= {})[r.segment] = { trading: Number(r.trading), turnover: Number(r.turnover) }; });
+    // Total client count — matches the Company Dashboard's total (COUNT(*) clients).
+    const totClients = (await pool.query(`SELECT COUNT(*)::int AS n FROM clients`)).rows[0].n;
+
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const mLabel = (m) => `${MON[+m.split('-')[1] - 1]} '${m.split('-')[0].slice(2)}`;
 
     const rowsAsc = acq.rows.slice().reverse().map(r => ({
       key: r.mon, label: mLabel(r.mon),
       new_accounts: Number(r.new_accounts), trading: Number(r.trading), ledger_bal: Number(r.ledger_bal),
+      turnover: acqTO[r.mon] || 0,
     }));
 
     // Featured = latest complete month (if the newest month is mid-month, use the prior one)
@@ -761,6 +785,8 @@ router.get('/new-business', auth, async (req, res) => {
 
     res.json({
       new_client_segments: newClientSeg,
+      total_clients: totClients,
+      acq_seg: acqSeg,
       meta: {
         featured_month: featured ? featured.label : null,
         prior_month: prior ? prior.label : null,
@@ -873,9 +899,12 @@ router.get('/inactive', auth, async (req, res) => {
       FROM clients c
       JOIN h ON h.ucc = c.ucc
       LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
-      WHERE c.last_trade_date IS NOT NULL AND c.last_trade_date < $1::date
+      -- Same inactivity rule as the cards / bands / doughnut: never-traded (NULL last_trade_date)
+      -- OR last trade before the cutoff. The old "IS NOT NULL" excluded all never-traded DP holders,
+      -- which is almost the entire list — so it showed empty while the cards counted 6,982.
+      WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date
       ORDER BY h.total_holding_value DESC
-      LIMIT 100
+      LIMIT 15
     `, P);
 
     const s = summary.rows[0] || {};
@@ -1073,11 +1102,16 @@ router.get('/company-dashboard', auth, async (req, res) => {
       FROM mtf_interest, LATERAL generate_series(from_date, to_date, interval '1 day') gs
       WHERE gs::date BETWEEN $1 AND $2
     `, [fromD, toD]);
-    // Float income over the range = Σ (each day's total ledger balance × FD rate ÷ 365).
+    // Float income over the range = Σ (each day's total ledger balance × FD rate ÷ 365), with
+    // CARRY-FORWARD: a day with no ledger of its own (weekend / holiday) inherits the most recent
+    // prior ledger balance so interest accrues 7 days a week. Bounded by the latest ledger date —
+    // never projects a balance past the last data actually held.
     const floatRange = await pool.query(`
-      SELECT COALESCE(SUM(daybal),0)::float AS bal_sum FROM (
-        SELECT ledger_date, SUM(opening_balance) AS daybal FROM daily_ledger
-        WHERE ledger_date BETWEEN $1 AND $2 GROUP BY ledger_date ) d
+      WITH daybal AS (SELECT ledger_date, SUM(opening_balance) AS bal FROM daily_ledger GROUP BY ledger_date)
+      SELECT COALESCE(SUM(
+               (SELECT db.bal FROM daybal db WHERE db.ledger_date <= gs::date ORDER BY db.ledger_date DESC LIMIT 1)
+             ),0)::float AS bal_sum
+      FROM generate_series($1::date, LEAST($2::date, (SELECT MAX(ledger_date) FROM daily_ledger)), interval '1 day') gs
     `, [fromD, toD]);
     const _tradeRev = Number(rev.rows[0]?.trade_rev || 0);
     const _mtfRev   = Number(mtfRange.rows[0]?.mtf || 0);
@@ -1120,45 +1154,61 @@ router.get('/company-dashboard', auth, async (req, res) => {
       FROM lead_pool lp LEFT JOIN clients c ON c.ucc = lp.ucc LEFT JOIN rm_master rm ON lp.assigned_rm_id = rm.id
       WHERE lp.status IN ('pending','opted_in') ORDER BY lp.lead_score DESC NULLS LAST LIMIT 3
     `);
-    const trend = await pool.query(`
-      SELECT to_char(trade_date,'YYYY-MM') AS mon,
+    // ── DAILY revenue trend, strictly within the selected range (one point per calendar day) ──
+    // Streams per day: brokerage + clearing commission (daily_trades), MTF interest spread to daily,
+    // and float income (carry-forward ledger balance × FD rate ÷ 365). No all-time total — the
+    // chart reflects exactly the chosen range, and weekends now carry float via the carry-forward.
+    const bcDaily = await pool.query(`
+      SELECT to_char(trade_date,'YYYY-MM-DD') AS d,
              COALESCE(SUM(brokerage_earned),0)::float  AS brok,
-             COALESCE(SUM(commission_earned),0)::float AS commission
-      FROM daily_trades WHERE turnover > 0 GROUP BY 1 ORDER BY 1
-    `);
-    const mtfTrend = await pool.query(`
-      SELECT month_year AS mon, COALESCE(SUM(interest_earned),0)::float AS mtf FROM mtf_monthly GROUP BY 1
-    `);
-    // Per-month float = Σ (each day's total ledger balance × FD rate ÷ 365) over the days that
-    // actually exist in that month — ACTUALS, not a ×30 whole-month projection. This keeps the
-    // trend consistent with the avg/day card (which sums the same daily float over its range);
-    // a projection would inflate months that only have a few days of ledger data loaded.
-    const floatTrend = await pool.query(`
-      SELECT to_char(ledger_date,'YYYY-MM') AS mon, SUM(daybal)::float AS bal_sum
-      FROM ( SELECT ledger_date, SUM(opening_balance) AS daybal FROM daily_ledger GROUP BY ledger_date ) d
-      GROUP BY 1
-    `);
-    const floatByMon = {}; floatTrend.rows.forEach(r => { floatByMon[r.mon] = Number(r.bal_sum) * (fdRate / 100) / 365; });
+             COALESCE(SUM(commission_earned),0)::float AS comm
+      FROM daily_trades WHERE trade_date BETWEEN $1 AND $2 GROUP BY 1
+    `, [fromD, toD]);
+    const mtfDaily = await pool.query(`
+      SELECT to_char(gs::date,'YYYY-MM-DD') AS d,
+             SUM(interest / (GREATEST((to_date - from_date),0)+1))::float AS mtf
+      FROM mtf_interest, LATERAL generate_series(from_date, to_date, interval '1 day') gs
+      WHERE gs::date BETWEEN $1 AND $2 GROUP BY 1
+    `, [fromD, toD]);
+    const floatDaily = await pool.query(`
+      WITH daybal AS (SELECT ledger_date, SUM(opening_balance) AS bal FROM daily_ledger GROUP BY ledger_date)
+      SELECT to_char(gs::date,'YYYY-MM-DD') AS d,
+             (SELECT db.bal FROM daybal db WHERE db.ledger_date <= gs::date ORDER BY db.ledger_date DESC LIMIT 1)::float AS bal
+      FROM generate_series($1::date, LEAST($2::date, (SELECT MAX(ledger_date) FROM daily_ledger)), interval '1 day') gs
+    `, [fromD, toD]);
     const ledgerSnap = await pool.query(`
       SELECT (SELECT MAX(ledger_date) FROM daily_ledger) AS d, COALESCE(SUM(opening_balance),0)::float AS bal
       FROM daily_ledger WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)
     `);
-    const latestTrade = await pool.query(`SELECT MAX(trade_date) d FROM daily_trades`);
+    // Trade date = latest business date with REAL trades (turnover > 0). Ignores brokerage-only
+    // rows and holdings-snapshot rows so the header shows the true last trading day.
+    const latestTrade = await pool.query(`SELECT MAX(trade_date) d FROM daily_trades WHERE turnover > 0`);
 
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const mLabel = (m) => `${MON[+m.split('-')[1] - 1]} '${m.split('-')[0].slice(2)}`;
     const fmtFull = (d) => { if (!d) return null; const dt = new Date(d); return `${dt.getUTCDate()} ${MON[dt.getUTCMonth()]} ${dt.getUTCFullYear()}`; };
-    const mtfByMon = {}; mtfTrend.rows.forEach(r => { mtfByMon[r.mon] = Number(r.mtf); });
-    const ledgerMonth = ledgerSnap.rows[0]?.d ? ymOf(ledgerSnap.rows[0].d) : null;
-    const dailyFloat = Number(ledgerSnap.rows[0]?.bal || 0) * (fdRate / 100) / 365;
 
-    const trendData = trend.rows.map(r => ({
-      month: mLabel(r.mon),
-      Brokerage: Number(r.brok),
-      Commission: Number(r.commission),
-      MTF: mtfByMon[r.mon] || 0,
-      Other: floatByMon[r.mon] || 0,   // actual float booked that month (Σ daily), not projected
-    }));
+    const bcByDay = {}; bcDaily.rows.forEach(r => { bcByDay[r.d] = r; });
+    const mtfByDay = {}; mtfDaily.rows.forEach(r => { mtfByDay[r.d] = Number(r.mtf) || 0; });
+    const flByDay  = {}; floatDaily.rows.forEach(r => { flByDay[r.d] = (Number(r.bal) || 0) * (fdRate / 100) / 365; });
+
+    // One row per calendar day in the range (weekends included — they carry float now).
+    const trendData = [];
+    { let cur = new Date(fromD + 'T00:00:00Z'); const end = new Date(toD + 'T00:00:00Z');
+      let guard = 0;
+      while (cur <= end && guard++ < 400) {
+        const key = cur.toISOString().slice(0, 10);
+        trendData.push({
+          month: `${cur.getUTCDate()} ${MON[cur.getUTCMonth()]}`,   // x-axis label (the day)
+          date: key,
+          Brokerage: Number(bcByDay[key]?.brok || 0),
+          Commission: Number(bcByDay[key]?.comm || 0),
+          MTF: mtfByDay[key] || 0,
+          Other: flByDay[key] || 0,                                  // float income for the day
+        });
+        cur.setUTCDate(cur.getUTCDate() + 1);
+      }
+    }
 
     const latestMonthKey = latestTrade.rows[0]?.d ? ymOf(latestTrade.rows[0].d) : null;
 
@@ -1253,8 +1303,9 @@ router.get('/all-clients', auth, async (req, res) => {
 
     const statusOf = (r) => {
       if (r.is_lead) return 'Lead';
-      if (r.last_trade_date && new Date(r.last_trade_date) >= new Date(Date.now() - 30 * 864e5)) return 'Active';
-      return 'Dormant';
+      if (!r.last_trade_date) return 'Inactive';                                            // never traded → Inactive
+      if (new Date(r.last_trade_date) >= new Date(Date.now() - 30 * 864e5)) return 'Active'; // traded in last 30 days
+      return 'Dormant';                                                                     // traded before, now quiet
     };
 
     res.json({
@@ -1599,21 +1650,28 @@ router.get('/client-analytics', auth, async (req, res) => {
     const priorTo = dFrom0 ? isoOf(new Date(dFrom0.getTime() - 864e5)) : null;
     const priorFrom = dFrom0 ? isoOf(new Date(dFrom0.getTime() - (spanD + 1) * 864e5)) : null;
 
+    // TOTAL distinct clients who TRADED (turnover > 0) in the range — a true period total, not a
+    // per-day average. prev = the same distinct count over the immediately preceding equal window.
     const avgTraded = await pool.query(`
-      WITH d AS (
-        SELECT trade_date, COUNT(DISTINCT ucc) AS c
-        FROM daily_trades WHERE trade_date::date BETWEEN $3 AND $2 GROUP BY trade_date
-      )
-      SELECT ROUND(AVG(c) FILTER (WHERE trade_date::date BETWEEN $1 AND $2))::int AS this_m,
-             ROUND(AVG(c) FILTER (WHERE trade_date::date BETWEEN $3 AND $4))::int AS prev_m
-      FROM d
+      SELECT
+        COUNT(DISTINCT ucc) FILTER (WHERE trade_date::date BETWEEN $1 AND $2)::int AS this_m,
+        COUNT(DISTINCT ucc) FILTER (WHERE trade_date::date BETWEEN $3 AND $4)::int AS prev_m
+      FROM daily_trades
+      WHERE turnover > 0 AND trade_date::date BETWEEN $3 AND $2
     `, [rng.from, rng.to, priorFrom, priorTo]);
 
     // NRI classification rule (per spec): a client is NRI when their UCC begins with 'N'.
     const nri = await pool.query(`SELECT COUNT(*)::int AS n FROM clients WHERE UPPER(ucc) LIKE 'N%'`);
+    // Total client master count (for the RI = total − NRI split beside the NRI card).
+    const allClients = await pool.query(`SELECT COUNT(*)::int AS n FROM clients`);
+    // Total distinct NRI clients who TRADED in the range (tallies with the NRI row of the breakdown).
+    const nriTraded = await pool.query(`
+      SELECT COUNT(DISTINCT ucc)::int AS n FROM daily_trades
+      WHERE turnover > 0 AND UPPER(ucc) LIKE 'N%' AND trade_date::date BETWEEN $1 AND $2
+    `, [rng.from, rng.to]);
 
     const dailyFO = await pool.query(`
-      SELECT dt.trade_date AS d,
+      SELECT dt.trade_date::text AS d,
              COUNT(DISTINCT dt.ucc)::int AS clients,
              COUNT(DISTINCT dt.ucc) FILTER (WHERE UPPER(dt.ucc) LIKE 'N%')::int AS nri
       FROM daily_trades dt LEFT JOIN clients c ON c.ucc = dt.ucc
@@ -1626,7 +1684,7 @@ router.get('/client-analytics', auth, async (req, res) => {
         SELECT dt.ucc, dt.options_premium_turnover, dt.eq_cash_turnover, dt.commodity_fo_turnover, dt.brokerage_earned,
                CASE WHEN UPPER(dt.ucc) LIKE 'N%' THEN 'NRI' ELSE 'RI' END AS ctype
         FROM daily_trades dt LEFT JOIN clients c ON c.ucc = dt.ucc
-        WHERE dt.trade_date::date BETWEEN $1 AND $2
+        WHERE dt.trade_date::date BETWEEN $1 AND $2 AND dt.turnover > 0
       )
       SELECT ctype AS client_type,
              COUNT(DISTINCT ucc)::int AS active,
@@ -1644,23 +1702,35 @@ router.get('/client-analytics', auth, async (req, res) => {
     `);
     const mtfByType = {}; mtfUsers.rows.forEach(r => { mtfByType[r.client_type] = Number(r.n); });
 
+    // High-value watch: top option traders overall AND per client-type (RI / NRI) so the UI can
+    // filter All / RI / NRI. Float is taken as of the SELECTED end date (latest ledger on/before it),
+    // not the newest ledger overall.
     const hv = await pool.query(`
       WITH mtd AS (
         SELECT ucc, SUM(options_premium_turnover) AS opt_to, SUM(brokerage_earned) AS brok
         FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2 GROUP BY ucc
       ),
-      led AS (SELECT ucc, opening_balance FROM daily_ledger WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)),
-      mtf AS (SELECT ucc, SUM(interest_earned) AS interest FROM mtf_monthly WHERE month_year = (SELECT MAX(month_year) FROM mtf_monthly) GROUP BY ucc)
-      SELECT m.ucc, c.name, CASE WHEN UPPER(m.ucc) LIKE 'N%' THEN 'NRI' ELSE 'RI' END AS client_type, m.opt_to::float, COALESCE(m.brok,0)::float AS brok,
-             COALESCE(led.opening_balance,0)::float AS float_bal, COALESCE(mtf.interest,0)::float AS mtf, rm.rm_name,
-             c.last_trade_date
-      FROM mtd m
-      LEFT JOIN clients c ON c.ucc = m.ucc
-      LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
-      LEFT JOIN led ON led.ucc = m.ucc
-      LEFT JOIN mtf ON mtf.ucc = m.ucc
-      WHERE m.opt_to > 0              -- "top by options TO": only real option traders (NULL/0 opt_to
-      ORDER BY m.opt_to DESC LIMIT 10 -- would otherwise sort FIRST under DESC and top the list)
+      led AS (SELECT ucc, opening_balance FROM daily_ledger
+              WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger WHERE ledger_date <= $2)),
+      mtf AS (SELECT ucc, SUM(interest_earned) AS interest FROM mtf_monthly WHERE month_year = (SELECT MAX(month_year) FROM mtf_monthly) GROUP BY ucc),
+      base AS (
+        SELECT m.ucc, c.name, CASE WHEN UPPER(m.ucc) LIKE 'N%' THEN 'NRI' ELSE 'RI' END AS client_type,
+               m.opt_to::float AS opt_to, COALESCE(m.brok,0)::float AS brok,
+               COALESCE(led.opening_balance,0)::float AS float_bal, COALESCE(mtf.interest,0)::float AS mtf,
+               rm.rm_name, c.last_trade_date
+        FROM mtd m
+        LEFT JOIN clients c ON c.ucc = m.ucc
+        LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
+        LEFT JOIN led ON led.ucc = m.ucc
+        LEFT JOIN mtf ON mtf.ucc = m.ucc
+        WHERE m.opt_to > 0
+      ),
+      ranked AS (
+        SELECT *, ROW_NUMBER() OVER (ORDER BY opt_to DESC) AS rn_all,
+                  ROW_NUMBER() OVER (PARTITION BY client_type ORDER BY opt_to DESC) AS rn_type
+        FROM base
+      )
+      SELECT * FROM ranked WHERE rn_all <= 10 OR rn_type <= 10 ORDER BY opt_to DESC
     `, [rng.from, rng.to]);
 
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -1679,7 +1749,7 @@ router.get('/client-analytics', auth, async (req, res) => {
              WHERE trade_date::date BETWEEN $1 AND $2 GROUP BY ucc ) x
     `, [rng.from, rng.to]);
     const pnlDaily = await pool.query(`
-      SELECT trade_date AS d,
+      SELECT trade_date::text AS d,
              COUNT(DISTINCT ucc) FILTER (WHERE realized_pnl > 0)::int AS profitable,
              COUNT(DISTINCT ucc) FILTER (WHERE realized_pnl < 0)::int AS loss
       FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2 AND realized_pnl <> 0
@@ -1688,12 +1758,23 @@ router.get('/client-analytics', auth, async (req, res) => {
     const pnlHas = pnlDaily.rows.length > 0;
 
     const asOfCa = await pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') a FROM daily_trades`);
+    const hvMap = (r) => ({
+      ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type, opt_to: Number(r.opt_to),
+      brokerage: Number(r.brok), float: Number(r.float_bal), mtf: Number(r.mtf),
+      rm_name: r.rm_name || '—', status: statusOf(r.last_trade_date),
+    });
+    const hvAll = hv.rows.filter(r => Number(r.rn_all) <= 10).map(hvMap);
+    const hvRI  = hv.rows.filter(r => r.client_type === 'RI'  && Number(r.rn_type) <= 10).map(hvMap);
+    const hvNRI = hv.rows.filter(r => r.client_type === 'NRI' && Number(r.rn_type) <= 10).map(hvMap);
     res.json({
       meta: { as_of: asOfCa.rows[0]?.a || null, range: rangeMeta(rng) },
       cards: {
         total_traded: Number(at.this_m || 0), total_traded_prev: Number(at.prev_m || 0),
-        nri: dailyFO.rows.length ? Math.round(dailyFO.rows.reduce((s, r) => s + Number(r.nri), 0) / dailyFO.rows.length) : 0,
+        nri: Number(nriTraded.rows[0]?.n || 0),
         nri_total: Number(nri.rows[0].n),
+        // RI (Resident) = every traded client that is not NRI. Shown beside NRI with its %.
+        ri: Math.max(0, Number(at.this_m || 0) - Number(nriTraded.rows[0]?.n || 0)),
+        ri_total: Math.max(0, Number(allClients.rows[0].n) - Number(nri.rows[0].n)),
         profitable: pnlHas ? Number(pnlCards.rows[0].profitable) : null,
         loss:       pnlHas ? Number(pnlCards.rows[0].loss)       : null,
       },
@@ -1704,14 +1785,11 @@ router.get('/client-analytics', auth, async (req, res) => {
         client_type: r.client_type, active: Number(r.active),
         eq_options: Number(r.eq_options), eq_cash: Number(r.eq_cash), commodity: Number(r.commodity),
         mtf_users: mtfByType[r.client_type] || 0,
+        opt_to: Number(r.opt_to), brokerage: Number(r.brokerage),
         avg_opt_to: Number(r.eq_options) > 0 ? Number(r.opt_to) / Number(r.eq_options) : 0,
         avg_brok: Number(r.active) > 0 ? Number(r.brokerage) / Number(r.active) : 0,
       })),
-      hv_watch: hv.rows.map(r => ({
-        ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type, opt_to: Number(r.opt_to),
-        brokerage: Number(r.brok), float: Number(r.float_bal), mtf: Number(r.mtf),
-        rm_name: r.rm_name || '—', status: statusOf(r.last_trade_date),
-      })),
+      hv_watch: hvAll, hv_ri: hvRI, hv_nri: hvNRI,
     });
   } catch (err) {
     console.error('CLIENT-ANALYTICS ERROR:', err.message);
@@ -1738,7 +1816,10 @@ router.get('/daily-mis', auth, async (req, res) => {
              COUNT(DISTINCT t.ucc) FILTER (WHERE t.product_type = 'CO')::int AS fo_comm_clients,
              COUNT(DISTINCT t.ucc) FILTER (WHERE t.product_type = 'CM')::int AS cash_clients,
              COUNT(DISTINCT t.ucc) FILTER (WHERE UPPER(t.ucc) LIKE 'N%')::int AS nri_clients,
-             BOOL_OR(t.expiry_date = t.trade_date) AS is_expiry
+             -- Weekly index expiries fall on Tuesday (NSE) and Thursday (BSE) only.
+             -- Restrict to DOW 2 (Tue) / 4 (Thu) so a stray Wednesday contract expiry
+             -- (holiday-shift or another segment) is not marked as an expiry day.
+             BOOL_OR(t.expiry_date = t.trade_date AND EXTRACT(DOW FROM t.trade_date) IN (2,4)) AS is_expiry
       FROM trades t LEFT JOIN clients c ON c.ucc = t.ucc
       GROUP BY t.trade_date ORDER BY t.trade_date
     `);
@@ -1771,9 +1852,17 @@ router.get('/daily-mis', auth, async (req, res) => {
     // Per-date float income = that day's total client ledger balance × FD rate ÷ 365.
     // Used by the optional date-range validation panel (?from&?to) so float is real per-day,
     // not the single latest-day figure used for the "today" column.
+    // CARRY-FORWARD: a day with no ledger of its own (weekend / holiday) inherits the most recent
+    // prior ledger balance, so float income accrues every day. Built for every calendar day from the
+    // first to the last ledger date; days beyond the latest ledger fall back to the latest snapshot.
     const floatByDate = {};
-    const ledgerDaily = await pool.query(`SELECT ledger_date::text AS d, COALESCE(SUM(opening_balance),0)::float AS bal FROM daily_ledger GROUP BY 1`);
-    ledgerDaily.rows.forEach(r => { floatByDate[r.d] = Number(r.bal) * (fdRate / 100) / 365; });
+    const ledgerDaily = await pool.query(`
+      WITH daybal AS (SELECT ledger_date, SUM(opening_balance) AS bal FROM daily_ledger GROUP BY ledger_date)
+      SELECT to_char(gs::date,'YYYY-MM-DD') AS d,
+             (SELECT db.bal FROM daybal db WHERE db.ledger_date <= gs::date ORDER BY db.ledger_date DESC LIMIT 1)::float AS bal
+      FROM generate_series((SELECT MIN(ledger_date) FROM daily_ledger), (SELECT MAX(ledger_date) FROM daily_ledger), interval '1 day') gs
+    `);
+    ledgerDaily.rows.forEach(r => { floatByDate[r.d] = (Number(r.bal) || 0) * (fdRate / 100) / 365; });
 
     const rows = perDay.rows.map(r => ({
       d: String(r.d), eq_opt: Number(r.eq_opt), comm_opt: Number(r.comm_opt), eq_fut: Number(r.eq_fut),
@@ -1783,10 +1872,28 @@ router.get('/daily-mis', auth, async (req, res) => {
       is_expiry: !!r.is_expiry, brok: brokBy[String(r.d)] || 0, comm: commBy[String(r.d)] || 0,
     }));
     const n = rows.length;
-    const today = rows[n - 1], yday = rows[n - 2], dbef = rows[n - 3];
+    // Optional as-of date (?asof=YYYY-MM-DD) anchors the Last-traded-date / Yesterday / Day-before
+    // columns on the latest TRADING day on/before it. Yesterday/Day-before are the previous trading
+    // days — `rows` holds only days with trades, so stepping back skips weekends/holidays. Default
+    // (no asof) anchors on the latest trading day overall. Independent of the From–To range panel.
+    const asof = req.query.asof ? String(req.query.asof).slice(0, 10) : null;
+    let anchorIdx = n - 1;
+    if (asof) { let i = n - 1; while (i >= 0 && String(rows[i].d) > asof) i--; anchorIdx = i; }
+    const today = anchorIdx >= 0 ? rows[anchorIdx] : undefined;
+    const yday  = anchorIdx >= 1 ? rows[anchorIdx - 1] : undefined;
+    const dbef  = anchorIdx >= 2 ? rows[anchorIdx - 2] : undefined;
     const curMonth = today ? ymOf(today.d) : null;
-    const mtdRows = rows.filter(r => ymOf(r.d) === curMonth);
+    // MTD = the anchor month up to and including the anchor date.
+    const mtdRows = rows.filter(r => ymOf(r.d) === curMonth && (!today || String(r.d) <= String(today.d)));
     const priorRows = rows.filter(r => ymOf(r.d) !== curMonth);
+    // Discrete prior-MONTH row sets for the Prior 1M / 2M / 3M avg columns (income + volume):
+    // 1M = the single month just before the anchor month, 2M = two months before, 3M = three
+    // months before. Each average is that one calendar month only (not a cumulative window).
+    const monthKeyOffset = (ym, k) => { if (!ym) return null; let [y, m] = ym.split('-').map(Number); m -= k; while (m <= 0) { m += 12; y -= 1; } return `${y}-${String(m).padStart(2, '0')}`; };
+    const pm1 = monthKeyOffset(curMonth, 1), pm2 = monthKeyOffset(curMonth, 2), pm3 = monthKeyOffset(curMonth, 3);
+    const p1Rows = rows.filter(r => ymOf(r.d) === pm1);
+    const p2Rows = rows.filter(r => ymOf(r.d) === pm2);
+    const p3Rows = rows.filter(r => ymOf(r.d) === pm3);
     const expRows = rows.filter(r => r.is_expiry), nonExp = rows.filter(r => !r.is_expiry);
     const avg = (arr, f) => arr.length ? arr.reduce((s, r) => s + f(r), 0) / arr.length : 0;
     const cr = (v) => +(v / 1e7).toFixed(2);
@@ -1801,26 +1908,29 @@ router.get('/daily-mis', auth, async (req, res) => {
     const volSeg = (label, f, expiry) => ({
       segment: label,
       today: today ? cr(f(today)) : 0, yesterday: yday ? cr(f(yday)) : 0,
-      mtd_avg: cr(avg(mtdRows, f)), prior3m_avg: cr(avg(priorRows, f)),
-      vs: vsPct(today ? f(today) : 0, avg(priorRows, f)),
+      mtd_avg: cr(avg(mtdRows, f)),
+      prior1m_avg: cr(avg(p1Rows, f)), prior2m_avg: cr(avg(p2Rows, f)), prior3m_avg: cr(avg(p3Rows, f)),
+      vs: vsPct(today ? f(today) : 0, avg(p3Rows, f)),
       expiry_premium: expiry && nonExp.length && avg(nonExp, f) > 0
         ? +(((avg(expRows, f) - avg(nonExp, f)) / avg(nonExp, f)) * 100).toFixed(0) : null,
     });
     const totVol = (r) => r.eq_opt + r.comm_opt + r.eq_fut + r.comm_fut + r.eq_cash;
     const actSeg = (label, f) => ({
       category: label, today: today ? f(today) : 0, yesterday: yday ? f(yday) : 0,
-      mtd_avg: Math.round(avg(mtdRows, f)), prior3m_avg: Math.round(avg(priorRows, f)),
-      vs: vsPct(today ? f(today) : 0, avg(priorRows, f)),
+      mtd_avg: Math.round(avg(mtdRows, f)),
+      prior1m_avg: Math.round(avg(p1Rows, f)), prior2m_avg: Math.round(avg(p2Rows, f)), prior3m_avg: Math.round(avg(p3Rows, f)),
+      vs: vsPct(today ? f(today) : 0, avg(p3Rows, f)),
     });
 
     // Income lines (₹): clearing unavailable; brokerage/MTF/float real
     const incLine = (line, tf, note) => {
       const t = today ? tf(today) : 0, y = yday ? tf(yday) : 0, db = dbef ? tf(dbef) : 0;
-      const mtd = avg(mtdRows, tf), p3 = avg(priorRows, tf);
+      const mtd = avg(mtdRows, tf), p1 = avg(p1Rows, tf), p2 = avg(p2Rows, tf), p3 = avg(p3Rows, tf);
       // No rounding — carry the exact value (paise) through; the UI formats to 2 decimals.
       return { line, today: note ? null : t, yesterday: note ? null : y,
         day_before: note ? null : db, mtd_avg: note ? null : mtd,
-        prior3m_avg: note ? null : p3, vs: note ? null : vsPct(t, p3), note: note || null };
+        prior1m_avg: note ? null : p1, prior2m_avg: note ? null : p2, prior3m_avg: note ? null : p3,
+        vs: note ? null : vsPct(t, p3), note: note || null };
     };
     const income = [
       incLine('Clearing charges (commission)', r => r.comm, null),
@@ -1834,10 +1944,12 @@ router.get('/daily-mis', auth, async (req, res) => {
     const realLines = income.filter(l => !l.note);
     const totalToday = realLines.reduce((s, l) => s + (l.today || 0), 0);
     const totalMtd = realLines.reduce((s, l) => s + (l.mtd_avg || 0), 0);
+    const totalP1 = realLines.reduce((s, l) => s + (l.prior1m_avg || 0), 0);
+    const totalP2 = realLines.reduce((s, l) => s + (l.prior2m_avg || 0), 0);
     const totalPrior = realLines.reduce((s, l) => s + (l.prior3m_avg || 0), 0);
     income.push({ line: 'Total revenue', today: totalToday, yesterday: realLines.reduce((s, l) => s + (l.yesterday || 0), 0),
       day_before: realLines.reduce((s, l) => s + (l.day_before || 0), 0), mtd_avg: totalMtd,
-      prior3m_avg: totalPrior, vs: vsPct(totalToday, totalPrior), note: null, total: true });
+      prior1m_avg: totalP1, prior2m_avg: totalP2, prior3m_avg: totalPrior, vs: vsPct(totalToday, totalPrior), note: null, total: true });
     income.forEach(l => { l.share = (l.note || l.total) ? null : (totalToday > 0 ? Math.round((l.today || 0) / totalToday * 100) : 0); });
 
     const revenueMix = realLines.map(l => ({ label: l.line.replace(' (daily)', '').replace(' (est.)', ''), pct: totalToday > 0 ? Math.round((l.today || 0) / totalToday * 100) : 0 }));
@@ -1889,7 +2001,8 @@ router.get('/daily-mis', auth, async (req, res) => {
 
     res.json({
       range,
-      meta: { today: fmtDate(today?.d), is_expiry: today ? today.is_expiry : false, brokerage_loaded: rows.reduce((s, r) => s + r.brok, 0) > 0 },
+      meta: { today: fmtDate(today?.d), yesterday_date: fmtDate(yday?.d), day_before_date: fmtDate(dbef?.d),
+              asof, is_expiry: today ? today.is_expiry : false, brokerage_loaded: rows.reduce((s, r) => s + r.brok, 0) > 0 },
       income,
       volume: [
         volSeg('Eq Options (premium TO)', r => r.eq_opt, true),
@@ -1904,7 +2017,7 @@ router.get('/daily-mis', auth, async (req, res) => {
         actSeg('F&O clients (Eq)', r => r.fo_eq_clients),
         actSeg('F&O clients (Comm)', r => r.fo_comm_clients),
         actSeg('Equity cash clients', r => r.cash_clients),
-        { category: 'MTF clients', today: Number(mtf.rows[0]?.clients || 0), yesterday: Number(mtf.rows[0]?.clients || 0), mtd_avg: Number(mtf.rows[0]?.clients || 0), prior3m_avg: null, vs: null },
+        { category: 'MTF clients', today: Number(mtf.rows[0]?.clients || 0), yesterday: Number(mtf.rows[0]?.clients || 0), mtd_avg: Number(mtf.rows[0]?.clients || 0), prior1m_avg: null, prior2m_avg: null, prior3m_avg: null, vs: null },
         actSeg('Resident clients', r => r.resident_clients),
         actSeg('NRI clients', r => r.nri_clients),
       ],
@@ -1915,7 +2028,7 @@ router.get('/daily-mis', auth, async (req, res) => {
         avg_per_client: Number(mtf.rows[0]?.clients || 0) > 0 ? Number(mtf.rows[0]?.bal || 0) / Number(mtf.rows[0]?.clients || 0) : 0,
       },
       revenue_mix: revenueMix,
-      trend: rows.slice(-17).map(r => ({
+      trend: rows.slice(Math.max(0, anchorIdx - 16), anchorIdx + 1).map(r => ({
         date: dLabel(r.d), options_cr: cr(r.eq_opt + r.comm_opt), clients: r.total_clients,
         revenue_l: +((r.brok + (mtfByDate[r.d] || 0) + (floatByDate[r.d] != null ? floatByDate[r.d] : dailyFloat)) / 1e5).toFixed(2), is_expiry: r.is_expiry,
       })),
@@ -2191,15 +2304,18 @@ router.get('/revenue-ramp', auth, async (req, res) => {
       return { cohort: monLbl(cmon), cmon, clients: size,
                m1: cell(1), m2: cell(2), m3: cell(3), m6: cell(6), m12: cell(12), opt_activation: opt };
     });
-    // Table = only the cohorts whose opening month falls in the selected range.
+    // Selected range scopes EVERYTHING (table, cards and curve) to cohorts whose opening month
+    // falls in [fromM, toM]. Note: for a recent-only range the cohorts are young, so M6/M12 read
+    // "—" until those cohorts age into those elapsed months.
     const fromM = fromD.slice(0, 7), toM = toD.slice(0, 7);
     const cohorts = cohortsAll.filter(c => c.cmon >= fromM && c.cmon <= toM);
+    const cmonsInRange = cmons.filter(cmon => cmon >= fromM && cmon <= toM);
 
     // Blended ramp curve M0..M12 (weighted by clients opened; only observed elapsed months).
     const curve = [];
     for (let k = 0; k <= 12; k++) {
       let num = 0, den = 0;
-      for (const cmon of cmons) {
+      for (const cmon of cmonsInRange) {
         if (!dataMonths.has(addMonths(cmon, k))) continue;
         num += (revByCK[cmon] && revByCK[cmon][k]) || 0;
         den += cohortSize[cmon];
@@ -2210,7 +2326,7 @@ router.get('/revenue-ramp', auth, async (req, res) => {
 
     // Blended options-activation by M2 across cohorts whose full 0–60-day window is observed.
     let optNum = 0, optDen = 0;
-    for (const cmon of cmons) {
+    for (const cmon of cmonsInRange) {
       const windowObserved = dataMonths.has(addMonths(cmon, 0)) && dataMonths.has(addMonths(cmon, 1)) && dataMonths.has(addMonths(cmon, 2));
       if (windowObserved) { optNum += activatedByC[cmon] || 0; optDen += cohortSize[cmon]; }
     }
@@ -2233,42 +2349,184 @@ router.get('/revenue-ramp', auth, async (req, res) => {
 });
 
 // ── MARKET SHARE ────────────────────────────────────────────────
+// --- exchange_volume table (manual / feed-fed exchange turnover, segment-wise) ---
+// Columns: trade_date, segment (eqopt|eqfut|commopt|commfut|eqcash), traded_value (₹, options = PREMIUM turnover)
+let _exVolEnsured = false;
+async function ensureExchangeVolume() {
+  if (_exVolEnsured) return;
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS exchange_volume (
+      trade_date   DATE         NOT NULL,
+      segment      VARCHAR(12)  NOT NULL,
+      traded_value NUMERIC      NOT NULL,
+      source       VARCHAR(16)  DEFAULT 'manual',
+      updated_at   TIMESTAMPTZ  DEFAULT now(),
+      PRIMARY KEY (trade_date, segment)
+    )
+  `);
+  _exVolEnsured = true;
+}
+
+const MKT_SEGS = [
+  { key: 'eqopt',   label: 'Equity Options (premium)' },
+  { key: 'eqfut',   label: 'Equity Futures' },
+  { key: 'commopt', label: 'Commodity Options (premium)' },
+  { key: 'commfut', label: 'Commodity Futures' },
+  { key: 'eqcash',  label: 'Equity Cash' },
+];
+
+// Navia per-day per-segment turnover, split 5 ways from daily_trades.symbols
+// (the retained detail tier — the raw `trades` table is a staging table and only
+// holds the latest upload, so bounds/history must come from daily_trades like
+// every other report). Options `to` in symbols is premium turnover.
+const NAVIA_SEG_SQL = `
+  SELECT dt.trade_date::text AS d,
+    CASE WHEN (e->>'pt')='FO' AND UPPER(COALESCE(e->>'ot','')) IN ('CE','PE') THEN 'eqopt'
+         WHEN (e->>'pt')='CO' AND UPPER(COALESCE(e->>'ot','')) IN ('CE','PE') THEN 'commopt'
+         WHEN (e->>'pt')='FO' THEN 'eqfut'
+         WHEN (e->>'pt')='CO' THEN 'commfut'
+         WHEN (e->>'pt')='CM' THEN 'eqcash'
+         ELSE 'other' END AS seg,
+    SUM((e->>'to')::numeric)::float AS val
+  FROM daily_trades dt
+  CROSS JOIN LATERAL jsonb_array_elements(dt.symbols) e
+  WHERE dt.trade_date::date BETWEEN $1 AND $2
+  GROUP BY 1, 2`;
+
 router.get('/market-share', auth, async (req, res) => {
   try {
-    const rng = await resolveRange(req, 'trades');
-    const navia = await pool.query(`
-      WITH t AS (
-        SELECT to_char(trade_date,'YYYY-MM') AS mon, trade_date, traded_value,
-          CASE WHEN product_type = 'FO' AND option_type IN ('CE','PE') THEN 'eqopt'
-               WHEN product_type = 'CO' AND option_type IN ('CE','PE') THEN 'commopt'
-               WHEN product_type = 'FO' THEN 'eqfut'
-               ELSE 'other' END AS seg
-        FROM trades WHERE trade_date::date BETWEEN $1 AND $2
-      )
-      SELECT mon,
-             COALESCE(SUM(traded_value) FILTER (WHERE seg='eqopt'),0)::float   AS eqopt,
-             COALESCE(SUM(traded_value) FILTER (WHERE seg='commopt'),0)::float  AS commopt,
-             COALESCE(SUM(traded_value) FILTER (WHERE seg='eqfut'),0)::float    AS eqfut,
-             COUNT(DISTINCT trade_date)::int AS days
-      FROM t GROUP BY mon ORDER BY mon
+    await ensureExchangeVolume();
+    // Bounds must anchor to the last day of ACTUAL trading. daily_trades also holds
+    // zero-turnover holdings-snapshot rows (e.g. an Aug holdings import with no trades),
+    // which would otherwise push the max date into a month that has no market data and
+    // make presets like "Last 30 days" run past 31 Jul. Filter turnover > 0.
+    const rng = await resolveRange(req, '(SELECT trade_date FROM daily_trades WHERE turnover > 0) dt');
+
+    // Navia daily traded value per segment (current window)
+    const navia = await pool.query(NAVIA_SEG_SQL, [rng.from, rng.to]);
+
+    // Exchange daily traded value per segment (manual/feed)
+    const exch = await pool.query(`
+      SELECT trade_date::text AS d, segment AS seg, SUM(traded_value)::float AS val
+      FROM exchange_volume WHERE trade_date::date BETWEEN $1 AND $2
+      GROUP BY 1, 2
     `, [rng.from, rng.to]);
-    const perDay = (v, d) => (d ? +(Number(v) / d / 1e7).toFixed(2) : 0);
-    const rows = navia.rows.map(r => ({
-      month: monLbl(r.mon),
-      navia_eqopt: perDay(r.eqopt, r.days),
-      navia_commopt: perDay(r.commopt, r.days),
-      navia_eqfut: perDay(r.eqfut, r.days),
-      exchange_eqopt: null, eqopt_share: null,
-      exchange_comm: null, comm_share: null, eqfut_share: null,
-    }));
-    const asOfMkt = await pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') a FROM trades`);
+
+    const CR = 1e7;
+    const cr = v => +(Number(v || 0) / CR).toFixed(2);
+    const monthKey = d => d.slice(0, 7);
+    const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const deltaPct = (cur, prev) => (prev > 0 ? +(((cur - prev) / prev) * 100).toFixed(1) : null);
+    const dirOf = (cur, prev) => (cur > prev ? 'up' : cur < prev ? 'down' : 'flat');
+
+    // exchange lookup: seg -> {date -> val}
+    const exMap = {};
+    for (const r of exch.rows) (exMap[r.seg] = exMap[r.seg] || {})[r.d] = r.val;
+
+    // ── per (month, segment) aggregates ─────────────────────────────
+    const navMon = {}, navMonMatched = {}, exMonTot = {}, exMonDates = {};
+    for (const r of exch.rows) {
+      const k = monthKey(r.d) + '|' + r.seg;
+      exMonTot[k] = (exMonTot[k] || 0) + r.val;
+      (exMonDates[k] = exMonDates[k] || new Set()).add(r.d);
+    }
+    for (const r of navia.rows) {
+      const k = monthKey(r.d) + '|' + r.seg;
+      navMon[k] = (navMon[k] || 0) + r.val;
+      if (exMap[r.seg] && exMap[r.seg][r.d] != null) navMonMatched[k] = (navMonMatched[k] || 0) + r.val;
+    }
+
+    // ── per-day totals across ALL segments (for the day-wise chart) ──
+    const navDay = {}, exDay = {};
+    for (const r of navia.rows) navDay[r.d] = (navDay[r.d] || 0) + r.val;
+    for (const r of exch.rows)  exDay[r.d]  = (exDay[r.d]  || 0) + r.val;
+    // day axis: from the earliest to the latest day that has any data, filling gaps
+    const dataDates = [...new Set([...Object.keys(navDay), ...Object.keys(exDay)])].sort();
+    const daily = [];
+    if (dataDates.length) {
+      const dayMs = 86400000;
+      let cur = new Date(dataDates[0] + 'T00:00:00Z');
+      const end = new Date(dataDates[dataDates.length - 1] + 'T00:00:00Z');
+      let guard = 0;
+      while (cur <= end && guard < 400) {
+        const iso = cur.toISOString().slice(0, 10);
+        daily.push({
+          d: iso,
+          day: cur.getUTCDate(),
+          label: `${cur.getUTCDate()} ${MON[cur.getUTCMonth()]}`,
+          navia_cr: cr(navDay[iso] || 0),
+          exchange_cr: cr(exDay[iso] || 0),
+        });
+        cur = new Date(cur.getTime() + dayMs); guard++;
+      }
+    }
+
+    // ── month-wise segment tables ───────────────────────────────────
+    const monthsSet = new Set([...navia.rows.map(r => monthKey(r.d)), ...exch.rows.map(r => monthKey(r.d))]);
+    const prevMonthOf = m => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7); };
+    const months = [...monthsSet].sort().map(m => {
+      const pm = prevMonthOf(m);
+      const segs = MKT_SEGS.map(s => {
+        const k = m + '|' + s.key, pk = pm + '|' + s.key;
+        const nt = navMon[k] || 0, nm = navMonMatched[k] || 0, et = exMonTot[k] || 0, np = navMon[pk] || 0;
+        const days = exMonDates[k] ? exMonDates[k].size : 0;
+        return {
+          key: s.key, label: s.label,
+          navia_cr: cr(nt), navia_matched_cr: cr(nm), exchange_cr: cr(et),
+          share: et > 0 ? +((nm / et) * 100).toFixed(2) : null,
+          trading_days: days,
+          navia_delta_pct: deltaPct(nt, np),   // vs previous calendar month
+          navia_dir: dirOf(nt, np),
+        };
+      });
+      return { month: m, label: monLbl(m), segments: segs };
+    });
+
+    // ── cards: overall over the whole range ─────────────────────────
+    let sumMatched = 0, sumExch = 0;
+    for (const mo of months) for (const s of mo.segments) if (s.exchange_cr > 0) { sumMatched += s.navia_matched_cr; sumExch += s.exchange_cr; }
+    const overallShare = sumExch > 0 ? +((sumMatched / sumExch) * 100).toFixed(3) : null;
+    const segAgg = {};
+    for (const mo of months) for (const s of mo.segments) if (s.exchange_cr > 0) {
+      const a = segAgg[s.key] = segAgg[s.key] || { label: s.label, nm: 0, et: 0 };
+      a.nm += s.navia_matched_cr; a.et += s.exchange_cr;
+    }
+    let topSeg = null;
+    for (const k in segAgg) { const a = segAgg[k]; const sh = a.et > 0 ? (a.nm / a.et) * 100 : 0; if (!topSeg || sh > topSeg.share) topSeg = { label: a.label, share: +sh.toFixed(2) }; }
+
+    const naviaTotalAll = Object.values(navDay).reduce((a, b) => a + b, 0);
+    let naviaPrevAll = 0;
+    if (rng.from && rng.to) {
+      const dayMs = 86400000;
+      const fromD = new Date(rng.from + 'T00:00:00Z'), toD = new Date(rng.to + 'T00:00:00Z');
+      const span = Math.round((toD - fromD) / dayMs) + 1;
+      const pTo = new Date(fromD.getTime() - dayMs), pFrom = new Date(pTo.getTime() - (span - 1) * dayMs);
+      const isoU = d => d.toISOString().slice(0, 10);
+      const prev = await pool.query(NAVIA_SEG_SQL, [isoU(pFrom), isoU(pTo)]);
+      naviaPrevAll = prev.rows.reduce((a, r) => a + r.val, 0);
+    }
+
+    const feedAvailable = exch.rows.length > 0;
+    const asOfMkt = await pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') a FROM exchange_volume WHERE trade_date::date BETWEEN $1 AND $2`, [rng.from, rng.to]);
     res.json({
-      meta: { feed_available: false, reason: 'Market share needs external exchange total-volume figures — no exchange feed is ingested yet.', as_of: asOfMkt.rows[0]?.a || null, range: rangeMeta(rng) },
-      cards: {
-        navia_avg: rows.length ? rows[rows.length - 1].navia_eqopt : 0,
-        exchange_avg: null, mkt_share: null, peak_share: null,
+      meta: {
+        feed_available: feedAvailable,
+        reason: feedAvailable ? null : 'No exchange turnover figures entered for this range yet — add them to the exchange_volume table (Admin can insert manually or via the feed).',
+        as_of: asOfMkt.rows[0]?.a || null,
+        range: rangeMeta(rng),
       },
-      rows,
+      cards: {
+        overall_share: overallShare,
+        top_segment: topSeg ? topSeg.label : null,
+        top_segment_share: topSeg ? topSeg.share : null,
+        navia_total_cr: cr(naviaTotalAll),
+        navia_prev_total_cr: cr(naviaPrevAll),
+        navia_delta_pct: deltaPct(naviaTotalAll, naviaPrevAll),
+        navia_dir: dirOf(naviaTotalAll, naviaPrevAll),
+        exchange_total_cr: +(sumExch).toFixed(2),
+      },
+      daily,
+      months,
     });
   } catch (err) { console.error('MARKET-SHARE ERROR:', err.message); res.status(500).json({ message: 'Server error' }); }
 });

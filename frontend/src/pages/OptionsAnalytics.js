@@ -108,7 +108,7 @@ const OptionsAnalytics = () => {
             </table>
           }
         />
-        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Red markers = weekly expiry days (Tue/Thu). Monthly expiry shown with triangle marker. Volume spike on expiry days is consistently 25–30% above non-expiry average.</p>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Red markers = expiry days (Tue/Thu). Volume spike on expiry days is consistently 25–30% above non-expiry average.</p>
       </div>
 
       <div className="tc2">
@@ -201,22 +201,21 @@ const OptionsAnalytics = () => {
 
       <div className="tc2">
         <div className="panel">
-          <div className="ptitle">📅 Expiry day analysis — {lm}<InfoBtn text="Each expiry day's premium turnover and client count vs the month-to-date average. Monthly = last expiry of the month (NSE last-Thursday); Weekly = every other Tue/Thu expiry." /></div>
-          <div className="alert a-i" style={{ marginBottom: 10 }}>ℹ️ Weekly expiries: every Tue &amp; Thu. NSE monthly: last Thu of month.</div>
+          <div className="ptitle">📅 Expiry day analysis — {lm}<InfoBtn text="Each expiry day's premium turnover and client count vs the month-to-date average. Expiries fall on Tuesday (NSE) and Thursday (BSE)." /></div>
+          <div className="alert a-i" style={{ marginBottom: 10 }}>ℹ️ Weekly expiries: Tuesday (NSE) &amp; Thursday (BSE).</div>
           <div className="tw"><table>
-            <thead><tr><th>Expiry date</th><th>Type</th><th>Eq Opt TO (₹Cr)</th><th>vs MTD avg</th><th>Clients</th><th>vs MTD avg</th></tr></thead>
+            <thead><tr><th>Expiry date</th><th>Eq Opt TO (₹Cr)</th><th>vs MTD avg</th><th>Clients</th><th>vs MTD avg</th></tr></thead>
             <tbody>
               {expiry_analysis.map((e, i) => (
                 <tr key={i}>
                   <td>{e.date}</td>
-                  <td><span className={`badge ${e.type === 'Monthly' ? 'b-nri' : 'b-pend'}`}>{e.type}</span></td>
                   <td>{e.eq_opt_to_cr}</td>
                   <td style={{ color: colorOf(e.vs_mtd_pct) }}>{spct0(e.vs_mtd_pct)}</td>
                   <td>{e.clients.toLocaleString('en-IN')}</td>
                   <td style={{ color: colorOf(e.clients_vs_mtd_pct) }}>{spct0(e.clients_vs_mtd_pct)}</td>
                 </tr>
               ))}
-              {expiry_analysis.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tx3)' }}>No expiry days in range.</td></tr>}
+              {expiry_analysis.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tx3)' }}>No expiry days in range.</td></tr>}
             </tbody>
           </table></div>
         </div>

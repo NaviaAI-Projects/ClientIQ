@@ -40,7 +40,7 @@ async function buildInsightsData(ucc, days = 90) {
     FROM daily_trades t
     CROSS JOIN LATERAL jsonb_to_recordset(t.symbols)
       AS x(s text, ot text, pt text, ex text, bv float, sv float, bq float, sq float, "to" float, n int, lots float, qty float)
-    WHERE t.ucc = $1 AND t.trade_date >= CURRENT_DATE - ($2 * INTERVAL '1 day')
+    WHERE t.ucc = $1 AND t.turnover > 0 AND t.trade_date >= CURRENT_DATE - ($2 * INTERVAL '1 day')
     GROUP BY x.s
   `, [ucc, D]);
 
@@ -73,7 +73,9 @@ async function buildInsightsData(ucc, days = 90) {
       COALESCE(SUM(cnc_trades),0)::int   AS cnc_trades,
       COALESCE(SUM(mis_trades),0)::int   AS mis_trades
     FROM daily_trades
-    WHERE ucc = $1 AND trade_date >= CURRENT_DATE - ($2 * INTERVAL '1 day')
+    -- turnover > 0 excludes the daily zero-turnover holdings-snapshot rows (one per holder per day)
+    -- so they don't inflate trade_days / streaks — Hozefa showed 7 instead of his 4 real days.
+    WHERE ucc = $1 AND turnover > 0 AND trade_date >= CURRENT_DATE - ($2 * INTERVAL '1 day')
   `, [ucc, D]);
   const A = aggRes.rows[0] || {};
   const tradeDays = Number(A.trade_days || 0);
@@ -91,7 +93,7 @@ async function buildInsightsData(ucc, days = 90) {
     FROM daily_trades t
     CROSS JOIN LATERAL jsonb_to_recordset(t.symbols)
       AS x(s text, ot text, pt text, ex text, bv float, sv float, bq float, sq float, "to" float, n int, lots float)
-    WHERE t.ucc = $1 AND t.trade_date >= CURRENT_DATE - ($2 * INTERVAL '1 day')
+    WHERE t.ucc = $1 AND t.turnover > 0 AND t.trade_date >= CURRENT_DATE - ($2 * INTERVAL '1 day')
     ORDER BY t.trade_date ASC
   `, [ucc, D]);
 

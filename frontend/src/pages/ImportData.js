@@ -78,8 +78,47 @@ const ImportData = () => {
   const [logTo, setLogTo]           = useState('');
   const [showAll, setShowAll]       = useState(false);
   const [dragOver, setDragOver]     = useState(false);
+  const [rbStatus, setRbStatus]     = useState(null);   // { computing, pending, ready, latest_computed, ... }
+  const rbPollRef                   = useRef(null);
 
   useEffect(() => { fetchLogs(logFrom, logTo); }, [logFrom, logTo]);
+
+  // ── Daily-data (rebuild) status: drives the computing banner + brokerage gating ──
+  const fetchRebuildStatus = async () => {
+    try { const r = await api.get('/import/rebuild-status'); setRbStatus(r.data); return r.data; }
+    catch { return null; }
+  };
+  useEffect(() => {
+    fetchRebuildStatus();
+    return () => { if (rbPollRef.current) { clearInterval(rbPollRef.current); rbPollRef.current = null; } };
+  }, []);
+  // Poll every 4s only while a rebuild is running or dates are queued; stop when idle.
+  useEffect(() => {
+    const active = rbStatus && (rbStatus.computing || rbStatus.pending > 0);
+    if (active && !rbPollRef.current) {
+      rbPollRef.current = setInterval(fetchRebuildStatus, 4000);
+    } else if (!active && rbPollRef.current) {
+      clearInterval(rbPollRef.current); rbPollRef.current = null;
+    }
+  }, [rbStatus]);
+
+  // Poll the status until daily data is fully computed (nothing running, nothing queued).
+  const waitForDailyReady = async (timeoutMs = 180000) => {
+    const start = Date.now();
+    // small initial delay so the just-fired background trigger has queued/started
+    await new Promise(r => setTimeout(r, 1200));
+    while (Date.now() - start < timeoutMs) {
+      const s = await fetchRebuildStatus();
+      if (s && !s.computing && (s.pending || 0) === 0) return true;
+      await new Promise(r => setTimeout(r, 3000));
+    }
+    return false;
+  };
+
+  // True while any daily-data compute is running or queued. Brokerage upload and the
+  // AI rescore are both locked until it clears (rescore reads daily_trades-derived metrics).
+  const computeBusy     = !!(rbStatus && (rbStatus.computing || rbStatus.pending > 0));
+  const brokerageLocked = computeBusy;
 
   const fetchLogs = async (f = logFrom, t = logTo) => {
     try {
@@ -114,6 +153,7 @@ const ImportData = () => {
       const res = await api.post('/import/rebuild-daily', all ? { all: true } : {});
       setRebuildMsg({ success: true, text: res.data.message || 'Daily data rebuilt.' });
       fetchLogs();
+      fetchRebuildStatus();
     } catch (err) {
       setRebuildMsg({ success: false, text: err.response?.data?.message || 'Rebuild failed.' });
     } finally {
@@ -129,6 +169,7 @@ const ImportData = () => {
       const data = await uploadFile(file, fileType, overwrite);
       setResults(r => ({ ...r, [fileType]: { success: true, ...data } }));
       fetchLogs();
+      if (data.rebuild_queued) fetchRebuildStatus();   // trade upload kicked off a background compute
     } catch (err) {
       if (err.response?.status === 409 && err.response?.data?.conflict) {
         const d = err.response.data;
@@ -165,6 +206,13 @@ const ImportData = () => {
     const conflicts = [];
     let errors = 0;
     for (const item of ordered) {
+      // Brokerage is gated on computed daily data. In a mixed batch the trade files above
+      // upload deferred (raw only) and compute in the background — so wait for that compute
+      // to finish before sending brokerage, otherwise it would be rejected by the gate.
+      if (item.type === 'brokerage') {
+        setQueued(q => q.map(x => x.id === item.id ? { ...x, status: 'waiting' } : x));
+        await waitForDailyReady();
+      }
       setQueued(q => q.map(x => x.id === item.id ? { ...x, status: 'uploading' } : x));
       try {
         const data = await uploadFile(item.file, item.type, overwriteAll);
@@ -238,24 +286,26 @@ const ImportData = () => {
           <h2>Daily Data Import</h2>
           <p>Upload all 6 Symphony files together or one by one — type is auto-detected from the filename</p>
         </div>
-        <div style={{ textAlign: 'right' }}>
-          <button className="btn bp" disabled={rebuilding} onClick={() => doRebuild(false)} title="Compute daily data for the newly uploaded trade dates only">
-            {rebuilding ? '⏳ Rebuilding…' : '🔄 Rebuild daily data'}
-          </button>
-          <div style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4, maxWidth: 240 }}>
-            Trade files upload raw first (fast). Click this after uploading to compute daily data for the <strong>new dates only</strong>.
-            {' '}
-            <span style={{ color: 'var(--pc)', cursor: rebuilding ? 'default' : 'pointer', textDecoration: 'underline' }}
-                  onClick={() => { if (!rebuilding) doRebuild(true); }}>
-              Rebuild everything
-            </span> (use after a rate/config change).
-          </div>
-        </div>
       </div>
 
       {rebuildMsg && (
         <div className={`alert ${rebuildMsg.success ? 'a-s' : 'a-d'}`} style={{ marginBottom: '14px' }}>
           {rebuildMsg.text}
+        </div>
+      )}
+
+      {/* Daily-data compute status — shows while trade files are being aggregated in the
+          background, and explains why the Brokerage slot is locked. */}
+      {rbStatus && (rbStatus.computing || rbStatus.pending > 0) && (
+        <div className="alert a-w" style={{ marginBottom: '14px', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>⏳</span>
+          <span>
+            <strong>Computing daily data…</strong>{' '}
+            {rbStatus.computing ? 'Aggregating the uploaded trade file(s) in the background.' : `${rbStatus.pending} trade date(s) queued.`}
+            {rbStatus.pending_dates && rbStatus.pending_dates.length
+              ? ` (${rbStatus.pending_dates.map(d => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })).join(', ')})` : ''}
+            {' '}Brokerage upload is locked until this finishes.
+          </span>
         </div>
       )}
 
@@ -399,12 +449,13 @@ const ImportData = () => {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '14px' }}>
               {queued.map(item => {
                 const cfg = FILE_CONFIGS[item.type];
-                const borderColor = item.status === 'done' ? cfg.color : item.status === 'error' ? '#A32D2D' : item.status === 'uploading' ? 'var(--ic)' : 'var(--br)';
+                const busyRow = item.status === 'uploading' || item.status === 'waiting';
+                const borderColor = item.status === 'done' ? cfg.color : item.status === 'error' ? '#A32D2D' : busyRow ? 'var(--ic)' : 'var(--br)';
                 return (
                   <div key={item.id} style={{
                     display: 'flex', alignItems: 'center', gap: '12px',
                     padding: '10px 14px', borderRadius: 'var(--r)',
-                    background: item.status === 'done' ? cfg.bg : item.status === 'error' ? '#FCEBEB' : item.status === 'uploading' ? 'var(--ibg)' : 'var(--bg2)',
+                    background: item.status === 'done' ? cfg.bg : item.status === 'error' ? '#FCEBEB' : busyRow ? 'var(--ibg)' : 'var(--bg2)',
                     border: `1px solid ${borderColor}`,
                     borderLeft: `4px solid ${borderColor}`,
                   }}>
@@ -427,6 +478,7 @@ const ImportData = () => {
                     </div>
                     <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
                       {item.status === 'uploading' && <span style={{ fontSize: '11px', color: 'var(--ic)', fontWeight: '600' }}>Uploading...</span>}
+                      {item.status === 'waiting'   && <span style={{ fontSize: '11px', color: 'var(--ic)', fontWeight: '600' }}>⏳ Waiting for daily data…</span>}
                       {item.status === 'done'      && <span style={{ color: 'var(--sc)', fontSize: '18px' }}>✓</span>}
                       {item.status === 'error'     && <span style={{ color: 'var(--dc)', fontSize: '18px' }}>✗</span>}
                       {item.status === 'pending'   && !bulkRunning && (
@@ -466,6 +518,8 @@ const ImportData = () => {
           const last   = getLastImport(key);
           const result = results[key];
           const busy   = uploading[key];
+          const locked = key === 'brokerage' && brokerageLocked;   // daily data still computing
+          const slotDisabled = busy || locked;
           return (
             <div key={key} style={{
               background: 'var(--bg)', border: '1px solid var(--br)',
@@ -486,21 +540,27 @@ const ImportData = () => {
               <label style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
                 padding: '6px 10px',
-                background: busy ? 'var(--tx3)' : cfg.color,
+                background: slotDisabled ? 'var(--tx3)' : cfg.color,
                 color: 'white', borderRadius: 'var(--r)',
-                cursor: busy ? 'not-allowed' : 'pointer',
+                cursor: slotDisabled ? 'not-allowed' : 'pointer',
                 fontSize: '12px', fontWeight: '600', fontFamily: 'var(--font)',
-                width: '100%', boxShadow: busy ? 'none' : `0 2px 6px ${cfg.color}40`,
+                width: '100%', boxShadow: slotDisabled ? 'none' : `0 2px 6px ${cfg.color}40`,
               }}>
-                {busy ? '⏳ Uploading...' : '⬆ Upload File'}
+                {busy ? '⏳ Uploading...' : locked ? '🔒 Locked' : '⬆ Upload File'}
                 <input
                   type="file"
                   accept=".xlsx,.xls,.csv,.ods,.txt"
                   style={{ display: 'none' }}
-                  disabled={busy}
+                  disabled={slotDisabled}
                   onChange={e => { if (e.target.files[0]) handleCardUpload(key, e.target.files[0]); e.target.value = ''; }}
                 />
               </label>
+              {locked && (
+                <div style={{ marginTop: '5px', padding: '5px 9px', borderRadius: 'var(--r)', fontSize: '10.5px',
+                              background: '#FFF3DC', color: '#854F0B', border: '1px solid #FBE4BF', lineHeight: 1.4 }}>
+                  ⏳ Upload the trade file first — daily data is still computing. Brokerage unlocks automatically when it finishes.
+                </div>
+              )}
 
               {cfg.sample && (
                 <a href={`/samples/${cfg.sample}`} download
@@ -582,9 +642,10 @@ const ImportData = () => {
       })}
 
       {/* ── ACTION BUTTONS ── */}
-      <div className="brow" style={{ marginBottom: '20px' }}>
-        <button className="btn bp" onClick={runRescore} disabled={rescoring}>
-          {rescoring ? '⏳ Rescoring clients...' : '🤖 Run AI Rescore after import'}
+      <div className="brow" style={{ marginBottom: '20px', alignItems: 'center' }}>
+        <button className="btn bp" onClick={runRescore} disabled={rescoring || computeBusy}
+                title={computeBusy ? 'Wait until daily data finishes computing before rescoring' : ''}>
+          {rescoring ? '⏳ Rescoring clients...' : computeBusy ? '🔒 Rescore locked — computing daily data…' : '🤖 Run AI Rescore after import'}
         </button>
         <button className="btn" onClick={fetchLogs}>🔄 Refresh Log</button>
       </div>

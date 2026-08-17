@@ -86,9 +86,22 @@ async function tradingDayCutoff(dbClient, n = 90) {
 const SEGMENT_FILES = ['nse_cm', 'nse_fo', 'mcx'];
 async function retentionSweep(dbClient) {
   const cutoff = await tradingDayCutoff(dbClient, 90);
-  if (!cutoff) return { cutoff: null, graduated: [], blocked: [] };
+  if (!cutoff) return { cutoff: null, raw_days_purged: 0, graduated: [], blocked: [] };
 
-  // Detail-tier months whose LAST day is older than the cutoff (fully aged out)
+  // ── STAGE 1 — raw `trades`: per-DAY purge ─────────────────────────────────
+  // The moment a single trade date is older than the 90-trading-day window it is
+  // dropped from the raw tier. daily_trades already holds that day's consolidated
+  // per-UCC rows and client_monthly_summary holds the month, so the raw fills are
+  // redundant past 90 trading days. Anchored to MAX(trade_date) — deleting old rows
+  // never moves that anchor. `< cutoff` keeps exactly the last 90 trading days of raw.
+  const rawDel = await dbClient.query(`DELETE FROM trades WHERE trade_date < $1`, [cutoff]);
+
+  // ── STAGE 2 — daily detail tables: whole-MONTH graduation ─────────────────
+  // Detail-tier months whose LAST day is older than the cutoff (fully aged out).
+  // daily_trades / daily_ledger / holdings_summary / mtf_interest keep a whole month
+  // of detail until the ENTIRE month clears the cutoff, then the month is purged
+  // (already rolled into client_monthly_summary / mtf_monthly). Raw `trades` is NOT
+  // in this stage anymore — it is handled per-day in Stage 1 above.
   const monthsRes = await dbClient.query(`
     SELECT DISTINCT TO_CHAR(trade_date,'YYYY-MM') AS m
     FROM daily_trades
@@ -124,14 +137,14 @@ async function retentionSweep(dbClient) {
   // Purge ONLY the complete, graduated months from every detail table (monthly
   // summary already holds them). Incomplete months are left untouched.
   if (graduated.length) {
-    const tables = [['trades','trade_date'], ['daily_trades','trade_date'],
+    const tables = [['daily_trades','trade_date'],
                     ['daily_ledger','ledger_date'], ['holdings_summary','holding_date'],
                     ['mtf_interest','from_date']];
     for (const [t, col] of tables) {
       await dbClient.query(`DELETE FROM ${t} WHERE TO_CHAR(${col},'YYYY-MM') = ANY($1)`, [graduated]);
     }
   }
-  return { cutoff, graduated, blocked };
+  return { cutoff, raw_days_purged: rawDel.rowCount, graduated, blocked };
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -554,9 +567,11 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
   // a different trade date uploads freely, only the same date already loaded is blocked.
   // Ledger and Holdings carry their date in the FILE NAME, so they are duplicate-checked by
   // that date AFTER parsing (with the Trade/Brokerage block below), not here by upload day.
-  // The remaining snapshot files (client master, mtf) have no date at all and are checked
-  // here by upload day.
-  if (!overwrite && !['nse_cm', 'bse_cm', 'nse_fo', 'bse_fo', 'mcx', 'brokerage', 'ledger', 'holdings', 'bhavcopy', 'mtm_prices'].includes(file_type)) {
+  // The remaining snapshot file (client master) has no date at all and is checked here by
+  // upload day. MTF is EXCLUDED here and checked by its interest MONTH after parsing (below),
+  // because its identity is the month(s) it covers, not the day it happens to be uploaded —
+  // so re-uploading the same month's data prompts Replace even on a different day.
+  if (!overwrite && !['nse_cm', 'bse_cm', 'nse_fo', 'bse_fo', 'mcx', 'brokerage', 'ledger', 'holdings', 'bhavcopy', 'mtm_prices', 'mtf'].includes(file_type)) {
     try {
       const dup = await pool.query(
         `SELECT file_name, created_at, records_processed FROM import_log
@@ -585,6 +600,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
 
   let processed = 0, failed = 0, skipped = 0;
   let dataDate  = null;   // real data/trade date parsed from the file (for the audit log Trade Date column)
+  let queuedRebuild = false; // set true when a deferred trade upload queues dates → auto-compute after COMMIT
   const errors  = [];
   const dbClient = await pool.connect();
 
@@ -602,13 +618,20 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       const uccMap = {};
 
       for (const row of rows) {
-        const ucc  = String(row['UCC'] || '').trim();
-        const name = String(row['Client Name'] || '').trim();
+        // Header cells in this export embed a CRLF (e.g. "Last Trade\r\nAccross Exch"). XLSX keeps
+        // the \r\n inside the key, so the old lookups ("...\n..." or no-separator) always missed and
+        // every client's last-trade date AND status silently came through blank — which made the
+        // whole book look "never traded" on Inactive & DP and left the reactivation list empty.
+        // Normalise keys once by stripping CR/LF so the plain names below match reliably.
+        const R = {};
+        for (const k of Object.keys(row)) R[String(k).replace(/[\r\n]+/g, '')] = row[k];
+        const ucc  = String(R['UCC'] || '').trim();
+        const name = String(R['Client Name'] || '').trim();
         if (!ucc || !name) { failed++; continue; }
-        const status      = String(row['Accross Exch\nOverall Status'] || row['Accross ExchOverall Status'] || row['Overall Status'] || '').trim();
-        const clientType  = String(row['Client Type'] || row['Type'] || 'RI').trim();
-        const regdDate    = parseDate(row['Regd Date']);
-        const lastTrade   = parseDate(String(row['Last Trade\nAccross Exch'] || row['Last TradeAccross Exch'] || '').trim());
+        const status      = String(R['Accross ExchOverall Status'] || R['Overall Status'] || '').trim();
+        const clientType  = String(R['Client Type'] || R['Type'] || 'RI').trim();
+        const regdDate    = parseDate(R['Regd Date']);
+        const lastTrade   = parseDate(String(R['Last TradeAccross Exch'] || '').trim());
         // "Active" vs "Inactive": note that "inactive" CONTAINS "active", so a plain
         // includes('active') flags inactive clients as active. Active only when the
         // status reads active and is NOT inactive.
@@ -633,7 +656,9 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
             name              = EXCLUDED.name,
             client_type       = EXCLUDED.client_type,
             account_open_date = EXCLUDED.account_open_date,
-            last_trade_date   = EXCLUDED.last_trade_date,
+            -- GREATEST (ignores NULLs) so re-importing the master never regresses a client whose
+            -- last_trade_date was already advanced by a newer trade file to an older snapshot date.
+            last_trade_date   = GREATEST(clients.last_trade_date, EXCLUDED.last_trade_date),
             is_active         = EXCLUDED.is_active,
             status            = EXCLUDED.status,
             updated_at        = NOW()
@@ -815,6 +840,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         await dbClient.query(
           `INSERT INTO pending_rebuild (trade_date) SELECT DISTINCT unnest($1::date[]) ON CONFLICT (trade_date) DO NOTHING`,
           [Array.from(dates)]);
+        queuedRebuild = true;   // → kick off the background daily-data compute after COMMIT
       }
 
       // ── AGGREGATION → daily_trades. Skipped when the upload is DEFERRED (insert-only,
@@ -1180,6 +1206,48 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       }
 
       const dedupedBrokerage = Object.values(brokerageMap);
+
+      // ── Brokerage GATE (HTTP 409) ────────────────────────────────────────────────
+      // Brokerage for a trade date can only be uploaded AFTER that date's trade file has
+      // been ingested AND its daily_trades computed. Otherwise the ON CONFLICT upsert below
+      // would create daily_trades rows carrying brokerage but no turnover — polluting every
+      // section that reads the table. We reject and tell the user exactly what to do first:
+      //   • date not in trades at all      → "upload that date's trade file first"
+      //   • date queued but not computed    → "daily data is still computing, wait a moment"
+      const brokDates = [...new Set(dedupedBrokerage.map(r => String(r.tradeDate)))].sort();
+      if (brokDates.length) {
+        const comp = await dbClient.query(
+          `SELECT DISTINCT trade_date::text AS d FROM daily_trades WHERE trade_date = ANY($1::date[]) AND turnover > 0`,
+          [brokDates]);
+        const haveComputed = new Set(comp.rows.map(r => r.d));
+        const missing = brokDates.filter(d => !haveComputed.has(d));
+        if (missing.length) {
+          // Split "trade file never uploaded" from "uploaded but still computing".
+          const q = await dbClient.query(
+            `SELECT trade_date::text AS d FROM pending_rebuild WHERE trade_date = ANY($1::date[])`,
+            [missing]).catch(() => ({ rows: [] }));
+          const pendSet     = new Set(q.rows.map(r => r.d));
+          const computing   = missing.filter(d => pendSet.has(d));
+          const notUploaded = missing.filter(d => !pendSet.has(d));
+          await dbClient.query('ROLLBACK');
+          if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+          const fmtD = arr => arr.map(d => new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })).join(', ');
+          const detail = notUploaded.length
+            ? `First upload the trade file for ${fmtD(notUploaded)}${computing.length ? ` (and ${fmtD(computing)} is still computing)` : ''}, then upload this brokerage file.`
+            : `Daily data for ${fmtD(computing)} is still being computed in the background. Wait for it to finish, then upload this brokerage file.`;
+          return res.status(409).json({
+            brokerage_gate: true,
+            file_type: 'brokerage',
+            file_name: req.file.originalname,
+            message: 'Trade data required before brokerage upload',
+            detail,
+            missing_dates: missing,
+            computing_dates: computing,
+            not_uploaded_dates: notUploaded
+          });
+        }
+      }
+
       for (let i = 0; i < dedupedBrokerage.length; i += BATCH_SIZE) {
         const batch = dedupedBrokerage.slice(i, i + BATCH_SIZE);
         const values = [], params = [];
@@ -1544,6 +1612,35 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       }
 
       const rowsArr = Object.values(periods);
+
+      // ── Duplicate-by-MONTH check (HTTP 409) ──────────────────────────────────────
+      // MTF has no upload-day identity — it is identified by the interest month(s) it
+      // covers. If mtf_monthly already holds any month present in THIS file, prompt the
+      // user to Replace (Replace re-runs with overwrite=true, whose upserts refresh the
+      // month). Runs BEFORE any write so a decline leaves the existing data untouched.
+      if (!overwrite && rowsArr.length) {
+        try {
+          const mtfMonths = [...new Set(rowsArr.map(r => String(r.fromDate).slice(0, 7)))];
+          const ex = await dbClient.query(
+            `SELECT DISTINCT month_year FROM mtf_monthly WHERE month_year = ANY($1) ORDER BY 1`,
+            [mtfMonths]);
+          if (ex.rows.length) {
+            await dbClient.query('ROLLBACK');
+            if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+            const months = ex.rows.map(r => r.month_year).join(', ');
+            return res.status(409).json({
+              conflict: true,
+              file_type: 'mtf',
+              file_name: req.file.originalname,
+              message: `MTF interest for ${months} has already been uploaded. Replace the existing data for ${ex.rows.length > 1 ? 'these months' : 'this month'}?`,
+              existing: { months: ex.rows.map(r => r.month_year) }
+            });
+          }
+        } catch (e) {
+          console.warn('MTF month duplicate-check skipped:', e.message); // never block import on a check failure
+        }
+      }
+
       for (let i = 0; i < rowsArr.length; i += BATCH_SIZE) {
         const batch = rowsArr.slice(i, i + BATCH_SIZE);
         const values = [], params = [];
@@ -1647,9 +1744,16 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         failed === 0 ? 'success' : (processed > 0 ? 'partial' : 'failed'), req.user.id, dataDate]);
 
     if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+
+    // Deferred trade upload → automatically compute daily_trades in the background so the
+    // figures land without a manual "Rebuild daily data" click, and brokerage upload is
+    // unlocked as soon as the compute finishes.
+    if (queuedRebuild) triggerRebuild();
+
     // Surface retention outcome: graduated months (archived+purged) and any month
     // blocked by missing files (with the exact date+file gaps) for a compliance alert.
     res.json({ message: 'Import complete', processed, skipped, failed, errors: errors.slice(0, 10),
+      rebuild_queued: queuedRebuild,
       retention: retention ? {
         cutoff: retention.cutoff, graduated: retention.graduated,
         blocked: retention.blocked,
@@ -1747,5 +1851,97 @@ router.post('/rebuild-daily', auth, async (req, res) => {
     dbClient.release();
   }
 });
+
+// ── Auto-rebuild: the "compute" half of the ingest→compute split, run OUT OF BAND ──
+// A deferred trade upload only inserts raw `trades` rows (fast) and queues the touched
+// dates in pending_rebuild. This background job aggregates those dates into daily_trades
+// (computeDailyTrades) and runs the retention sweep, so the upload request can return
+// immediately and the daily figures appear a moment later without a manual click.
+// Guarded so only ONE rebuild runs at a time; it loops until the queue is empty so dates
+// queued *while* a pass is running are still picked up promptly (the cron backstop in
+// server.js is the final safety net if a trigger is ever missed).
+let _rebuildRunning = false;
+let _lastRebuild    = null;   // { at, dates, error }
+
+async function runPendingRebuild() {
+  if (_rebuildRunning) return { skipped: true, reason: 'already-running' };
+  _rebuildRunning = true;
+  let totalDates = 0, lastErr = null;
+  try {
+    // Cheap idle pre-check: the 2-min backstop shouldn't open a transaction every tick when the
+    // queue is empty. pool.query auto-manages (and releases) its own connection.
+    const chk = await pool.query(`SELECT 1 FROM pending_rebuild LIMIT 1`).catch(() => ({ rows: [] }));
+    if (!chk.rows.length) return { dates: 0 };
+
+    for (let pass = 0; pass < 25; pass++) {   // bounded loop; each pass drains the current queue
+      const dbClient = await pool.connect();
+      let done = false;   // stop the loop after this pass (queue drained or error)
+      try {
+        await dbClient.query('BEGIN');
+        await dbClient.query("SET statement_timeout = '600000'"); // 10 min
+        await dbClient.query(`CREATE TABLE IF NOT EXISTS pending_rebuild (trade_date DATE PRIMARY KEY, queued_at TIMESTAMP DEFAULT NOW())`);
+        const q = await dbClient.query(`SELECT trade_date::text AS d FROM pending_rebuild ORDER BY 1`);
+        const dates = q.rows.map(r => r.d);
+        if (!dates.length) {
+          await dbClient.query('ROLLBACK');
+          done = true;                       // nothing queued → stop (connection released in finally)
+        } else {
+          const out = await computeDailyTrades(dbClient, dates);
+          await retentionSweep(dbClient);
+          await dbClient.query(`DELETE FROM pending_rebuild WHERE trade_date = ANY($1::date[])`, [dates]);
+          await dbClient.query('COMMIT');
+          totalDates += out.dates;
+        }
+      } catch (err) {
+        try { await dbClient.query('ROLLBACK'); } catch (_) {}
+        lastErr = err.message;
+        console.error('AUTO-REBUILD ERROR:', err.message);
+        done = true;                          // stop the loop on error
+      } finally {
+        dbClient.release();                   // ALWAYS release — the leak that exhausted the pool
+      }
+      if (done) break;
+    }
+  } finally {
+    // Only record a rebuild when something actually happened — don't let idle backstop ticks
+    // overwrite the last real rebuild's summary with a "0 dates" entry.
+    if (totalDates > 0 || lastErr) _lastRebuild = { at: new Date().toISOString(), dates: totalDates, error: lastErr };
+    _rebuildRunning = false;
+  }
+  return { dates: totalDates, error: lastErr };
+}
+
+// Fire-and-forget: never blocks the request that calls it.
+function triggerRebuild() {
+  setImmediate(() => { runPendingRebuild().catch(e => console.error('triggerRebuild:', e.message)); });
+}
+
+// ── Rebuild status (drives the Import page banner + brokerage gating) ──────────────
+// computing        → a background rebuild is running right now
+// pending          → # of dates queued but not yet computed (0 = nothing waiting)
+// ready            → nothing running and nothing queued (safe to upload brokerage)
+// latest_computed  → most recent trade date that has computed daily_trades
+router.get('/rebuild-status', auth, async (req, res) => {
+  try {
+    await pool.query(`CREATE TABLE IF NOT EXISTS pending_rebuild (trade_date DATE PRIMARY KEY, queued_at TIMESTAMP DEFAULT NOW())`);
+    const pend   = await pool.query(`SELECT trade_date::text AS d FROM pending_rebuild ORDER BY 1`);
+    const latest = await pool.query(`SELECT MAX(trade_date)::text AS d FROM daily_trades WHERE turnover > 0`);
+    const pendingDates = pend.rows.map(r => r.d);
+    res.json({
+      computing:       _rebuildRunning,
+      pending:         pendingDates.length,
+      pending_dates:   pendingDates,
+      ready:           !_rebuildRunning && pendingDates.length === 0,
+      latest_computed: latest.rows[0] ? latest.rows[0].d : null,
+      last_rebuild:    _lastRebuild
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Status check failed', error: err.message });
+  }
+});
+
+// Exposed so the server.js cron backstop can drain the queue on a timer even if a
+// fire-and-forget trigger was ever missed (e.g. a process restart mid-upload).
+router.runPendingRebuild = runPendingRebuild;
 
 module.exports = router;

@@ -16,22 +16,27 @@ const DailyMIS = () => {
   const [error, setError] = useState('');
   const [from, setFrom]   = useState('');
   const [to, setTo]       = useState('');
+  const [asof, setAsof]   = useState('');   // anchors the Income/Volume date columns
 
-  const load = (f, t) => {
+  const load = (f, t, a) => {
     setLoading(true); setError('');
-    const q = (f && t) ? `?from=${f}&to=${t}` : '';
+    const p = [];
+    if (f && t) p.push(`from=${f}`, `to=${t}`);
+    if (a) p.push(`asof=${a}`);
+    const q = p.length ? '?' + p.join('&') : '';
     api.get('/analytics/daily-mis' + q)
       .then(r => setData(r.data))
       .catch(() => setError('Could not load daily MIS.'))
       .finally(() => setLoading(false));
   };
 
-  useEffect(() => { load('', ''); }, []);
+  useEffect(() => { load('', '', ''); }, []);
 
   if (loading) return <div className="ph"><h2>Corporate daily MIS</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Corporate daily MIS</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
   const { meta, income, volume, activity, mtf, revenue_mix, trend, range } = data;
+  const dsub = { fontSize: 10, fontWeight: 400, color: 'var(--tx3)' };   // small date under a column header
 
   return (
     <div>
@@ -52,9 +57,18 @@ const DailyMIS = () => {
           <input type="date" value={to} onChange={e => setTo(e.target.value)}
             style={{ padding: '6px 8px', border: '1px solid var(--br)', borderRadius: 6 }} />
         </div>
-        <button className="btn bp" disabled={!from || !to || from > to} onClick={() => load(from, to)}>Validate range</button>
-        {range && <button className="btn" onClick={() => { setFrom(''); setTo(''); load('', ''); }}>Clear</button>}
+        <button className="btn bp" disabled={!from || !to || from > to} onClick={() => load(from, to, asof)}>Validate range</button>
+        {range && <button className="btn" onClick={() => { setFrom(''); setTo(''); load('', '', asof); }}>Clear</button>}
         <span style={{ fontSize: 11, color: 'var(--tx3)' }}>Pick a From & To date to validate MTF interest, brokerage, clearing and float per day for that window.</span>
+
+        <div style={{ borderLeft: '1px solid var(--br)', paddingLeft: 14, marginLeft: 2 }}>
+          <div style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 4 }}>As-of date <span style={{ opacity: 0.7 }}>(table columns)</span></div>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input type="date" value={asof} onChange={e => { setAsof(e.target.value); load(from, to, e.target.value); }}
+              style={{ padding: '6px 8px', border: '1px solid var(--br)', borderRadius: 6 }} />
+            {asof && <button className="btn" onClick={() => { setAsof(''); load(from, to, ''); }}>Latest</button>}
+          </div>
+        </div>
       </div>
 
       {range && (
@@ -111,15 +125,19 @@ const DailyMIS = () => {
       {!meta.brokerage_loaded && <div className="alert a-i" style={{ marginTop: 8 }}>ℹ️ Options-clearing and brokerage revenue lines are not yet imported (show "—"/₹0). Volume and client activity are live.</div>}
 
       <div className="panel">
-        <div className="ptitle">💵 Daily income summary — all revenue lines<InfoBtn text="Every revenue line for today vs yesterday and day-before, MTD average and prior 3-month average, plus each line's share of total. Float income = client ledger balance × FD rate ÷ 365." /></div>
+        <div className="ptitle">💵 Daily income summary — all revenue lines<InfoBtn text="Every revenue line for the last traded date vs yesterday and day-before, MTD average, and the prior 1M / 2M / 3M averages (each a single calendar month: 1M = the month before, 2M = two months before, 3M = three months before), plus each line's share of total. Float income = client ledger balance × FD rate ÷ 365." /></div>
         <div className="tw"><table>
-          <thead><tr><th style={{ width: 180 }}>Revenue line</th><th>Today</th><th>Yesterday</th><th>Day before</th><th>MTD avg</th><th>Prior 3M avg</th><th>vs Prior 3M avg</th><th>Revenue share</th></tr></thead>
+          <thead><tr><th style={{ width: 180 }}>Revenue line</th>
+            <th>Last traded date<div style={dsub}>{meta.today}</div></th>
+            <th>Previous trading day<div style={dsub}>{meta.yesterday_date}</div></th>
+            <th>2nd previous trading day<div style={dsub}>{meta.day_before_date}</div></th>
+            <th>MTD avg</th><th>Prior 1M avg</th><th>Prior 2M avg</th><th>Prior 3M avg</th><th>vs Prior 3M avg</th><th>Revenue share</th></tr></thead>
           <tbody>
             {income.map(r => (
               <tr key={r.line} style={{ fontWeight: r.total ? 600 : 'normal', borderTop: r.total ? '.5px solid var(--br)' : undefined }}>
                 <td><strong>{r.line}</strong>{r.note ? <span style={{ fontSize: 10, color: 'var(--tx3)' }}> ({r.note})</span> : ''}</td>
                 <td>{inr(r.today)}</td><td>{inr(r.yesterday)}</td><td>{inr(r.day_before)}</td>
-                <td>{inr(r.mtd_avg)}</td><td>{inr(r.prior3m_avg)}</td>
+                <td>{inr(r.mtd_avg)}</td><td>{inr(r.prior1m_avg)}</td><td>{inr(r.prior2m_avg)}</td><td>{inr(r.prior3m_avg)}</td>
                 <td style={{ color: vsColor(r.vs) }}>{vsFmt(r.vs)}</td>
                 <td>{r.total ? '100%' : (r.share == null ? '—' : r.share + '%')}</td>
               </tr>
@@ -130,14 +148,17 @@ const DailyMIS = () => {
       </div>
 
       <div className="panel">
-        <div className="ptitle">📊 Daily volume — all segments (₹ Cr)<InfoBtn text="Turnover by segment (₹ crore) for today vs yesterday, MTD and prior 3-month averages, plus the volume premium on expiry days versus normal days." /></div>
+        <div className="ptitle">📊 Daily volume — all segments (₹ Cr)<InfoBtn text="Turnover by segment (₹ crore) for the last traded date vs yesterday, MTD average, and the prior 1M / 2M / 3M averages (each a single calendar month: 1M = the month before, 2M = two months before, 3M = three months before), plus the volume premium on expiry days versus normal days." /></div>
         <div className="tw"><table>
-          <thead><tr><th style={{ width: 180 }}>Segment</th><th>Today</th><th>Yesterday</th><th>MTD avg</th><th>Prior 3M avg</th><th>vs Prior 3M avg</th><th>Expiry premium</th></tr></thead>
+          <thead><tr><th style={{ width: 180 }}>Segment</th>
+            <th>Last traded date<div style={dsub}>{meta.today}</div></th>
+            <th>Previous trading day<div style={dsub}>{meta.yesterday_date}</div></th>
+            <th>MTD avg</th><th>Prior 1M avg</th><th>Prior 2M avg</th><th>Prior 3M avg</th><th>vs Prior 3M avg</th><th>Expiry premium</th></tr></thead>
           <tbody>
             {volume.map(r => (
               <tr key={r.segment} style={{ fontWeight: r.total ? 600 : 'normal', borderTop: r.total ? '.5px solid var(--br)' : undefined }}>
                 <td><strong>{r.segment}</strong></td>
-                <td>₹{r.today}Cr</td><td>₹{r.yesterday}Cr</td><td>₹{r.mtd_avg}Cr</td><td>₹{r.prior3m_avg}Cr</td>
+                <td>₹{r.today}Cr</td><td>₹{r.yesterday}Cr</td><td>₹{r.mtd_avg}Cr</td><td>₹{r.prior1m_avg}Cr</td><td>₹{r.prior2m_avg}Cr</td><td>₹{r.prior3m_avg}Cr</td>
                 <td style={{ color: vsColor(r.vs) }}>{vsFmt(r.vs)}</td>
                 <td>{r.expiry_premium == null ? '—' : <span className="badge b-act">{vsFmt(r.expiry_premium)} vs normal</span>}</td>
               </tr>
@@ -149,12 +170,16 @@ const DailyMIS = () => {
       <div className="panel">
         <div className="ptitle">👥 Daily client activity<InfoBtn text="Client activity counts by category for today vs yesterday, MTD average and prior 3-month average." /></div>
         <div className="tw"><table>
-          <thead><tr><th>Category</th><th>Today</th><th>Yesterday</th><th>MTD avg</th><th>Prior 3M avg</th><th>vs Prior 3M avg</th></tr></thead>
+          <thead><tr><th>Category</th>
+            <th>Last traded date<div style={dsub}>{meta.today}</div></th>
+            <th>Previous trading day<div style={dsub}>{meta.yesterday_date}</div></th>
+            <th>MTD avg</th><th>Prior 1M avg</th><th>Prior 2M avg</th><th>Prior 3M avg</th><th>vs Prior 3M avg</th></tr></thead>
           <tbody>
             {activity.map(r => (
               <tr key={r.category}>
                 <td>{r.category}{r.note ? <span style={{ fontSize: 10, color: 'var(--tx3)' }}> ({r.note})</span> : ''}</td>
-                <td><strong>{num(r.today)}</strong></td><td>{num(r.yesterday)}</td><td>{num(r.mtd_avg)}</td><td>{num(r.prior3m_avg)}</td>
+                <td><strong>{num(r.today)}</strong></td><td>{num(r.yesterday)}</td><td>{num(r.mtd_avg)}</td>
+                <td>{num(r.prior1m_avg)}</td><td>{num(r.prior2m_avg)}</td><td>{num(r.prior3m_avg)}</td>
                 <td style={{ color: vsColor(r.vs) }}>{vsFmt(r.vs)}</td>
               </tr>
             ))}
@@ -166,7 +191,7 @@ const DailyMIS = () => {
         <div className="panel">
           <div className="ptitle">💰 MTF book summary<InfoBtn text="Margin Trading Facility book: net funding (₹Cr), daily interest earned, number of MTF clients and average book size per client." /></div>
           <div className="tw"><table>
-            <thead><tr><th>Metric</th><th>Today</th><th>MTD avg</th><th>Prior 3M avg</th></tr></thead>
+            <thead><tr><th>Metric</th><th>Last traded date<div style={dsub}>{meta.today}</div></th><th>MTD avg</th><th>Prior 3M avg</th></tr></thead>
             <tbody>
               <tr><td>Net MTF funding (₹Cr)</td><td>{(mtf.funding / 1e7).toFixed(2)}</td><td>{(mtf.funding / 1e7).toFixed(2)}</td><td>—</td></tr>
               <tr><td>MTF interest earned (₹)</td><td>{inr(mtf.daily_interest)}</td><td>{inr(mtf.mtd_interest)}</td><td>—</td></tr>
@@ -176,7 +201,7 @@ const DailyMIS = () => {
           </table></div>
         </div>
         <div className="panel">
-          <div className="ptitle">🥧 Revenue mix — today<InfoBtn text="Today's revenue split across streams as a percentage of total; clearing and brokerage read near zero until those feeds are imported." /></div>
+          <div className="ptitle">🥧 Revenue mix — {meta.today}<InfoBtn text="Revenue split for the last traded date across streams as a percentage of total; clearing and brokerage read near zero until those feeds are imported." /></div>
           {revenue_mix.map((r, i) => (
             <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ width: 130, fontSize: 12 }}>{r.label}</span>

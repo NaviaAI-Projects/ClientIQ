@@ -68,3 +68,15 @@ setInterval(() => {
     checkAndSendLeadExpiryWarnings();
   }
 }, 60000);
+
+// ── Daily-data auto-rebuild backstop ───────────────────────────
+// Deferred trade uploads normally kick off the daily_trades compute themselves
+// (fire-and-forget) the moment they finish. This timer is the safety net: it drains
+// any dates still sitting in pending_rebuild — e.g. if the process restarted mid-upload
+// or a trigger was ever missed — so brokerage never stays blocked on a stale queue.
+const importRouter = require('./routes/import');
+if (typeof importRouter.runPendingRebuild === 'function') {
+  setInterval(() => {
+    importRouter.runPendingRebuild().catch(e => console.error('rebuild backstop:', e.message));
+  }, 120000); // every 2 min; the internal guard makes this a no-op when nothing is queued or a rebuild is already running
+}

@@ -69,7 +69,7 @@ const AllClients = () => {
               <option value="">All status</option><option value="mapped">Mapped</option><option value="unmapped">Unmapped</option><option value="lead">Lead</option>
             </select>
             <select style={{ width: 130 }} value={f.activity} onChange={e => setFilter('activity', e.target.value)}>
-              <option value="">All activity</option><option value="active">Active 30d</option><option value="dormant">Dormant 3mo+</option><option value="never">Never traded</option>
+              <option value="">All activity</option><option value="active">Active 30d</option><option value="dormant">Dormant 3mo+</option><option value="never">Inactive (never traded)</option>
             </select>
             <input style={{ width: 170 }} placeholder="UCC or name…" value={f.search} onChange={e => setFilter('search', e.target.value)} />
             <button className="btn sm">⬇️ Export</button>
@@ -85,7 +85,9 @@ const AllClients = () => {
                 <td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
                 <td><span className="badge b-ri">{r.client_type}</span></td>
                 <td><span className="badge b-zero">{/paying/i.test(r.plan) ? 'Paying' : 'Zero-brk'}</span></td>
-                <td><span className={`badge ${statusBadge(r.status)}`}>{r.status}</span></td>
+                <td>{r.status === 'Inactive'
+                  ? <span className="badge" style={{ background: '#e8ecf2', color: '#5b6b82' }}>Inactive</span>
+                  : <span className={`badge ${statusBadge(r.status)}`}>{r.status}</span>}</td>
                 <td>{mmY(r.last_trade)}</td>
                 <td>{rupee(r.mtd_to)}</td>
                 <td>{rupee(r.mtd_rev)}</td>

@@ -160,7 +160,7 @@ export const DateRange = ({ value, onChange, bounds, active }) => {
 // Wraps a chart and an equivalent data table; a small toggle switches
 // between them. Points #21 / #42.
 //   <ViewToggle chart={<...Recharts.../>} table={<table>...</table>} />
-export const ViewToggle = ({ chart, table, initial = 'chart' }) => {
+export const ViewToggle = ({ chart, table, initial = 'chart', tableControls = null }) => {
   const [view, setView] = useState(initial);
   const btn = (active) => ({
     cursor: 'pointer', border: '1px solid var(--br2, #cbd5e1)',
@@ -168,11 +168,15 @@ export const ViewToggle = ({ chart, table, initial = 'chart' }) => {
     color: active ? '#fff' : 'var(--tx2, #475569)',
     borderRadius: 6, fontSize: 11, fontWeight: 600, padding: '3px 10px',
   });
+  const showControls = view === 'table' && tableControls;
   return (
     <div>
-      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end', marginBottom: 8 }}>
-        <button type="button" style={btn(view === 'chart')} onClick={() => setView('chart')}>📊 Chart</button>
-        <button type="button" style={btn(view === 'table')} onClick={() => setView('table')}>▦ Table</button>
+      <div style={{ display: 'flex', gap: 6, justifyContent: showControls ? 'space-between' : 'flex-end', alignItems: 'center', marginBottom: 8 }}>
+        {showControls ? <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>{tableControls}</div> : null}
+        <div style={{ display: 'flex', gap: 6 }}>
+          <button type="button" style={btn(view === 'chart')} onClick={() => setView('chart')}>📊 Chart</button>
+          <button type="button" style={btn(view === 'table')} onClick={() => setView('table')}>▦ Table</button>
+        </div>
       </div>
       {view === 'chart' ? chart : <div className="tw">{table}</div>}
     </div>

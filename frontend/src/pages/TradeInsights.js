@@ -42,6 +42,17 @@ const FMTP = v => {
   return (n >= 0 ? '+' : '') + FMT(n);
 };
 
+// Rounded variants (whole rupees, no paise) — used on the Best & Worst tab.
+const FMTR = v => {
+  const n = parseFloat(v) || 0;
+  const prefix = n < 0 ? '–₹' : '₹';
+  return prefix + Math.round(Math.abs(n)).toLocaleString('en-IN');
+};
+const FMTPR = v => {
+  const n = parseFloat(v) || 0;
+  return (n >= 0 ? '+' : '') + FMTR(n);
+};
+
 // ── KPI Card — exact prototype structure ───────────────────────
 const Card = ({ label, value, sub, borderColor, valueColor }) => (
   <div style={{
@@ -63,8 +74,39 @@ const Card = ({ label, value, sub, borderColor, valueColor }) => (
   </div>
 );
 
+// ── Info dot — small "i" with a hover tooltip (self-contained) ──
+const InfoDot = ({ text }) => {
+  const [show, setShow] = useState(false);
+  if (!text) return null;
+  return (
+    <span
+      style={{ position: 'relative', display: 'inline-flex' }}
+      onMouseEnter={() => setShow(true)}
+      onMouseLeave={() => setShow(false)}
+    >
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: '15px', height: '15px', borderRadius: '50%',
+        border: '1px solid rgba(0,0,0,0.28)', color: 'var(--tx3)',
+        fontSize: '10px', fontStyle: 'italic', fontFamily: 'Georgia, serif',
+        cursor: 'help', lineHeight: 1, userSelect: 'none',
+      }}>i</span>
+      {show && (
+        <span style={{
+          position: 'absolute', top: '20px', left: '0', zIndex: 60,
+          width: '240px', background: '#1e293b', color: '#fff',
+          fontSize: '11px', lineHeight: 1.5, fontWeight: 400,
+          padding: '8px 10px', borderRadius: '8px',
+          boxShadow: '0 6px 22px rgba(0,0,0,0.28)',
+          fontFamily: "system-ui, sans-serif", whiteSpace: 'normal',
+        }}>{text}</span>
+      )}
+    </span>
+  );
+};
+
 // ── Panel ──────────────────────────────────────────────────────
-const Panel = ({ title, sub, children, style }) => (
+const Panel = ({ title, sub, info, children, style }) => (
   <div style={{
     background: 'var(--bg)', border: '1px solid rgba(0,0,0,0.08)',
     borderRadius: '14px', padding: '20px 22px', marginBottom: '16px',
@@ -72,7 +114,9 @@ const Panel = ({ title, sub, children, style }) => (
   }}>
     {title && (
       <div style={{ marginBottom: '16px' }}>
-        <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--tx)' }}>{title}</div>
+        <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--tx)', display: 'flex', alignItems: 'center', gap: '7px' }}>
+          {title}<InfoDot text={info} />
+        </div>
         {sub && <div style={{ fontSize: '11.5px', color: 'var(--tx3)', marginTop: '2px', fontFamily: 'monospace' }}>{sub}</div>}
       </div>
     )}
@@ -391,7 +435,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           {/* CNC vs MIS split — sourced from the RMS trade file's Product Type (#28) */}
           {data.cnc_mis && (data.cnc_mis.cnc + data.cnc_mis.mis + data.cnc_mis.other) > 0 && (
             <div style={{ marginBottom: '18px' }}>
-              <Panel title="CNC vs MIS" sub="Delivery vs intraday turnover — from RMS trade file Product Type">
+              <Panel title="CNC vs MIS" info="Delivery (CNC) vs intraday (MIS) turnover, split from the trade file's product type." sub="Delivery vs intraday turnover — from RMS trade file Product Type">
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '12px', padding: '6px 0' }}>
                   <div>
                     <div style={{ fontSize: '11px', color: 'var(--tx3)' }}>CNC · Delivery</div>
@@ -414,7 +458,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
 
           {/* Charts g2 */}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-            <Panel title="Cumulative P&L trend" sub="Running total by trading day">
+            <Panel title="Cumulative P&L trend" info="Running total of your realized intraday P&L, accumulated day by day over the period." sub="Running total by trading day">
               {pnlNA ? <NA h={224} /> : (
               <div style={{ height: '224px' }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -431,7 +475,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               )}
             </Panel>
 
-            <Panel title="Win / loss by expiry week" sub="Net P&L per expiry cycle">
+            <Panel title="Win / loss by expiry week" info="Net realized P&L grouped by weekly expiry cycle — which expiry weeks made or lost money." sub="Net P&L per expiry cycle">
               {pnlNA ? <NA h={224} /> : (
               <div style={{ height: '224px' }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -454,7 +498,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-            <Panel title="Activity by segment" sub="Trade count & premium split">
+            <Panel title="Activity by segment" info="Share of your activity across segments (options, futures, cash) by trade count and premium." sub="Trade count & premium split">
               <div style={{ height: '164px' }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
@@ -470,7 +514,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               </div>
             </Panel>
 
-            <Panel title="Key statistics">
+            <Panel title="Key statistics" info="Averages and extremes of your realized intraday trades for the selected period.">
               {pnlNA ? <NA h={200} /> : <>
               <SRow label="Avg profit per winning trade"    value={FMTP(summary.avg_win)}             color={C.green} />
               <SRow label="Avg loss per losing trade"       value={summary.avg_loss < 0 ? '–' + FMT(Math.abs(summary.avg_loss)) : FMT(summary.avg_loss)} color={C.red} />
@@ -484,11 +528,11 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-            <Panel title={`${pnlNA ? 'Trade calendar' : 'Daily P&L calendar'} — ${calendar?.month_label || new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' })}`} sub={pnlNA ? 'Blue = traded day · Grey = no trade' : 'Green = profit day · Red = loss day'}>
+            <Panel title={`${pnlNA ? 'Trade calendar' : 'Daily P&L calendar'} — ${calendar?.month_label || new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' })}`} info="Each calendar day coloured by that day's realized P&L (green = profit, red = loss, grey = no trade)." sub={pnlNA ? 'Blue = traded day · Grey = no trade' : 'Green = profit day · Red = loss day'}>
               <CalHeatmap days={calendar?.days || []} tradeMode={pnlNA} />
             </Panel>
 
-            <Panel title="Trading streak" sub="Each square = one trading day">
+            <Panel title="Trading streak" info="Every trading day as a square — colour marks profit, loss or no trade, showing streaks." sub="Each square = one trading day">
               <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '12px' }}>
                 {(calendar?.days || []).filter(d => d.type !== 'empty').map((d, i) => (
                   <div key={i} title={pnlNA ? (d.traded ? `${d.trades} trades` : 'No trade') : d.label} style={{
@@ -538,7 +582,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           {!data.has_options ? (
-            <Panel title="Options trading insights" sub="Call/Put, strike, expiry and holding-duration analytics apply only to options trades">
+            <Panel title="Options trading insights" info="Call/Put, strike, expiry and holding-duration analytics — shown only when the client traded options." sub="Call/Put, strike, expiry and holding-duration analytics apply only to options trades">
               <div style={{ padding: '24px 12px', textAlign: 'center', color: 'var(--tx3)', fontSize: '13px', lineHeight: 1.6 }}>
                 No options activity in the selected period. This client traded {(data.segments && data.segments.length ? data.segments.join(', ') : 'equity cash')} only — options-specific insights don't apply here.
               </div>
@@ -553,7 +597,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           {/* Strike selection table */}
-          <Panel title="Strike selection — win rate & P&L by moneyness" sub="Where your trades happened and how they actually performed">
+          <Panel title="Strike selection — win rate & P&L by moneyness" info="Win rate and P&L grouped by option moneyness (ITM / ATM / OTM). Needs each trade's underlying spot price to classify." sub="Where your trades happened and how they actually performed">
             {(!options_stats.strike_table || options_stats.strike_table.length === 0) ? (
               <div style={{ padding: '18px 12px', color: 'var(--tx3)', fontSize: '12.5px', lineHeight: 1.6 }}>
                 Not available — moneyness (ITM / ATM / OTM) needs each option's underlying spot price at the time of the trade, which isn't included in the trade feed.
@@ -586,7 +630,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </Panel>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-            <Panel title="Call vs Put — P&L by month">
+            <Panel title="Call vs Put — P&L by month" info="Monthly realized P&L split between your call trades and put trades.">
               <div style={{ height: '200px' }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={options_stats.callput_monthly || []} margin={{ top: 4, right: 8, bottom: 4, left: 8 }}>
@@ -613,7 +657,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               </div>
             </Panel>
 
-            <Panel title="Expiry day vs non-expiry performance" sub="Win rate, P&L, and activity on expiry days vs normal days">
+            <Panel title="Expiry day vs non-expiry performance" info="Compares your win rate, lots and trades on expiry days against normal trading days." sub="Win rate, P&L, and activity on expiry days vs normal days">
               <div style={{ height: '200px' }}>
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={[
@@ -643,12 +687,12 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           {/* Top instruments */}
-          <Panel title="Top instruments — options trading" sub="Ranked by P&L contribution">
+          <Panel title="Top instruments — options trading" info="Your options contracts ranked by total P&L contribution over the period." sub="Ranked by P&L contribution">
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                 <thead>
                   <tr>
-                    {['Instrument','Trades','Lots','Win rate','Avg P&L/trade','Total P&L','Bias'].map(h => (
+                    {['Instrument','Trades','Quantity','Win rate','Avg P&L/trade','Total P&L','Bias'].map(h => (
                       <th key={h} style={{ textAlign: 'left', padding: '9px 13px', fontFamily: 'monospace', fontWeight: '500', fontSize: '10.5px', color: 'var(--tx3)', borderBottom: '1px solid rgba(0,0,0,0.08)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{h}</th>
                     ))}
                   </tr>
@@ -683,7 +727,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-            <Panel title="Day-of-week performance" sub="Win rate and avg P&L by weekday">
+            <Panel title="Day-of-week performance" info="Your win rate and average realized P&L broken down by weekday." sub="Win rate and avg P&L by weekday">
               {pnlNA ? <NA h={224} /> : (
               <div style={{ height: '224px' }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -702,7 +746,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               )}
             </Panel>
 
-            <Panel title="Time-of-day performance" sub="Trade activity by market hour">
+            <Panel title="Time-of-day performance" info="Number of trades by market hour. Fills in as trade files carrying execution time are uploaded." sub="Trade activity by market hour">
               {(!patterns.tod || patterns.tod.length === 0) ? (
                 <div style={{ height: '224px', display: 'flex', alignItems: 'center', justifyContent: 'center', textAlign: 'center', color: 'var(--tx3)', fontSize: '13px', lineHeight: 1.6, padding: '0 24px' }}>
                   Execution times aren't recorded for these trades yet.<br />
@@ -738,7 +782,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-            <Panel title="Lot sizing behaviour" sub="Average lots — after a winning day vs a losing day">
+            <Panel title="Lot sizing behaviour" info="Average lots you trade the day after a winning day vs the day after a losing day — shows revenge/over-sizing." sub="Average lots — after a winning day vs a losing day">
               {pnlNA ? <NA h={224} /> : (<>
               <div style={{ height: '224px' }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -764,7 +808,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
               </>)}
             </Panel>
 
-            <Panel title="Monthly P&L breakdown" sub="Gross profit, gross loss and net per month">
+            <Panel title="Monthly P&L breakdown" info="Gross profit, gross loss and net realized P&L for each month in the period." sub="Gross profit, gross loss and net per month">
               {pnlNA ? <NA h={224} /> : (
               <div style={{ height: '224px' }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -819,7 +863,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
             {/* Top 5 */}
-            <Panel title="Top 5 instruments by P&L" sub="Your best performers" style={{ borderTop: `3px solid ${C.green}` }}>
+            <Panel title="Top 5 instruments by P&L" info="The five instruments that contributed the most realized profit over the period." sub="Your best performers" style={{ borderTop: `3px solid ${C.green}` }}>
               {pnlNA ? <NA h={180} /> : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                 <thead>
@@ -833,7 +877,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                   {(best_worst.top_instruments || []).map((r, i) => (
                     <tr key={i}>
                       <td style={{ padding: '11px 13px' }}><ITag name={r.instrument} type="best" /></td>
-                      <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: C.green }}>{FMTP(r.pnl)}</td>
+                      <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: C.green }}>{FMTPR(r.pnl)}</td>
                       <td style={{ padding: '11px 13px' }}><Badge text={r.win_rate != null ? r.win_rate + '%' : '—'} type={r.win_rate >= 60 ? 'g' : 'a'} /></td>
                       <td style={{ padding: '11px 13px', color: 'var(--tx2)' }}>{r.trades}</td>
                     </tr>
@@ -844,7 +888,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             </Panel>
 
             {/* Worst 5 */}
-            <Panel title="Biggest P&L drags" sub="Instruments pulling down your performance" style={{ borderTop: `3px solid ${C.red}` }}>
+            <Panel title="Biggest P&L drags" info="The five instruments that lost you the most over the period." sub="Instruments pulling down your performance" style={{ borderTop: `3px solid ${C.red}` }}>
               {pnlNA ? <NA h={180} /> : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                 <thead>
@@ -858,7 +902,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                   {(best_worst.worst_instruments || []).map((r, i) => (
                     <tr key={i}>
                       <td style={{ padding: '11px 13px' }}><ITag name={r.instrument} type="worst" /></td>
-                      <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: C.red }}>–{FMT(Math.abs(r.pnl))}</td>
+                      <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '600', color: C.red }}>–{FMTR(Math.abs(r.pnl))}</td>
                       <td style={{ padding: '11px 13px' }}><Badge text={r.win_rate != null ? r.win_rate + '%' : '—'} type={r.win_rate >= 50 ? 'a' : 'r'} /></td>
                       <td style={{ padding: '11px 13px', color: 'var(--tx2)' }}>{r.trades}</td>
                     </tr>
@@ -871,7 +915,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
             {/* Best days */}
-            <Panel title="Top 5 trading days" sub="Best single-day P&L">
+            <Panel title="Top 5 trading days" info="Your five best single-day realized P&L days in the period." sub="Best single-day P&L">
               {pnlNA ? <NA h={180} /> : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                 <thead>
@@ -885,7 +929,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                   {(best_worst.best_days || []).length ? (best_worst.best_days).map((r, i) => (
                     <tr key={i}>
                       <td style={{ padding: '11px 13px', fontSize: '12px', color: 'var(--tx2)', fontFamily: 'monospace' }}>{new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
-                      <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '700', color: C.green }}>{FMTP(r.pnl)}</td>
+                      <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '700', color: C.green }}>{FMTPR(r.pnl)}</td>
                       <td style={{ padding: '11px 13px', color: 'var(--tx2)' }}>{r.trades}</td>
                     </tr>
                   )) : (
@@ -897,7 +941,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             </Panel>
 
             {/* Worst days */}
-            <Panel title="Worst 5 trading days" sub="Largest single-day drawdowns">
+            <Panel title="Worst 5 trading days" info="Your five largest single-day losses in the period." sub="Largest single-day drawdowns">
               {pnlNA ? <NA h={180} /> : (
               <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                 <thead>
@@ -911,7 +955,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
                   {(best_worst.worst_days || []).length ? (best_worst.worst_days).map((r, i) => (
                     <tr key={i}>
                       <td style={{ padding: '11px 13px', fontSize: '12px', color: 'var(--tx2)', fontFamily: 'monospace' }}>{new Date(r.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}</td>
-                      <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '700', color: C.red }}>–{FMT(Math.abs(r.pnl))}</td>
+                      <td style={{ padding: '11px 13px', fontFamily: 'monospace', fontWeight: '700', color: C.red }}>–{FMTR(Math.abs(r.pnl))}</td>
                       <td style={{ padding: '11px 13px', color: 'var(--tx2)' }}>{r.trades}</td>
                       <td style={{ padding: '11px 13px', fontSize: '12px', color: C.amber }}>{r.note}</td>
                     </tr>
@@ -925,7 +969,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           {/* Month-on-month chart */}
-          <Panel title="Month-on-month comparison" sub="Net P&L and win rate trend across months">
+          <Panel title="Month-on-month comparison" info="Net realized P&L and win-rate trend across the months in the period." sub="Net P&L and win rate trend across months">
             {pnlNA ? <NA h={200} /> : (
             <div style={{ height: '200px' }}>
               <ResponsiveContainer width="100%" height="100%">
@@ -945,7 +989,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </Panel>
 
           {/* Trading scorecard — exact prototype: 3-col progress bars */}
-          <Panel title="Your trading score card" sub={`Computed from your own ${data.trade_days}-day history · Not a benchmark against other traders`}>
+          <Panel title="Your trading score card" info="Scores computed only from your own trading history — not a benchmark against other traders." sub={`Computed from your own ${data.trade_days}-day history · Not a benchmark against other traders`}>
             {pnlNA ? <NA h={140} /> : (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 24px' }}>
               {(best_worst.scorecard || []).map((s, i) => (
