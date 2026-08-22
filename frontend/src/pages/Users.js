@@ -94,7 +94,7 @@ const Users = () => {
   const [rmData, setRmData]             = useState({});
   const [loading, setLoading]           = useState(true);
   const [message, setMessage]           = useState('');
-  const [form, setForm]                 = useState({ name: '', email: '', password: '', role: 'rm', supervisor_sub_role: 'rm-supervisor' });
+  const [form, setForm]                 = useState({ name: '', email: '', password: '', role: 'rm', supervisor_sub_role: 'rm-supervisor', phone: '' });
   const [saving, setSaving]             = useState(false);
   const [modal, setModal]               = useState(null);
   const [editTemplate, setEditTemplate] = useState('rm-supervisor');
@@ -123,7 +123,7 @@ const Users = () => {
     try {
       await api.post('/users', form);
       setMessage('success');
-      setForm({ name: '', email: '', password: '', role: 'rm', supervisor_sub_role: 'rm-supervisor' });
+      setForm({ name: '', email: '', password: '', role: 'rm', supervisor_sub_role: 'rm-supervisor', phone: '' });
       fetchAll();
     } catch (err) { setMessage(err.response?.data?.message || 'Error creating user'); }
     finally { setSaving(false); }
@@ -239,7 +239,7 @@ const Users = () => {
       <div style={{ background: 'white', borderRadius: '12px', padding: '20px 24px', border: '1px solid #eee', marginBottom: '16px', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
         <div style={{ fontSize: '14px', fontWeight: '600', color: '#111', marginBottom: '16px' }}>➕ Add User</div>
         <form onSubmit={handleSubmit}>
-          <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr 1.2fr 1fr 1fr', gap: '12px', marginBottom: '14px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))', gap: '12px', marginBottom: '14px' }}>
             <div>
               <label style={lbl}>Full Name</label>
               <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
@@ -279,6 +279,12 @@ const Users = () => {
               <input type="password" value={form.password}
                 onChange={e => setForm({ ...form, password: e.target.value })}
                 placeholder="Min 6 chars" required style={inp} />
+            </div>
+            <div>
+              <label style={lbl}>Mobile (click-to-call)</label>
+              <input type="tel" value={form.phone}
+                onChange={e => setForm({ ...form, phone: e.target.value })}
+                placeholder="e.g. 9962017043" style={inp} />
             </div>
           </div>
           <button type="submit" disabled={saving}
@@ -390,9 +396,10 @@ const Users = () => {
                     <div style={{ fontSize: '10px', color: '#888', marginTop: '3px' }}>Mobile registered with Tata Tele Smartflo for click-to-call</div>
                   </div>
                   <div>
-                    <label style={lbl}>Work Phone</label>
+                    <label style={lbl}>Mobile (click-to-call)</label>
                     <input value={modal.phone || ''} onChange={e => setModal({ ...modal, phone: e.target.value })}
-                      placeholder="e.g. 9962017083" style={inp} />
+                      placeholder="e.g. 9962017043" style={inp} />
+                    <div style={{ fontSize: '10px', color: '#888', marginTop: '3px' }}>Number the RM is dialed on for click-to-call</div>
                   </div>
                 </>
               )}

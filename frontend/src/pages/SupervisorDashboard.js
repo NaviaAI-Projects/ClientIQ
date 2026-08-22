@@ -16,14 +16,22 @@ const SupervisorDashboard = () => {
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
-  const [range, setRange]     = useState({ key: 'month' });
+  // Default view = the previous (latest) trading day only. The backend 'lastday' key resolves
+  // from=to=latest trade date; after it loads we switch to an explicit custom range so the
+  // From/To inputs are pre-filled with that day (and no further prefill runs).
+  const [range, setRange]     = useState({ key: 'lastday' });
   const navigate = useNavigate();
 
   useEffect(() => {
     if (range.key === 'custom' && !(range.from && range.to)) return; // wait for both custom dates
     setLoading(true);
     api.get('/analytics/company-dashboard', { params: rangeParams(range) })
-      .then(res => setData(res.data))
+      .then(res => {
+        setData(res.data);
+        if (range.key === 'lastday' && res.data?.meta?.range?.from_iso) {
+          setRange({ key: 'custom', from: res.data.meta.range.from_iso, to: res.data.meta.range.to_iso });
+        }
+      })
       .catch(() => setError('Could not load company dashboard.'))
       .finally(() => setLoading(false));
   }, [range]);
@@ -33,6 +41,8 @@ const SupervisorDashboard = () => {
 
   const { meta, totals, revenue, pipeline, churn, rm_table, pending_top, trend, company_turnover } = data;
   const commissionTracked = !(meta && meta.commission_loaded === false);
+  // A single calendar day is selected → show that day's total, not an avg/day.
+  const singleDay = !!(meta.range && meta.range.from_iso && meta.range.from_iso === meta.range.to_iso);
   // Daily trend (one point per calendar day in the selected range), amounts in ₹.
   const chartData = trend.map(t => ({
     month: t.month,          // day label, e.g. "7 Aug"
@@ -54,7 +64,15 @@ const SupervisorDashboard = () => {
 
       <div className="cards">
         <div className="card ci"><div className="clbl">Total clients</div><div className="cval">{totals.total_clients.toLocaleString('en-IN')}</div><div className="csub">Mapped {totals.mapped.toLocaleString('en-IN')} · Unmapped {totals.unmapped.toLocaleString('en-IN')}</div></div>
-        <div className="card cs"><div className="clbl">Company revenue · avg/day<InfoBtn text="Average TOTAL company revenue per trading day over the selected date range (total ÷ trading days). Total revenue = brokerage + commission/clearing (daily_trades) + MTF interest (mtf_interest) + estimated float income (ledger balance × FD rate ÷ 365). Change the range with the filter above." /></div><div className="cval">{rupee(revenue.avg_rev_per_day)}<span style={{ fontSize: 12, fontWeight: 400, color: 'var(--tx3)' }}>/day</span></div><div className="csub">{meta.range ? `${meta.range.from} – ${meta.range.to} · ` : ''}Total {rupee(revenue.total_rev)} over {meta.range?.trading_days ?? 0} trading days</div></div>
+        <div className="card cs">
+          <div className="clbl">{singleDay ? 'Company revenue' : 'Company revenue · avg/day'}<InfoBtn text={singleDay
+            ? "Total company revenue for the selected trading day. Total revenue = brokerage + commission/clearing (daily_trades) + MTF interest (mtf_interest) + estimated float income (ledger balance × FD rate ÷ 365). Select a wider range with the filter above to see an average per day."
+            : "Average TOTAL company revenue per trading day over the selected date range (total ÷ trading days). Total revenue = brokerage + commission/clearing (daily_trades) + MTF interest (mtf_interest) + estimated float income (ledger balance × FD rate ÷ 365). Change the range with the filter above."} /></div>
+          <div className="cval">{singleDay ? rupee(revenue.total_rev) : <>{rupee(revenue.avg_rev_per_day)}<span style={{ fontSize: 12, fontWeight: 400, color: 'var(--tx3)' }}>/day</span></>}</div>
+          <div className="csub">{singleDay
+            ? (meta.range ? meta.range.from : '')
+            : `${meta.range ? `${meta.range.from} – ${meta.range.to} · ` : ''}Total ${rupee(revenue.total_rev)} over ${meta.range?.trading_days ?? 0} trading days`}</div>
+        </div>
         <div className="card cw"><div className="clbl">Active leads in pipeline</div><div className="cval">{pipeline.active_leads.toLocaleString('en-IN')}</div><div className="csub">Pending approvals: {pipeline.pending_approvals}</div></div>
         <div className="card cd"><div className="clbl">Churn risk (mapped)</div><div className="cval">{churn.churn_high.toLocaleString('en-IN')}</div><div className="csub">High risk across {churn.rms_affected} RMs</div></div>
       </div>
