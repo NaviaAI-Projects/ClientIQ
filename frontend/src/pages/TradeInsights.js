@@ -727,7 +727,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
-            <Panel title="Day-of-week performance" info="Your win rate and average realized P&L broken down by weekday." sub="Win rate and avg P&L by weekday">
+            <Panel title="Day-of-week performance" info="Win rate = share of that weekday's closed round-trips (matched buy/sell legs) that were profitable — a day with one winning and one losing trade reads 50%. Avg P&L is the average realized P&L per trading day." sub="Win rate and avg P&L by weekday">
               {pnlNA ? <NA h={224} /> : (
               <div style={{ height: '224px' }}>
                 <ResponsiveContainer width="100%" height="100%">

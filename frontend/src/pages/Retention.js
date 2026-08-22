@@ -6,6 +6,7 @@ import { InfoBtn, ViewToggle } from '../components/ui';
 const spct = (c, p) => (p ? (((c - p) / p) * 100).toFixed(1) + '%' : '—');
 const smom = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n + '%');
 const pctCell = (v) => (v == null ? '—' : v.toFixed(1) + '%');
+const inr = (n) => { const v = Number(n) || 0; if (Math.abs(v) >= 1e7) return '₹' + (v / 1e7).toFixed(2) + 'Cr'; if (Math.abs(v) >= 1e5) return '₹' + (v / 1e5).toFixed(2) + 'L'; return '₹' + Math.round(v).toLocaleString('en-IN'); };
 // heat tint: red (0%) → green (100%)
 const heat = (v) => {
   if (v == null) return {};
@@ -21,12 +22,13 @@ const Pending = ({ h = 200, note }) => (
   </div>
 );
 
-const MONTHS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
+const MONTHS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];   // #14: M0 = opening month
 
 const Retention = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [cohortSel, setCohortSel] = useState('blended');   // #14: Blended Cohorts selector
 
   useEffect(() => {
     api.get('/analytics/retention').then(r => setData(r.data)).catch(() => setError('Could not load retention.')).finally(() => setLoading(false));
@@ -38,6 +40,15 @@ const Retention = () => {
   const { meta, cards, monthly_active, cohorts, retention_curve = [], segment_trend } = data;
   const curve = (retention_curve || []).map(c => ({ label: c.label || `M${c.m}`, pct: c.pct }));
   const obs = (meta && meta.observed_months) || [];
+
+  // #14: the Blended Cohorts curve can show the weighted blend or a single opening cohort
+  const chartCurve = cohortSel === 'blended'
+    ? curve
+    : (() => {
+        const c = (cohorts || []).find(x => x.cohort === cohortSel);
+        if (!c || !c.ret) return [];
+        return MONTHS.map(k => ({ label: `M${k}`, pct: c.ret[k] })).filter(p => p.pct != null);
+      })();
 
   return (
     <div>
@@ -51,6 +62,7 @@ const Retention = () => {
         <div className="card cs"><div className="clbl">30-day retention (new clients)</div><div className="cval">{cards.retention_30 == null ? '—' : cards.retention_30.toFixed(1) + '%'}</div><div className="csub">{cards.retention_30 == null ? 'needs the month after opening observed' : 'traded in the month after account opening (M1)'}</div></div>
         <div className="card cw"><div className="clbl">90-day retention</div><div className="cval">{cards.retention_90 == null ? '—' : cards.retention_90.toFixed(1) + '%'}</div><div className="csub">{cards.retention_90 == null ? 'needs 3rd month after opening observed' : 'still trading ~3 months after opening (M3)'}</div></div>
         <div className="card cd"><div className="clbl">Churn this month</div><div className="cval">{cards.churn == null ? '—' : cards.churn.toLocaleString('en-IN')}</div><div className="csub">{cards.churn == null ? 'needs the prior month observed' : 'Active prior month, not this month'}</div></div>
+        <div className="card cp"><div className="clbl">Revenue / day — {cards.rd_prev_label || 'prev month'}</div><div className="cval">{cards.rd_prev_month == null ? '—' : inr(cards.rd_prev_month)}</div><div className="csub">{cards.rd_curr_label ? `${cards.rd_curr_label} so far: ${cards.rd_curr_month == null ? '—' : inr(cards.rd_curr_month)}/day` : 'avg brokerage + clearing per trading day'}</div></div>
       </div>
 
       <div className="panel">
@@ -102,10 +114,16 @@ const Retention = () => {
 
       <div className="tc2">
         <div className="panel">
-          <div className="ptitle">📈 Retention curve — blended cohort<InfoBtn text="Percentage of clients still active as months elapse since account opening, pooled across all cohorts and weighted by accounts opened. M0 = opening month. Only elapsed months with trade data are plotted." /></div>
-          {curve.length ? (
+          <div className="ptitle" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+            <span>📈 Retention curve — {cohortSel === 'blended' ? 'blended cohort' : `${cohortSel} cohort`}<InfoBtn text="Percentage of clients still active as months elapse since account opening. 'Blended' pools all cohorts weighted by accounts opened; pick a single opening month to see just that cohort's curve. M0 = opening month. Only elapsed months with trade data are plotted." /></span>
+            <select style={{ width: 180, fontSize: 12 }} value={cohortSel} onChange={e => setCohortSel(e.target.value)}>
+              <option value="blended">Blended (all cohorts)</option>
+              {(cohorts || []).map(c => <option key={c.cohort} value={c.cohort}>{c.cohort} cohort</option>)}
+            </select>
+          </div>
+          {chartCurve.length ? (
             <ResponsiveContainer width="100%" height={220}>
-              <LineChart data={curve} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+              <LineChart data={chartCurve} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
                 <XAxis dataKey="label" tick={{ fontSize: 10 }} /><YAxis tick={{ fontSize: 10 }} unit="%" domain={[0, 100]} />
                 <Tooltip formatter={(v) => v + '%'} />

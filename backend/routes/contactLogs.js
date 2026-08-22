@@ -3,6 +3,20 @@ const router  = express.Router();
 const pool    = require('../db');
 const auth    = require('../middleware/auth');
 
+// interactions.follow_up_time is added by a migration; until it's run we simply skip it,
+// so logging keeps working. Checked once and cached.
+let _hasFollowUpTime = null;
+async function followUpTimeExists() {
+  if (_hasFollowUpTime !== null) return _hasFollowUpTime;
+  try {
+    const r = await pool.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_name='interactions' AND column_name='follow_up_time' LIMIT 1`
+    );
+    _hasFollowUpTime = r.rowCount > 0;
+  } catch { _hasFollowUpTime = false; }
+  return _hasFollowUpTime;
+}
+
 // Map a raw interaction_type to a friendly label the frontend understands.
 // (Contact Log / Interaction Log read `type`, `channel`, `duration_minutes`, `interaction_date`, `is_lead`.)
 const TYPE_CASE = `
@@ -74,7 +88,7 @@ router.get('/', auth, async (req, res) => {
 router.post('/', auth, async (req, res) => {
   const {
     ucc, type, interaction_type, channel, outcome, notes,
-    duration, duration_seconds, datetime, follow_up_date
+    duration, duration_seconds, datetime, follow_up_date, follow_up_time
   } = req.body;
 
   const finalType = type || interaction_type || channel || 'Note';
@@ -93,14 +107,19 @@ router.post('/', auth, async (req, res) => {
     const clientRes  = await pool.query('SELECT name FROM clients WHERE ucc = $1 LIMIT 1', [ucc]);
     const clientName = clientRes.rows[0]?.name || null;
 
-    const result = await pool.query(`
-      INSERT INTO interactions
-        (ucc, rm_id, interaction_type, outcome, notes, duration_seconds,
-         follow_up_date, client_name, interaction_date, created_at)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()), NOW())
-      RETURNING *
-    `, [ucc, req.user.id, finalType, outcome, notes, durSecs,
-        follow_up_date || null, clientName, interactionDate]);
+    let cols = 'ucc, rm_id, interaction_type, outcome, notes, duration_seconds, follow_up_date, client_name, interaction_date, created_at';
+    let vals = '$1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()), NOW()';
+    const params = [ucc, req.user.id, finalType, outcome, notes, durSecs,
+                    follow_up_date || null, clientName, interactionDate];
+    // Only include the time column once the migration has added it.
+    if (await followUpTimeExists()) {
+      cols += ', follow_up_time';
+      vals += ', $10::time';
+      params.push(follow_up_time || null);
+    }
+
+    const result = await pool.query(
+      `INSERT INTO interactions (${cols}) VALUES (${vals}) RETURNING *`, params);
 
     res.json({ success: true, data: result.rows[0] });
   } catch (err) {

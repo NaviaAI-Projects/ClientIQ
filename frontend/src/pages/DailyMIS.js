@@ -4,6 +4,7 @@ import api from '../api';
 import { InfoBtn, ViewToggle } from '../components/ui';
 
 const inr = (n) => (n == null ? '—' : '₹' + Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+const inr0 = (n) => (n == null ? '—' : '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 }));  // whole rupees (no paise)
 const vsColor = (n) => (n == null ? 'var(--tx2)' : n >= 0 ? 'var(--sc)' : 'var(--dc)');
 const vsFmt = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n + '%');
 const num = (n) => (n == null ? '—' : Number(n).toLocaleString('en-IN'));
@@ -17,6 +18,7 @@ const DailyMIS = () => {
   const [from, setFrom]   = useState('');
   const [to, setTo]       = useState('');
   const [asof, setAsof]   = useState('');   // anchors the Income/Volume date columns
+  const [busy, setBusy]   = useState('');   // '', 'pdf', 'xlsx' or 'email' — drives button state
 
   const load = (f, t, a) => {
     setLoading(true); setError('');
@@ -37,6 +39,38 @@ const DailyMIS = () => {
 
   const { meta, income, volume, activity, mtf, revenue_mix, trend, range } = data;
   const dsub = { fontSize: 10, fontWeight: 400, color: 'var(--tx3)' };   // small date under a column header
+
+  // The three footer actions POST the exact payload now on screen (incl. any validated range),
+  // so the PDF/Excel/email always match what the supervisor is looking at.
+  const fileTag = String(meta.today || 'export').replace(/[^\w]+/g, '_');
+
+  const download = async (kind) => {
+    setBusy(kind);
+    try {
+      const res = await api.post(`/analytics/daily-mis/export/${kind}`, { data }, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url; a.download = `Daily_MIS_${fileTag}.${kind}`;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+    } catch (e) {
+      alert(`Could not generate the ${kind === 'pdf' ? 'PDF' : 'Excel file'}. Please try again.`);
+    } finally { setBusy(''); }
+  };
+
+  const emailToManagement = async () => {
+    const to = window.prompt('Email the Daily MIS to (comma-separate multiple addresses):', '');
+    if (to === null) return;                       // cancelled
+    if (!to.trim()) { alert('Enter at least one recipient email.'); return; }
+    const note = window.prompt('Optional note to show at the top of the email (leave blank to skip):', '') || '';
+    setBusy('email');
+    try {
+      const res = await api.post('/analytics/daily-mis/email', { data, to, note });
+      alert(res.data?.message || 'MIS emailed.');
+    } catch (e) {
+      alert(e.response?.data?.message || 'Could not send the email. Check the address and the mail server.');
+    } finally { setBusy(''); }
+  };
 
   return (
     <div>
@@ -136,8 +170,8 @@ const DailyMIS = () => {
             {income.map(r => (
               <tr key={r.line} style={{ fontWeight: r.total ? 600 : 'normal', borderTop: r.total ? '.5px solid var(--br)' : undefined }}>
                 <td><strong>{r.line}</strong>{r.note ? <span style={{ fontSize: 10, color: 'var(--tx3)' }}> ({r.note})</span> : ''}</td>
-                <td>{inr(r.today)}</td><td>{inr(r.yesterday)}</td><td>{inr(r.day_before)}</td>
-                <td>{inr(r.mtd_avg)}</td><td>{inr(r.prior1m_avg)}</td><td>{inr(r.prior2m_avg)}</td><td>{inr(r.prior3m_avg)}</td>
+                <td>{inr0(r.today)}</td><td>{inr0(r.yesterday)}</td><td>{inr0(r.day_before)}</td>
+                <td>{inr0(r.mtd_avg)}</td><td>{inr0(r.prior1m_avg)}</td><td>{inr0(r.prior2m_avg)}</td><td>{inr0(r.prior3m_avg)}</td>
                 <td style={{ color: vsColor(r.vs) }}>{vsFmt(r.vs)}</td>
                 <td>{r.total ? '100%' : (r.share == null ? '—' : r.share + '%')}</td>
               </tr>
@@ -193,10 +227,10 @@ const DailyMIS = () => {
           <div className="tw"><table>
             <thead><tr><th>Metric</th><th>Last traded date<div style={dsub}>{meta.today}</div></th><th>MTD avg</th><th>Prior 3M avg</th></tr></thead>
             <tbody>
-              <tr><td>Net MTF funding (₹Cr)</td><td>{(mtf.funding / 1e7).toFixed(2)}</td><td>{(mtf.funding / 1e7).toFixed(2)}</td><td>—</td></tr>
-              <tr><td>MTF interest earned (₹)</td><td>{inr(mtf.daily_interest)}</td><td>{inr(mtf.mtd_interest)}</td><td>—</td></tr>
-              <tr><td>MTF clients</td><td>{mtf.clients.toLocaleString('en-IN')}</td><td>{mtf.clients.toLocaleString('en-IN')}</td><td>—</td></tr>
-              <tr><td>Avg book per client (₹L)</td><td>{(mtf.avg_per_client / 1e5).toFixed(2)}</td><td>{(mtf.avg_per_client / 1e5).toFixed(2)}</td><td>—</td></tr>
+              <tr><td>Net MTF funding (₹Cr)</td><td>{(mtf.funding / 1e7).toFixed(2)}</td><td>{(mtf.funding / 1e7).toFixed(2)}</td><td>{mtf.prior3m_funding != null ? (mtf.prior3m_funding / 1e7).toFixed(2) : '—'}</td></tr>
+              <tr><td>MTF interest earned (₹)</td><td>{inr(mtf.daily_interest)}</td><td>{inr(mtf.mtd_interest)}</td><td>{mtf.prior3m_daily_interest != null ? inr(mtf.prior3m_daily_interest) : '—'}</td></tr>
+              <tr><td>MTF clients</td><td>{mtf.clients.toLocaleString('en-IN')}</td><td>{mtf.clients.toLocaleString('en-IN')}</td><td>{mtf.prior3m_clients != null ? mtf.prior3m_clients.toLocaleString('en-IN') : '—'}</td></tr>
+              <tr><td>Avg book per client (₹L)</td><td>{(mtf.avg_per_client / 1e5).toFixed(2)}</td><td>{(mtf.avg_per_client / 1e5).toFixed(2)}</td><td>{mtf.prior3m_avg_per_client != null ? (mtf.prior3m_avg_per_client / 1e5).toFixed(2) : '—'}</td></tr>
             </tbody>
           </table></div>
         </div>
@@ -303,9 +337,15 @@ const DailyMIS = () => {
       </div>
 
       <div className="brow" style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-        <button className="btn bp">📄 Export MIS (PDF)</button>
-        <button className="btn">✉️ Email to management</button>
-        <button className="btn">⬇️ Download as Excel</button>
+        <button className="btn bp" disabled={!!busy} onClick={() => download('pdf')}>
+          {busy === 'pdf' ? 'Generating…' : '📄 Export MIS (PDF)'}
+        </button>
+        <button className="btn" disabled={!!busy} onClick={emailToManagement}>
+          {busy === 'email' ? 'Sending…' : '✉️ Email to management'}
+        </button>
+        <button className="btn" disabled={!!busy} onClick={() => download('xlsx')}>
+          {busy === 'xlsx' ? 'Generating…' : '⬇️ Download as Excel'}
+        </button>
       </div>
     </div>
   );

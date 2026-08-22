@@ -57,7 +57,7 @@ const MarketShare = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [range, setRange] = useState({ key: 'all' });
+  const [range, setRange] = useState({ key: 'month' });   // default: current month, daily view
 
   useEffect(() => {
     if (range.key === 'custom' && !(range.from && range.to)) return;
@@ -73,6 +73,30 @@ const MarketShare = () => {
 
   const { meta, cards, months = [], daily = [] } = data;
   const feed = meta && meta.feed_available;
+
+  // ── Adaptive granularity for the turnover bar chart ───────────────
+  // Range within a month (≤31 days, e.g. the default "This month") → daily bars.
+  // Range spanning more than a month (3-month range, FY, All) → one bar per month.
+  const MON_T = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const monthlyTurnover = (() => {
+    const m = {};
+    daily.forEach(pt => {
+      const key = (pt.d || '').slice(0, 7);           // YYYY-MM
+      if (!key) return;
+      if (!m[key]) m[key] = { key, label: `${MON_T[+key.slice(5, 7) - 1]} '${key.slice(2, 4)}`, navia_cr: 0, exchange_cr: 0 };
+      m[key].navia_cr    += pt.navia_cr    || 0;
+      m[key].exchange_cr += pt.exchange_cr || 0;
+    });
+    return Object.values(m).sort((a, b) => (a.key < b.key ? -1 : 1))
+      .map(x => ({ ...x, navia_cr: +x.navia_cr.toFixed(2), exchange_cr: +x.exchange_cr.toFixed(2) }));
+  })();
+  // Skip non-trading days — weekends, exchange holidays, or any day with no turnover on
+  // either side — so the daily view shows only real trading sessions (no empty ₹0 gaps).
+  const tradingDaily = daily.filter(d => (d.navia_cr || 0) > 0 || (d.exchange_cr || 0) > 0);
+  const isMonthly = daily.length > 31;                          // more than a month (calendar) → monthly bars
+  const chartData = isMonthly ? monthlyTurnover : tradingDaily;
+  const showBarLbl = chartData.length <= 20;                    // value labels only when few bars
+  const tickEvery = isMonthly ? 0 : Math.max(0, Math.floor(chartData.length / 15)); // ≤ ~15 daily ticks
 
   // Honest per-month label: show the actual dates selected within that month,
   // e.g. "31 Jul 2026" or "27–31 Jul 2026" instead of the whole-month name.
@@ -143,26 +167,32 @@ const MarketShare = () => {
 
       {/* Day-wise Navia vs Exchange (our chart / prototype "volume vs benchmark") */}
       <div className="panel">
-        <div className="ptitle">📊 Daily turnover — Navia vs Exchange (₹Cr)<InfoBtn text="Total turnover across all segments, day by day. Navia and exchange share one axis, so our volume appears small against the exchange-wide total — the true scale of our share. Hover a bar for exact values." /></div>
-        {daily.length ? (
+        <div className="ptitle">📊 {isMonthly ? 'Monthly' : 'Daily'} turnover — Navia vs Exchange (₹Cr)<InfoBtn text="Total turnover across all segments. Ranges longer than ~6 weeks roll up to one bar per month; a month or less shows daily bars. Navia and exchange share one axis, so our volume appears small against the exchange-wide total — the true scale of our share. Hover a bar for exact values." /></div>
+        {chartData.length ? (
           <ResponsiveContainer width="100%" height={340}>
-            <BarChart data={daily} margin={{ top: 20, right: 12, bottom: 8, left: 20 }}>
+            <BarChart data={chartData} margin={{ top: 20, right: 12, bottom: 8, left: 20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-              <XAxis dataKey="label" tick={{ fontSize: 9 }} interval={0} angle={-40} textAnchor="end" height={50} />
+              <XAxis dataKey="label" tick={{ fontSize: isMonthly ? 11 : 9 }} interval={tickEvery}
+                     angle={isMonthly ? 0 : -40} textAnchor={isMonthly ? 'middle' : 'end'} height={isMonthly ? 30 : 50} />
               <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + (v >= 1000 ? (v / 1000).toFixed(0) + 'k' : v) + 'Cr'} />
               <Tooltip formatter={(v, n) => ['₹' + Number(v).toLocaleString('en-IN') + 'Cr', n]} />
               <Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
               <Bar dataKey="exchange_cr" fill="#cbd5e1" radius={[3, 3, 0, 0]} name="Exchange turnover">
-                <LabelList dataKey="exchange_cr" position="top" fontSize={8} fill="#64748b" formatter={crShort} />
+                {showBarLbl && <LabelList dataKey="exchange_cr" position="top" fontSize={8} fill="#64748b" formatter={crShort} />}
               </Bar>
               <Bar dataKey="navia_cr" fill="#185fa5" radius={[3, 3, 0, 0]} name="Navia turnover">
-                <LabelList dataKey="navia_cr" position="top" fontSize={8} fill="#185fa5" formatter={crShort} />
+                {showBarLbl && <LabelList dataKey="navia_cr" position="top" fontSize={8} fill="#185fa5" formatter={crShort} />}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
         ) : (
           <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--tx3)', fontSize: 13 }}>No turnover in this range.</div>
         )}
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>
+          {isMonthly
+            ? 'Rolled up to one bar per month for readability — pick “This month” or “Last 30 days” for a day-by-day view.'
+            : 'Day-by-day view — longer ranges roll up to monthly bars automatically.'}
+        </p>
       </div>
 
       {/* Prototype panel: Monthly market share table (₹Cr/day per segment + share) */}

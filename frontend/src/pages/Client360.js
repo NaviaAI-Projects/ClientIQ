@@ -11,6 +11,17 @@ const FMT = v => {
   return '₹' + v;
 };
 
+// #20: always 2 decimals — used by the income/revenue breakup so small values
+// (e.g. ₹3.26 clearing) don't print raw floats like ₹1.157005479452…
+const FMT2 = v => {
+  const n = Number(v) || 0;
+  if (n === 0) return '₹0';
+  if (Math.abs(n) >= 1e7) return '₹' + (n/1e7).toFixed(2) + 'Cr';
+  if (Math.abs(n) >= 1e5) return '₹' + (n/1e5).toFixed(2) + 'L';
+  if (Math.abs(n) >= 1e3) return '₹' + (n/1e3).toFixed(2) + 'K';
+  return '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+};
+
 const formatDate = date => date ? new Date(date).toLocaleDateString('en-IN') : '-';
 
 const Info = ({ label, value, highlight }) => (
@@ -29,6 +40,7 @@ const Client360 = () => {
   const [ucc, setUcc]                   = useState('');
   const [client, setClient]             = useState(null);
   const [chartData, setChartData]       = useState([]);
+  const [income, setIncome]             = useState(null);   // #20 income/revenue breakup
   const [nudges, setNudges]             = useState([]);
   const [search, setSearch]             = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -87,15 +99,18 @@ const Client360 = () => {
     setClientLoading(true);
     setClient(null);
     setChartData([]);
+    setIncome(null);
     setNudges([]);
     setUcc(clientUcc);
     try {
-      const [clientRes, chartRes] = await Promise.all([
+      const [clientRes, chartRes, incomeRes] = await Promise.all([
         api.get(`/clients/${clientUcc}`),
-        api.get(`/clients/${clientUcc}/chart-data`)
+        api.get(`/clients/${clientUcc}/chart-data`),
+        api.get(`/clients/${clientUcc}/income-breakup`).catch(() => ({ data: null }))
       ]);
       setClient(clientRes.data);
       setChartData(chartRes.data || []);
+      setIncome(incomeRes.data || null);
       // fetch nudges separately — don't block main load
       api.get(`/nudge?ucc=${clientUcc}`)
         .then(r => setNudges(r.data.nudges || []))
@@ -271,6 +286,43 @@ const Client360 = () => {
               <Info label="Mapped"            value={client.is_mapped ? 'Yes' : 'No'} />
             </div>
           </div>
+
+          {/* #20 Income / revenue breakup — Clearing charges, Turnover, Float, MTF */}
+          {income && (
+            <div className="panel">
+              <div className="ptitle">Income &amp; revenue breakup</div>
+              <div style={{ fontSize: '11px', color: 'var(--tx3)', marginBottom: '12px' }}>
+                Over trade detail held for this client{income.window && income.window.trade_days ? ` · ${income.window.trade_days} trading days` : ''}
+                {income.window && income.window.from && income.window.to ? ` (${formatDate(income.window.from)} – ${formatDate(income.window.to)})` : ''}
+                . Total revenue = Clearing + Float + MTF (turnover is trading volume, shown for context).
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
+                <div className="card cs">
+                  <div className="clbl">Clearing charges</div>
+                  <div className="cval">{FMT2(income.clearing)}</div>
+                  <div className="csub">Clearing commission earned</div>
+                </div>
+                <div className="card ci">
+                  <div className="clbl">Turnover</div>
+                  <div className="cval">{FMT2(income.turnover)}</div>
+                  <div className="csub">Total traded value (volume)</div>
+                </div>
+                <div className="card cw">
+                  <div className="clbl">Float</div>
+                  <div className="cval">{FMT2(income.float_income)}</div>
+                  <div className="csub">Est. / month · {income.fd_rate}% on {FMT2(income.ledger_balance)} credit</div>
+                </div>
+                <div className="card cp">
+                  <div className="clbl">MTF</div>
+                  <div className="cval">{FMT2(income.mtf_interest)}</div>
+                  <div className="csub">MTF interest earned</div>
+                </div>
+              </div>
+              <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--tx2)' }}>
+                Total revenue (Clearing + Float + MTF): <strong>{FMT2(income.total_income)}</strong>
+              </div>
+            </div>
+          )}
 
           {/* Charts */}
           {chartData.length === 0 ? (

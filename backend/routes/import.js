@@ -626,18 +626,31 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         const R = {};
         for (const k of Object.keys(row)) R[String(k).replace(/[\r\n]+/g, '')] = row[k];
         const ucc  = String(R['UCC'] || '').trim();
-        const name = String(R['Client Name'] || '').trim();
+        // Collapse internal double-spaces too (e.g. "KANNAN  VIJAY" → "KANNAN VIJAY"), not just the ends.
+        const name = String(R['Client Name'] || '').trim().replace(/\s+/g, ' ');
         if (!ucc || !name) { failed++; continue; }
-        const status      = String(R['Accross ExchOverall Status'] || R['Overall Status'] || '').trim();
+        // Robustly locate the status column regardless of the header's exact CRLF/spacing
+        // (e.g. "Accross Exch\r\nOverall Status" → "Accross ExchOverall Status").
+        let statusRaw = R['Accross ExchOverall Status'] || R['Overall Status'] || '';
+        if (!String(statusRaw).trim()) {
+          const sk = Object.keys(R).find(k => {
+            const nk = String(k).toLowerCase().replace(/\s+/g, '');
+            return nk.includes('overallstatus') || nk.includes('clientstatus') || nk.includes('accountstatus');
+          });
+          if (sk) statusRaw = R[sk];
+        }
+        const status      = String(statusRaw || '').trim();
         const clientType  = String(R['Client Type'] || R['Type'] || 'RI').trim();
         const regdDate    = parseDate(R['Regd Date']);
         const lastTrade   = parseDate(String(R['Last TradeAccross Exch'] || '').trim());
         // "Active" vs "Inactive": note that "inactive" CONTAINS "active", so a plain
         // includes('active') flags inactive clients as active. Active only when the
-        // status reads active and is NOT inactive.
+        // status reads active and is NOT inactive. Closed / Suspended / Dormant → not active.
         const _st         = status.toLowerCase();
         const isActive    = _st.includes('active') && !_st.includes('inactive');
-        uccMap[ucc] = { ucc, name, clientType, regdDate, lastTrade, isActive, status: status || 'Active' };
+        // Store the client's EXACT status verbatim (Active / Suspended / Closed / Dormant / …).
+        // A truly missing status is recorded as 'Unknown' — NOT silently defaulted to "Active".
+        uccMap[ucc] = { ucc, name, clientType, regdDate, lastTrade, isActive, status: status || 'Unknown' };
       }
 
       const dedupedRows = Object.values(uccMap);

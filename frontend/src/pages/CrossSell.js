@@ -58,7 +58,7 @@ const CrossSell = () => {
                   <td style={{fontSize:'12px',color:'var(--tx2)'}}>{opp.rationale}</td>
                   <td>{opp.pot}</td>
                   <td><span className={`ais ${opp.priority==='High'?'h':'m'}`}>{opp.priority}</span></td>
-                  <td><button className="btn sm" onClick={() => navigate('/contact-log')}>Pitch</button></td>
+                  <td><button className="btn sm" onClick={() => navigate('/contact-log',{state:{ucc:c.ucc, name:c.name}})}>Pitch</button></td>
                 </tr>
               );
             })}

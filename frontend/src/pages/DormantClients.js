@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../api';
 
 const tb = t => t?.toLowerCase().includes('nri')?'b-nri':t?.toLowerCase().includes('hv')?'b-hv':'b-ri';
-const sc = s => s>=70?'h':s>=50?'m':'l';
+const scChurn = s => s>=7?'h':s>=4?'m':'l';   // churn risk is 0–10
 const fmt = v => { const n=parseFloat(v)||0; if(n>=100000) return '₹'+(n/100000).toFixed(1)+'L'; if(n>=1000) return '₹'+(n/1000).toFixed(0)+'K'; return v?'₹'+n:'—'; };
 
 const DormantClients = () => {
@@ -15,8 +15,7 @@ const DormantClients = () => {
     api.get('/clients/my/clients?dormant=true').then(r => setClients(r.data||[])).catch(console.error).finally(() => setLoading(false));
   }, []);
 
-  const dormantCount = clients.filter(c => !c.is_active).length;
-  const highRisk     = clients.filter(c => (c.churn_risk_score||0) >= 70).length;
+  const highRisk = clients.filter(c => (c.churn_risk_score||0) >= 7).length;   // churn is 0–10
 
   return (
     <div>
@@ -43,8 +42,8 @@ const DormantClients = () => {
                   <td>{lastTrade?lastTrade.toLocaleDateString('en-IN',{month:'short',year:'numeric'}):'—'}</td>
                   <td>{monthsDormant}</td>
                   <td>{fmt(c.peak_revenue)}/mo</td>
-                  <td><span className={`ais ${sc(c.churn_risk_score)}`}>{Math.round(c.churn_risk_score||0)}</span></td>
-                  <td><button className="btn sm" onClick={() => navigate('/contact-log')}>Contact now</button></td>
+                  <td><span className={`ais ${scChurn(c.churn_risk_score)}`}>{Math.round(c.churn_risk_score||0)}</span></td>
+                  <td><button className="btn sm" onClick={() => navigate('/contact-log',{state:{ucc:c.ucc, name:c.name}})}>Contact now</button></td>
                 </tr>
               );
             })}

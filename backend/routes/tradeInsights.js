@@ -108,6 +108,7 @@ async function buildInsightsData(ucc, days = 90) {
   // Same-day (MIS) matching only — no position book is carried across days (delivery is not scored).
   const dayAgg  = {};                 // date -> { dow, trades, pnl, isExpiry }
   const symWL   = {};                 // sym -> { wins, losses } across closed days (for per-instrument win rate)
+  const dowWL   = {};                 // dow -> { wins, losses } at the ROUND-TRIP level (for day-of-week win rate)
   const symPnl  = {};                 // sym -> summed per-day realized P&L (same basis as win rate, so the two agree)
   const cpMonth = {};                 // month -> { month, calls, puts }  realized P&L split (CE/PE only)
   const moLbl   = (ds) => { const dt = new Date(ds); return dt.toLocaleString('en-IN', { month: 'short', year: '2-digit', timeZone: 'UTC' }); };
@@ -139,6 +140,11 @@ async function buildInsightsData(ucc, days = 90) {
       if (isOpt) dayAgg[date].optPnl += realized;
       if (!symWL[sym]) symWL[sym] = { wins: 0, losses: 0 };   // this same-day round-trip is a win/loss for the symbol
       if (realized > 0) symWL[sym].wins++; else if (realized < 0) symWL[sym].losses++;
+      // Same round-trip also counts toward that weekday's TRADE-level win rate (#11): a profitable
+      // matched leg = 1 win, a losing one = 1 loss — independent of whether the whole day was net-positive.
+      const dw = Number(r.dow);
+      if (!dowWL[dw]) dowWL[dw] = { wins: 0, losses: 0 };
+      if (realized > 0) dowWL[dw].wins++; else if (realized < 0) dowWL[dw].losses++;
       symPnl[sym] = (symPnl[sym] || 0) + realized;            // per-instrument same-day realized P&L
       if (ot === 'CE' || ot === 'PE') {                        // call/put realized P&L by month (options only)
         const mo = moLbl(date);
@@ -311,9 +317,18 @@ async function buildInsightsData(ucc, days = 90) {
 
   // ── Day-of-week (real) ──
   const dowMap = { 1: 'Mon', 2: 'Tue', 3: 'Wed', 4: 'Thu', 5: 'Fri' };
+  // avg_pnl stays per-day; win_rate is now TRADE-level = winning round-trips ÷ closed round-trips
+  // on that weekday (#11), so e.g. a Monday with one profit and one loss reads 50%, not 100%.
   const dowStats = {};
-  dayRows.forEach(d => { if (!dowMap[d.dow]) return; if (!dowStats[d.dow]) dowStats[d.dow] = { wins: 0, count: 0, pnl: 0 }; dowStats[d.dow].count++; dowStats[d.dow].pnl += d.pnl; if (d.pnl > 0) dowStats[d.dow].wins++; });
-  const dowData = [1, 2, 3, 4, 5].map(d => ({ day: dowMap[d], win_rate: dowStats[d] ? Math.round((dowStats[d].wins / dowStats[d].count) * 100) : 0, avg_pnl: dowStats[d] && dowStats[d].count ? r2(dowStats[d].pnl / dowStats[d].count) : 0 }));
+  dayRows.forEach(d => { if (!dowMap[d.dow]) return; if (!dowStats[d.dow]) dowStats[d.dow] = { count: 0, pnl: 0 }; dowStats[d.dow].count++; dowStats[d.dow].pnl += d.pnl; });
+  const dowData = [1, 2, 3, 4, 5].map(d => {
+    const wl = dowWL[d]; const closedRt = wl ? wl.wins + wl.losses : 0;
+    return {
+      day: dowMap[d],
+      win_rate: closedRt > 0 ? Math.round((wl.wins / closedRt) * 100) : 0,
+      avg_pnl: dowStats[d] && dowStats[d].count ? r2(dowStats[d].pnl / dowStats[d].count) : 0,
+    };
+  });
 
   // ── Time-of-day activity (real execution time from trades.trans_time, "HH:MM:SS") ──
   // Reliable P&L-by-hour isn't derivable (needs cross-day matching), so we surface trade

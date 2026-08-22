@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
@@ -28,6 +29,30 @@ const RevenueFloat = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
   const [range, setRange]     = useState({ key: 'all' });
+  const navigate = useNavigate();
+  const [modal, setModal]             = useState(null);   // null | 'idle' | 'mtf'
+  const [list, setList]               = useState([]);
+  const [listLoading, setListLoading] = useState(false);
+
+  // Open the drill-down for a footnote count. The list endpoints reuse the exact
+  // count criteria, so the modal length matches the number on the button.
+  const openList = (kind) => {
+    setModal(kind); setList([]); setListLoading(true);
+    const url = kind === 'idle'
+      ? '/analytics/revenue-float/idle-float-leads'
+      : '/analytics/revenue-float/mtf-eligible';
+    api.get(url).then(r => setList(r.data || [])).catch(() => setList([])).finally(() => setListLoading(false));
+  };
+
+  const downloadCsv = (filename, cols) => {
+    const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const csv = [cols.map(c => c.label).join(',')]
+      .concat(list.map(r => cols.map(c => esc(c.raw ? c.raw(r) : c.val(r))).join(',')))
+      .join('\n');
+    const url = window.URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    const a = document.createElement('a'); a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove(); window.URL.revokeObjectURL(url);
+  };
 
   useEffect(() => {
     if (range.key === 'custom' && !(range.from && range.to)) return;
@@ -242,7 +267,7 @@ const RevenueFloat = () => {
           </table></div>
           <div className="slbl">Float opportunity — idle balance clients</div>
           <p style={{ fontSize: 12, color: 'var(--tx2)' }}>{footnotes.idle_float_clients.toLocaleString('en-IN')} clients have avg opening balance &gt;₹2L but traded fewer than 5 days this month. Potential to deploy capital or cross-sell MTF.</p>
-          <button className="btn bp" style={{ marginTop: 8 }}>⭐ View idle float leads</button>
+          <button className="btn bp" style={{ marginTop: 8 }} onClick={() => openList('idle')}>⭐ View idle float leads</button>
           <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>Snapshot as of {fmtDate(float_book.ledger_date)}. Monthly averages populate as daily ledgers accumulate.</p>
         </div>
 
@@ -259,9 +284,70 @@ const RevenueFloat = () => {
           </table></div>
           <div className="slbl">MTF cross-sell pipeline</div>
           <p style={{ fontSize: 12, color: 'var(--tx2)' }}>{footnotes.mtf_eligible_not_using.toLocaleString('en-IN')} clients are MTF eligible (active F&amp;O, sufficient holdings) but not currently using MTF.{mtfPerConv ? ` Each conversion at avg ₹5L adds ~₹${mtfPerConv.toLocaleString('en-IN')}/month interest.` : ''}</p>
-          <button className="btn bp" style={{ marginTop: 8 }}>⭐ View MTF eligible clients</button>
+          <button className="btn bp" style={{ marginTop: 8 }} onClick={() => openList('mtf')}>⭐ View MTF eligible clients</button>
         </div>
       </div>
+
+      {modal && (() => {
+        const isIdle = modal === 'idle';
+        const cols = isIdle
+          ? [
+              { label: 'UCC',              val: r => r.ucc },
+              { label: 'Name',             val: r => r.name || '—' },
+              { label: 'Type',             val: r => r.client_type || '—' },
+              { label: 'Opening balance',  val: r => rupee(r.balance),  raw: r => Math.round(r.balance || 0) },
+              { label: 'Trade days (MTD)', val: r => r.trade_days },
+              { label: 'RM',               val: r => r.rm_name || 'Unmapped' },
+            ]
+          : [
+              { label: 'UCC',              val: r => r.ucc },
+              { label: 'Name',             val: r => r.name || '—' },
+              { label: 'Type',             val: r => r.client_type || '—' },
+              { label: 'Holdings',         val: r => rupee(r.holdings), raw: r => Math.round(r.holdings || 0) },
+              { label: 'MTD F&O turnover', val: r => rupee(r.fo_to),    raw: r => Math.round(r.fo_to || 0) },
+              { label: 'RM',               val: r => r.rm_name || 'Unmapped' },
+            ];
+        const title = isIdle ? 'Idle float leads' : 'MTF-eligible clients';
+        const sub = isIdle
+          ? 'Opening balance > ₹2L and fewer than 5 trading days this month — capital to deploy or cross-sell MTF.'
+          : 'Active equity F&O this month with holdings > ₹2L, not currently using MTF.';
+        return (
+          <div onClick={() => setModal(null)} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.5)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+            <div className="panel" onClick={e => e.stopPropagation()} style={{ maxWidth: 960, width: '100%', maxHeight: '86vh', overflow: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
+                <div>
+                  <div className="ptitle" style={{ marginBottom: 2 }}>{isIdle ? '⭐ ' : '💰 '}{title}{!listLoading && <span style={{ color: 'var(--tx3)', fontWeight: 400 }}> · {list.length}</span>}</div>
+                  <p style={{ fontSize: 12, color: 'var(--tx2)', margin: 0 }}>{sub}</p>
+                </div>
+                <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+                  <button className="btn sm" disabled={!list.length} onClick={() => downloadCsv(`${isIdle ? 'idle_float_leads' : 'mtf_eligible'}.csv`, cols)}>⬇ CSV</button>
+                  <button className="btn sm" onClick={() => setModal(null)}>✕ Close</button>
+                </div>
+              </div>
+              <div className="tw" style={{ marginTop: 12 }}><table>
+                <thead><tr>{cols.map(c => <th key={c.label}>{c.label}</th>)}</tr></thead>
+                <tbody>
+                  {listLoading ? (
+                    <tr><td colSpan={cols.length} style={{ padding: 24, textAlign: 'center', color: 'var(--tx3)' }}>Loading…</td></tr>
+                  ) : list.length === 0 ? (
+                    <tr><td colSpan={cols.length} style={{ padding: 24, textAlign: 'center', color: 'var(--tx3)' }}>No clients match right now.</td></tr>
+                  ) : list.map((r, i) => (
+                    <tr key={i}>
+                      {cols.map((c, ci) => (
+                        <td key={ci}>
+                          {ci === 0
+                            ? <span className="lc" style={{ cursor: 'pointer' }} onClick={() => navigate('/client-360', { state: { ucc: r.ucc } })}>{c.val(r)}</span>
+                            : c.val(r)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table></div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

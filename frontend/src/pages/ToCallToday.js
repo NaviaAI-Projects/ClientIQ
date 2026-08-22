@@ -10,13 +10,13 @@ const ToCallToday = () => {
   const [scheduled, setScheduled] = useState([]);
   const [expanded, setExpanded]   = useState({});
   const [logPanel, setLogPanel]   = useState(null);
-  const [form, setForm]           = useState({ channel:'Click-to-call', outcome:'Connected — positive', followup:'', duration:'', notes:'' });
+  const [form, setForm]           = useState({ channel:'Click-to-call', outcome:'Connected — positive', followup:'', followup_time:'', duration:'', notes:'' });
   const [saving, setSaving]       = useState(false);
   const [saved, setSaved]         = useState(false);
   const [loading, setLoading]     = useState(true);
   const navigate = useNavigate();
 
-  useEffect(() => {
+  const loadData = () => {
     Promise.all([
       api.get('/leads/to-call-today'),
       api.get('/interactions/scheduled-today'),
@@ -24,19 +24,51 @@ const ToCallToday = () => {
       setAiCalls(a.data || []);
       setScheduled(s.data || []);
     }).catch(console.error).finally(() => setLoading(false));
-  }, []);
+  };
+
+  useEffect(() => { loadData(); }, []);
 
   const completed = [...aiCalls, ...scheduled].filter(c => c.contacted_today).length;
   const remaining = aiCalls.length + scheduled.length - completed;
 
-  const handleSave = async () => {
+  // Real SmartFlo click-to-call: POST /calls/click-to-call { ucc }. The client is dialled
+  // first, then the RM is bridged. Confirms first, then surfaces the API's success/failure.
+  const callClient = async (ucc, name) => {
+    if (!ucc) return;
+    if (!window.confirm(`Start a click-to-call with ${name || ucc}?\nThe client is called first, then you are connected.`)) return;
+    try {
+      const res = await api.post('/calls/click-to-call', { ucc });
+      alert(res.data?.message || 'Call initiated.');
+    } catch (e) {
+      alert(e.response?.data?.message || 'Could not place the call. Check the client mobile and your SmartFlo setup.');
+    }
+  };
+
+  // Save the interaction. The form's follow-up date must be sent as `follow_up_date`
+  // (the column the API + Scheduled-follow-ups query read) — posting `followup` silently
+  // dropped it. "Save & schedule follow-up" defaults the date to TODAY when none is picked,
+  // so the client appears under "Scheduled follow-ups today" immediately.
+  const persist = async ({ scheduleToday = false } = {}) => {
     if (!logPanel) return;
+    const follow_up_date = (scheduleToday && !form.followup)
+      ? new Date().toISOString().slice(0, 10)
+      : (form.followup || null);
     setSaving(true);
     try {
-      await api.post('/contact-logs', { ucc: logPanel.ucc, ...form });
+      await api.post('/contact-logs', {
+        ucc: logPanel.ucc,
+        channel: form.channel,
+        outcome: form.outcome,
+        notes: form.notes,
+        duration: form.duration,
+        follow_up_date,
+        follow_up_time: form.followup_time || null,
+      });
       setSaved(true);
       setLogPanel(null);
+      setForm({ channel:'Click-to-call', outcome:'Connected — positive', followup:'', followup_time:'', duration:'', notes:'' });
       setTimeout(() => setSaved(false), 3000);
+      loadData();   // refresh so a follow-up dated today shows up right away
     } catch (e) { alert('Error saving'); }
     finally { setSaving(false); }
   };
@@ -121,7 +153,7 @@ const ToCallToday = () => {
                 <td style={{color:!c.last_contact?'var(--dc)':'inherit'}}>{c.last_contact?new Date(c.last_contact).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'Never'}</td>
                 <td>{c.best_time||'Flexible'}</td>
                 <td style={{display:'flex',gap:'4px'}}>
-                  <button className="btn sm bp" onClick={() => alert('Fetching mobile via API…\nClick-to-call initiated on 1600 series')}>📞 Call</button>
+                  <button className="btn sm bp" onClick={() => callClient(c.ucc, c.client_name||c.name)}>📞 Call</button>
                   <button className="btn sm" onClick={() => setLogPanel(c)}>✏️ Log</button>
                 </td>
               </tr>
@@ -146,7 +178,7 @@ const ToCallToday = () => {
                 <td style={{fontSize:'12px',color:'var(--tx2)'}}>{s.context||s.notes||'Follow-up'}</td>
                 <td><strong style={{color:'var(--ic)'}}>{s.scheduled_time||'—'}</strong></td>
                 <td style={{display:'flex',gap:'4px'}}>
-                  <button className="btn sm bp" onClick={() => alert('Click-to-call initiated')}>📞 Call</button>
+                  <button className="btn sm bp" onClick={() => callClient(s.ucc, s.client_name||s.name)}>📞 Call</button>
                   <button className="btn sm" onClick={() => setLogPanel(s)}>✏️ Log</button>
                 </td>
               </tr>
@@ -174,15 +206,17 @@ const ToCallToday = () => {
               </select>
             </div>
             <div className="fgrp"><label>Follow-up date</label><input type="date" value={form.followup} onChange={e=>setForm({...form,followup:e.target.value})} /></div>
+            <div className="fgrp"><label>Follow-up time <span style={{fontSize:'10px',color:'var(--tx3)',fontWeight:400}}>(optional)</span></label><input type="time" value={form.followup_time} onChange={e=>setForm({...form,followup_time:e.target.value})} /></div>
             <div className="fgrp"><label>Duration (mins)</label><input type="number" min="0" placeholder="0" value={form.duration} onChange={e=>setForm({...form,duration:e.target.value})} /></div>
           </div>
           <div className="fgrp" style={{marginBottom:'12px'}}><label>Notes</label>
             <textarea placeholder="Key points from the conversation…" value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} />
           </div>
           <div className="brow">
-            <button className="btn bp" onClick={handleSave} disabled={saving}>{saving?'Saving…':saved?'✅ Saved!':'💾 Save &amp; mark done'}</button>
-            <button className="btn" onClick={() => { handleSave(); }}>📅 Save &amp; schedule follow-up</button>
+            <button className="btn bp" onClick={() => persist()} disabled={saving}>{saving?'Saving…':saved?'✅ Saved!':'💾 Save & mark done'}</button>
+            <button className="btn" onClick={() => persist({ scheduleToday: true })} disabled={saving}>📅 Save & schedule follow-up</button>
           </div>
+          <p style={{fontSize:'11px',color:'var(--tx3)',marginTop:'8px'}}>Set a <strong>Follow-up date</strong> above to schedule the next call. It appears under “Scheduled follow-ups today” on that date (pick today to see it now).</p>
         </div>
       )}
     </div>

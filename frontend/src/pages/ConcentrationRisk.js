@@ -16,6 +16,13 @@ const pct1 = (n) => (Number(n) || 0).toFixed(1) + '%';
 const pct2 = (n) => (Number(n) || 0).toFixed(2) + '%';
 const cr = (n) => +((Number(n) || 0) / 1e7).toFixed(2);
 const SEG_COLORS = ['#185fa5', '#9FE1CB', '#AFA9EC', '#FAC775'];
+// #16: margin-status tint from collateral coverage
+const marginStyle = (s) => {
+  if (s === 'Healthy')   return { background: '#d8f0e0', color: '#186a3b' };
+  if (s === 'Adequate')  return { background: '#fdefd0', color: '#7a4510' };
+  if (s === 'Shortfall') return { background: '#fbdcda', color: '#a3271f' };
+  return { background: '#eceff3', color: '#66707d' };   // No exposure / unknown
+};
 
 const ConcentrationRisk = () => {
   const [data, setData]       = useState(null);
@@ -37,10 +44,37 @@ const ConcentrationRisk = () => {
 
   const { meta, kpis, totals, rev_buckets, float_buckets, monthly_trend, segment_mix, top_clients, float_top, mtf_top } = data;
 
-  const revBucketData   = rev_buckets.map(b => ({ name: b.label, v: +Number(b.cum_pct).toFixed(1) }));
-  const floatBucketData = float_buckets.map(b => ({ name: b.label, v: +Number(b.cum_pct).toFixed(1) }));
   const trendData       = monthly_trend.map(m => ({ ...m, target: 35 }));
   const segPie          = segment_mix.filter(s => s.value > 0);
+
+  // #15: table rows — named buckets show cumulative %; "Rest" = REMAINING share beyond the
+  // last named bucket (Top 500 for revenue, Top 200 for float), not a redundant 100%; plus a
+  // Total (all clients) row that sums to 100%. The "Share %" column is each slice's own contribution.
+  const toTableRows = (buckets) => {
+    const named = (buckets || []).filter(b => !/rest/i.test(b.label));
+    const rows = [];
+    let prevCum = 0;
+    named.forEach(b => {
+      const cum = +Number(b.cum_pct).toFixed(1);
+      rows.push({ name: b.label, cum, share: +(cum - prevCum).toFixed(1) });
+      prevCum = cum;
+    });
+    const lastLabel = named.length ? named[named.length - 1].label : 'named buckets';
+    const remaining = +(100 - prevCum).toFixed(1);
+    // #15: "Rest" shows the REMAINING % of revenue/float beyond the last named bucket
+    // (Top 500 for revenue, Top 200 for float) in BOTH columns.
+    rows.push({ name: `Rest (beyond ${lastLabel})`, cum: remaining, share: remaining, isRest: true });
+    rows.push({ name: 'Total (all clients)', cum: 100, share: 100, isTotal: true });
+    return rows;
+  };
+  const revTableRows   = toTableRows(rev_buckets);
+  const floatTableRows = toTableRows(float_buckets);
+
+  // Chart plots the same values as the table (Rest = remaining, not 100%); the Total row is
+  // dropped since a 100% bar would just be redundant. Rest label shortened for the x-axis.
+  const toChartData = (rows) => rows.filter(r => !r.isTotal).map(r => ({ name: r.isRest ? 'Rest' : r.name, v: r.cum }));
+  const revBucketData   = toChartData(revTableRows);
+  const floatBucketData = toChartData(floatTableRows);
 
   return (
     <div>
@@ -81,12 +115,16 @@ const ConcentrationRisk = () => {
             }
             table={
               <table>
-                <thead><tr><th>Client bucket</th><th>Cumulative % of options revenue</th></tr></thead>
+                <thead><tr><th>Client bucket</th><th>Cumulative % of options revenue</th><th>Share %</th></tr></thead>
                 <tbody>
-                  {revBucketData.map(r => (
-                    <tr key={r.name}><td>{r.name}</td><td>{r.v}%</td></tr>
+                  {revTableRows.map(r => (
+                    <tr key={r.name} style={r.isTotal ? { fontWeight: 700, borderTop: '2px solid rgba(0,0,0,0.15)' } : undefined}>
+                      <td>{r.name}</td>
+                      <td>{r.cum}%</td>
+                      <td>{r.share}%</td>
+                    </tr>
                   ))}
-                  {revBucketData.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
+                  {revTableRows.length === 0 && <tr><td colSpan={3} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
                 </tbody>
               </table>
             }
@@ -109,12 +147,16 @@ const ConcentrationRisk = () => {
             }
             table={
               <table>
-                <thead><tr><th>Client bucket</th><th>Cumulative % of total float</th></tr></thead>
+                <thead><tr><th>Client bucket</th><th>Cumulative % of total float</th><th>Share %</th></tr></thead>
                 <tbody>
-                  {floatBucketData.map(r => (
-                    <tr key={r.name}><td>{r.name}</td><td>{r.v}%</td></tr>
+                  {floatTableRows.map(r => (
+                    <tr key={r.name} style={r.isTotal ? { fontWeight: 700, borderTop: '2px solid rgba(0,0,0,0.15)' } : undefined}>
+                      <td>{r.name}</td>
+                      <td>{r.cum}%</td>
+                      <td>{r.share}%</td>
+                    </tr>
                   ))}
-                  {floatBucketData.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
+                  {floatTableRows.length === 0 && <tr><td colSpan={3} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
                 </tbody>
               </table>
             }
@@ -177,12 +219,12 @@ const ConcentrationRisk = () => {
 
       <div className="tc2">
         <div className="panel">
-          <div className="ptitle">💰 MTF book concentration — top 10 exposures<InfoBtn text="Largest margin-trading-facility (MTF) exposures, ranked by outstanding balance with each client's % of the total book and estimated daily interest." /></div>
+          <div className="ptitle">💰 MTF book concentration — top 10 exposures<InfoBtn text="Largest margin-trading-facility (MTF) exposures, ranked by outstanding balance. Columns: MTF balance, that client's % of the total MTF book, estimated interest per day (monthly interest ÷ 30), and margin status from collateral coverage — latest post-haircut DP holdings ÷ MTF balance (≥1.5× Healthy, 1–1.5× Adequate, below 1× Shortfall)." /></div>
           <div className="tw"><table>
             <thead><tr><th>Rank</th><th>UCC</th><th>Client</th><th>MTF balance</th><th>% of book</th><th>Interest/day</th><th>Margin status</th></tr></thead>
             <tbody>
               {mtf_top.map(r => (
-                <tr key={r.ucc}><td>{r.rank}</td><td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td><td>{rupee(r.balance)}</td><td>{pct1(r.pct_of_book)}</td><td>{rupee(r.interest / 30)}</td><td>—</td></tr>
+                <tr key={r.ucc}><td>{r.rank}</td><td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td><td>{rupee(r.balance)}</td><td>{pct1(r.pct_of_book)}</td><td>{rupee(r.interest_per_day != null ? r.interest_per_day : r.interest / 30)}</td><td><span className="badge" style={marginStyle(r.margin_status)} title={r.coverage != null ? `${r.coverage}× collateral coverage` : 'No collateral / exposure'}>{r.margin_status || '—'}</span></td></tr>
               ))}
               {mtf_top.length === 0 && <tr><td colSpan={7} style={{ color: 'var(--tx3)' }}>No MTF data for latest month.</td></tr>}
             </tbody>

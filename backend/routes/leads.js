@@ -38,6 +38,83 @@ function createTransporter() {
   });
 }
 
+// ── Shared: assign one lead to an RM (updates lead_pool + sends opt-in email) ──
+// Mirrors the single-client /assign flow so bulk auto-assign behaves identically.
+// rm_id is an rm_master.id (same id space the /rm/list dropdown and per-row Assign use).
+async function assignLeadToRm(rm_id, ucc) {
+  const expiry = new Date();
+  expiry.setDate(expiry.getDate() + 30);
+
+  const rmRes      = await pool.query('SELECT id, name FROM users WHERE id=$1', [rm_id]);
+  const clientRes  = await pool.query('SELECT name, email FROM clients WHERE ucc=$1', [ucc]);
+  const rmName     = rmRes.rows[0]?.name?.trim() || 'RM';
+  const clientName = clientRes.rows[0]?.name?.trim() || ucc;
+  let clientEmail  = clientRes.rows[0]?.email || null;
+
+  // Fetch email from Sharepro if not in DB (POST form, then GET fallback)
+  if (!clientEmail) {
+    try {
+      const spRes = await axios.post(
+        'https://backoffice.navia.co.in/shrdbms/dotnet/api/stansoft/GetClientDetails',
+        { key: 'e0JDQzRGQzRCLTU1QTEtNEM0Qi04M0E1LURGRjA0NERCNzgxRX0=', ucc },
+        { headers: { 'Content-Type': 'application/json' } }
+      );
+      clientEmail = spRes.data?.[0]?.EmailAddress?.trim() || null;
+      if (clientEmail) await pool.query('UPDATE clients SET email=$1 WHERE ucc=$2', [clientEmail, ucc]);
+    } catch (e) { console.warn('Sharepro fetch failed:', e.message); }
+  }
+  if (!clientEmail) {
+    try {
+      const spRes = await axios.get(
+        'https://backoffice.navia.co.in/shrdbms/dotnet/api/stansoft/GetClientDetails',
+        { params: { ApiKey: 'e0JDQzRGQzRCLTU1QTEtNEM0Qi04M0E1LURGRjA0NERCNzgxRX0=', UCC: ucc } }
+      );
+      const spData = spRes.data;
+      clientEmail = spData?.EmailId || spData?.Email || spData?.email || null;
+      if (clientEmail) await pool.query('UPDATE clients SET email=$1 WHERE ucc=$2', [clientEmail, ucc]);
+    } catch (spErr) { console.warn('Sharepro fetch failed:', spErr.message); }
+  }
+
+  const optinToken = jwt.sign({ ucc, rm_id: parseInt(rm_id) }, process.env.JWT_SECRET, { expiresIn: '7d' });
+  const baseUrl    = process.env.OPTIN_BASE_URL || 'http://localhost:3000';
+  const optinLink  = baseUrl + '/optin/' + optinToken;
+
+  await pool.query(`
+    UPDATE lead_pool
+    SET assigned_to_rm=$1, assigned_at=NOW(), assignment_expires_at=$2,
+        status='assigned', updated_at=NOW()
+    WHERE ucc=$3
+  `, [rm_id, expiry, ucc]);
+
+  let emailed = false;
+  if (clientEmail) {
+    try {
+      const transporter = createTransporter();
+      await transporter.sendMail({
+        from:    '"Navia Markets" <alert@navia.co.in>',
+        to:      clientEmail,
+        subject: 'Your Dedicated Relationship Manager at Navia',
+        html:    '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">'
+               + '<div style="background:#1B3F7A;padding:20px;border-radius:8px 8px 0 0;">'
+               + '<h2 style="color:white;margin:0;">Navia Markets</h2></div>'
+               + '<div style="padding:24px;border:1px solid #eee;border-top:none;border-radius:0 0 8px 8px;">'
+               + '<p>Dear ' + clientName + ',</p>'
+               + '<p><strong>' + rmName + '</strong> from Navia Markets has been assigned as your dedicated Relationship Manager.</p>'
+               + '<p>Please click the button below to confirm this assignment:</p>'
+               + '<a href="' + optinLink + '" style="display:inline-block;background:#1B3F7A;color:white;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;">Confirm My RM</a>'
+               + '<p style="margin-top:16px;font-size:12px;color:#888;">This link is valid for 7 days. If you did not expect this email, please ignore it.</p>'
+               + '</div></div>',
+      });
+      emailed = true;
+      console.log('Opt-in email sent to', clientEmail);
+    } catch (emailErr) { console.error('Opt-in email failed:', emailErr.message); }
+  } else {
+    console.warn('No email for client', ucc, '— opt-in link:', optinLink);
+  }
+
+  return { optin_link: optinLink, emailed };
+}
+
 // ── GET /my — leads assigned to logged-in RM ──────────────────
 router.get('/my', auth, async (req, res) => {
   try {
@@ -392,102 +469,121 @@ router.get('/', auth, async (req, res) => {
 // ── POST /assign ───────────────────────────────────────────────
 router.post('/assign', auth, async (req, res) => {
   const { ucc, rm_id } = req.body;
+  if (!ucc || !rm_id) return res.status(400).json({ message: 'UCC and RM ID are required' });
   try {
-    const expiry = new Date();
-    expiry.setDate(expiry.getDate() + 30);
-
-    // Get RM user details to generate optin token
-    const rmRes     = await pool.query('SELECT id, name FROM users WHERE id=$1', [rm_id]);
-    const clientRes = await pool.query('SELECT name, email FROM clients WHERE ucc=$1', [ucc]);
-    const rmName    = rmRes.rows[0]?.name?.trim() || 'RM';
-    const clientName = clientRes.rows[0]?.name?.trim() || ucc;
-    let clientEmail = clientRes.rows[0]?.email || null;
-
-    // Fetch email from Sharepro if not in DB
-    if (!clientEmail) {
-      try {
-        const axios = require('axios');
-        const spRes = await axios.post(
-          'https://backoffice.navia.co.in/shrdbms/dotnet/api/stansoft/GetClientDetails',
-          { key: 'e0JDQzRGQzRCLTU1QTEtNEM0Qi04M0E1LURGRjA0NERCNzgxRX0=', ucc },
-          { headers: { 'Content-Type': 'application/json' } }
-        );
-        clientEmail = spRes.data?.[0]?.EmailAddress?.trim() || null;
-        if (clientEmail) {
-          await pool.query('UPDATE clients SET email=$1 WHERE ucc=$2', [clientEmail, ucc]);
-        }
-      } catch (e) {
-        console.warn('Sharepro fetch failed:', e.message);
-      }
-    }
-
-    // Fetch email from Sharepro if not in DB
-    if (!clientEmail) {
-      try {
-        const axios = require('axios');
-        const spRes = await axios.get(
-          'https://backoffice.navia.co.in/shrdbms/dotnet/api/stansoft/GetClientDetails',
-          { params: { ApiKey: 'e0JDQzRGQzRCLTU1QTEtNEM0Qi04M0E1LURGRjA0NERCNzgxRX0=', UCC: ucc } }
-        );
-        const spData = spRes.data;
-        clientEmail = spData?.EmailId || spData?.Email || spData?.email || null;
-        if (clientEmail) {
-          await pool.query('UPDATE clients SET email = $1 WHERE ucc = $2', [clientEmail, ucc]);
-          console.log('Email fetched from Sharepro:', clientEmail);
-        }
-      } catch (spErr) {
-        console.warn('Sharepro fetch failed:', spErr.message);
-      }
-    }
-
-    // Generate opt-in token
-    const optinToken = jwt.sign(
-      { ucc, rm_id: parseInt(rm_id) },
-      process.env.JWT_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    const baseUrl = process.env.OPTIN_BASE_URL || 'http://localhost:3000';
-    const optinLink = baseUrl + '/optin/' + optinToken;
-
-    await pool.query(`
-      UPDATE lead_pool
-      SET assigned_to_rm=$1, assigned_at=NOW(), assignment_expires_at=$2,
-          status='assigned', updated_at=NOW()
-      WHERE ucc=$3
-    `, [rm_id, expiry, ucc]);
-
-    // Send opt-in email to client
-    if (clientEmail) {
-      try {
-        const transporter = createTransporter();
-        await transporter.sendMail({
-          from:    '"Navia Markets" <alert@navia.co.in>',
-          to:      clientEmail,
-          subject: 'Your Dedicated Relationship Manager at Navia',
-          html:    '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">'
-                 + '<div style="background:#1B3F7A;padding:20px;border-radius:8px 8px 0 0;">'
-                 + '<h2 style="color:white;margin:0;">Navia Markets</h2></div>'
-                 + '<div style="padding:24px;border:1px solid #eee;border-top:none;border-radius:0 0 8px 8px;">'
-                 + '<p>Dear ' + clientName + ',</p>'
-                 + '<p><strong>' + rmName + '</strong> from Navia Markets has been assigned as your dedicated Relationship Manager.</p>'
-                 + '<p>Please click the button below to confirm this assignment:</p>'
-                 + '<a href="' + optinLink + '" style="display:inline-block;background:#1B3F7A;color:white;padding:14px 28px;border-radius:8px;text-decoration:none;font-weight:600;font-size:15px;">Confirm My RM</a>'
-                 + '<p style="margin-top:16px;font-size:12px;color:#888;">This link is valid for 7 days. If you did not expect this email, please ignore it.</p>'
-                 + '</div></div>',
-        });
-        console.log('Opt-in email sent to', clientEmail);
-      } catch (emailErr) {
-        console.error('Opt-in email failed:', emailErr.message);
-      }
-    } else {
-      console.warn('No email for client', ucc, '— opt-in link:', optinLink);
-    }
-
-    res.json({ success: true, optin_link: optinLink });
+    const { optin_link } = await assignLeadToRm(rm_id, ucc);
+    res.json({ success: true, optin_link });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
+});
+
+// ── Shared: build a capacity-aware round-robin plan for score>=60 leads ──
+// Returns { plan:[{ucc,name,lead_score,rm_id,rm_name}], per_rm:[...], counts:{...} }.
+async function buildRoundRobinPlan() {
+  const threshold = 60;
+
+  // Eligible unassigned leads, best score first (this is the ranked order the pool shows).
+  const leadsRes = await pool.query(`
+    SELECT lp.ucc, COALESCE(lp.client_name, c.name, lp.ucc) AS name, lp.lead_score::float AS lead_score
+    FROM lead_pool lp
+    LEFT JOIN clients c ON c.ucc = lp.ucc
+    WHERE lp.status = 'unassigned' AND lp.lead_score >= $1
+    ORDER BY lp.lead_score DESC NULLS LAST, lp.ucc
+  `, [threshold]);
+
+  // RMs with capacity and current mapped load. remaining = capacity - already-assigned clients.
+  const rmsRes = await pool.query(`
+    SELECT rm.id, rm.rm_name, COALESCE(rm.capacity, 0)::int AS capacity,
+           (SELECT COUNT(*) FROM clients c WHERE c.assigned_rm_id = rm.id)::int AS current_load
+    FROM rm_master rm
+    ORDER BY rm.id
+  `);
+
+  const rms = rmsRes.rows.map(r => ({
+    rm_id: r.id, rm_name: r.rm_name,
+    capacity: r.capacity, current: r.current_load,
+    remaining: Math.max(0, r.capacity - r.current_load),
+    adding: 0,
+  }));
+
+  const plan = [];
+  const eligible = leadsRes.rows.length;
+  let li = 0;
+
+  // Round-robin: cycle through RMs, giving one lead per RM per pass, skipping full RMs.
+  // Stops when leads run out or every RM has hit capacity.
+  while (li < leadsRes.rows.length) {
+    const withRoom = rms.filter(r => r.remaining - r.adding > 0);
+    if (withRoom.length === 0) break;           // all RMs full → remaining leads overflow
+    for (const r of withRoom) {
+      if (li >= leadsRes.rows.length) break;
+      const lead = leadsRes.rows[li++];
+      r.adding += 1;
+      plan.push({
+        ucc: lead.ucc, name: lead.name,
+        lead_score: lead.lead_score != null ? Math.round(lead.lead_score) : null,
+        rm_id: r.rm_id, rm_name: r.rm_name,
+      });
+    }
+  }
+
+  const per_rm = rms.map(r => ({
+    rm_id: r.rm_id, rm_name: r.rm_name,
+    capacity: r.capacity, current: r.current,
+    adding: r.adding, new_total: r.current + r.adding,
+  }));
+
+  return {
+    plan, per_rm,
+    counts: {
+      eligible,
+      assignable: plan.length,
+      overflow: eligible - plan.length,   // eligible leads with no RM capacity left
+      threshold,
+    },
+  };
+}
+
+// ── GET /auto-assign/preview — round-robin plan (no writes, no emails) ──
+router.get('/auto-assign/preview', auth, async (req, res) => {
+  try {
+    const result = await buildRoundRobinPlan();
+    res.json(result);
+  } catch (err) {
+    console.error('AUTO-ASSIGN PREVIEW ERROR:', err.message);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// ── POST /auto-assign/commit — assign the reviewed plan (writes + opt-in emails) ──
+// Body: { assignments: [{ ucc, rm_id }] }. Re-validates each lead is still unassigned
+// before acting, so a stale preview can't double-assign or reassign a client.
+router.post('/auto-assign/commit', auth, async (req, res) => {
+  const assignments = Array.isArray(req.body?.assignments) ? req.body.assignments : null;
+  if (!assignments || assignments.length === 0) {
+    return res.status(400).json({ message: 'No assignments provided' });
+  }
+  const results = { assigned: 0, emailed: 0, skipped: 0, failed: 0, errors: [] };
+  for (const a of assignments) {
+    const ucc = a && a.ucc;
+    const rm_id = a && a.rm_id;
+    if (!ucc || !rm_id) { results.skipped++; continue; }
+    try {
+      // Guard: only act if the lead is still unassigned (avoids racing the per-row modal).
+      const chk = await pool.query(
+        `SELECT 1 FROM lead_pool WHERE ucc=$1 AND status='unassigned'`, [ucc]
+      );
+      if (chk.rowCount === 0) { results.skipped++; continue; }
+      const { emailed } = await assignLeadToRm(rm_id, ucc);
+      results.assigned++;
+      if (emailed) results.emailed++;
+    } catch (err) {
+      results.failed++;
+      results.errors.push({ ucc, error: err.message });
+    }
+  }
+  res.json({ success: true, ...results });
 });
 
 // ── POST /approve-mapping ──────────────────────────────────────
@@ -504,7 +600,7 @@ router.post('/approve-mapping', auth, async (req, res) => {
       WHERE ucc=$3
     `, [rm_id, expiry, ucc]);
     await pool.query(`
-      UPDATE clients SET assigned_rm_id=$1, is_mapped=true, updated_at=NOW() WHERE ucc=$2
+      UPDATE clients SET assigned_rm_id=$1, is_mapped=true, mapped_at=COALESCE(mapped_at, NOW()), updated_at=NOW() WHERE ucc=$2
     `, [rm_id, ucc]);
     res.json({ success: true, message: 'Client mapped and lead assigned to RM' });
     await audit(req, 'MAPPING_APPROVED', 'Client ' + ucc + ' mapped to RM ' + rm_id, ucc, 'success', 'leads');

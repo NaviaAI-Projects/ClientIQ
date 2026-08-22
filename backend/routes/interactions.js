@@ -3,6 +3,19 @@ const router = express.Router();
 const pool = require('../db');
 const auth = require('../middleware/auth');
 
+// interactions.follow_up_time is added by a migration; tolerate its absence.
+let _hasFollowUpTime = null;
+async function followUpTimeExists() {
+  if (_hasFollowUpTime !== null) return _hasFollowUpTime;
+  try {
+    const r = await pool.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_name='interactions' AND column_name='follow_up_time' LIMIT 1`
+    );
+    _hasFollowUpTime = r.rowCount > 0;
+  } catch { _hasFollowUpTime = false; }
+  return _hasFollowUpTime;
+}
+
 // ✅ /my/all MUST be before /:ucc
 router.get('/my/all', auth, async (req, res) => {
   try {
@@ -23,6 +36,10 @@ router.get('/my/all', auth, async (req, res) => {
 // ✅ /scheduled-today MUST be before /:ucc — follow-ups due today for logged-in RM
 router.get('/scheduled-today', auth, async (req, res) => {
   try {
+    // Show the scheduled time when the column exists (formatted 12-hour); else NULL.
+    const timeSel = (await followUpTimeExists())
+      ? `to_char(i.follow_up_time, 'FMHH12:MI AM')`
+      : `NULL`;
     const result = await pool.query(`
       SELECT DISTINCT ON (i.ucc)
              i.ucc,
@@ -32,6 +49,7 @@ router.get('/scheduled-today', auth, async (req, res) => {
              u.name AS scheduled_by,
              i.created_at AS scheduled_date,
              i.follow_up_date,
+             ${timeSel} AS scheduled_time,
              i.notes AS context,
              EXISTS (
                SELECT 1 FROM interactions x

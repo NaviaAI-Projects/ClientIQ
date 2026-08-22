@@ -5,6 +5,9 @@ const express = require('express');
 const router  = express.Router();
 const pool    = require('../db');
 const auth    = require('../middleware/auth');
+const XLSX       = require('xlsx');
+const PdfPrinter = require('pdfmake');
+const nodemailer = require('nodemailer');
 
 // ── REVENUE & FLOAT ─────────────────────────────────────────────
 // Real streams available today: brokerage (daily_trades.brokerage_earned),
@@ -39,7 +42,7 @@ router.get('/revenue-float', auth, async (req, res) => {
     const monthlyFloat = await pool.query(`
       SELECT to_char(ledger_date,'YYYY-MM') AS month, AVG(daybal)::float AS avg_bal,
              COUNT(*)::int AS n_days
-      FROM ( SELECT ledger_date, SUM(opening_balance) AS daybal FROM daily_ledger GROUP BY ledger_date ) d
+      FROM ( SELECT ledger_date, SUM(opening_balance) FILTER (WHERE opening_balance > 0) AS daybal FROM daily_ledger GROUP BY ledger_date ) d
       GROUP BY 1
     `);
     const floatByMonth = {}, floatDaysByMonth = {};
@@ -62,10 +65,12 @@ router.get('/revenue-float', auth, async (req, res) => {
     const floatSnap = await pool.query(`
       WITH latest AS (SELECT MAX(ledger_date) d FROM daily_ledger)
       SELECT (SELECT d FROM latest)                           AS ledger_date,
-             COALESCE(SUM(opening_balance),0)::float          AS total_ledger_balance,
-             COUNT(*)::int                                    AS ledger_clients,
+             -- Float is earned only on CREDIT (positive) balances; debit clients owe us and
+             -- contribute no idle float, so the float book sums positive balances only.
+             COALESCE(SUM(opening_balance) FILTER (WHERE opening_balance > 0),0)::float AS total_ledger_balance,
+             COUNT(*) FILTER (WHERE opening_balance > 0)::int  AS ledger_clients,
              COUNT(*) FILTER (WHERE opening_balance > 500000)::int AS clients_above_5l,
-             COALESCE(AVG(opening_balance),0)::float          AS avg_balance
+             COALESCE(AVG(opening_balance) FILTER (WHERE opening_balance > 0),0)::float AS avg_balance
       FROM daily_ledger
       WHERE ledger_date = (SELECT d FROM latest)
     `);
@@ -226,6 +231,72 @@ router.get('/revenue-float', auth, async (req, res) => {
   }
 });
 
+// ── REVENUE & FLOAT drill-downs ─────────────────────────────────
+// The client lists behind the two Revenue & Float footnote counts. Each reuses
+// the EXACT criteria of the count query above, so the list length matches the
+// headline number the supervisor clicked.
+
+// Idle-float leads: latest-ledger opening balance > ₹2L AND < 5 trading days this month.
+router.get('/revenue-float/idle-float-leads', auth, async (req, res) => {
+  try {
+    const q = await pool.query(`
+      WITH latest AS (SELECT MAX(ledger_date) d FROM daily_ledger),
+      bal AS (
+        SELECT ucc, opening_balance FROM daily_ledger
+        WHERE ledger_date = (SELECT d FROM latest) AND opening_balance > 200000
+      ),
+      td AS (
+        SELECT ucc, COUNT(DISTINCT trade_date) days FROM daily_trades
+        WHERE trade_date >= date_trunc('month', (SELECT MAX(trade_date) FROM daily_trades))
+        GROUP BY ucc
+      )
+      SELECT bal.ucc, c.name, c.client_type,
+             bal.opening_balance::float AS balance,
+             COALESCE(td.days, 0)::int   AS trade_days,
+             rm.rm_name
+      FROM bal
+      LEFT JOIN td ON td.ucc = bal.ucc
+      LEFT JOIN clients c ON c.ucc = bal.ucc
+      LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
+      WHERE COALESCE(td.days, 0) < 5
+      ORDER BY bal.opening_balance DESC
+      LIMIT 500
+    `);
+    res.json(q.rows);
+  } catch (err) { console.error('IDLE-FLOAT LEADS ERROR:', err.message); res.status(500).json({ message: 'Server error' }); }
+});
+
+// MTF-eligible: active equity F&O this month AND holdings > ₹2L AND not currently using MTF.
+router.get('/revenue-float/mtf-eligible', auth, async (req, res) => {
+  try {
+    const q = await pool.query(`
+      WITH fo AS (
+        SELECT ucc, SUM(eq_fo_turnover)::float AS fo_to FROM daily_trades
+        WHERE trade_date >= date_trunc('month', (SELECT MAX(trade_date) FROM daily_trades))
+          AND eq_fo_turnover > 0
+        GROUP BY ucc
+      ),
+      hold AS (
+        SELECT ucc, total_holding_value::float AS holdings FROM holdings_summary
+        WHERE holding_date = (SELECT MAX(holding_date) FROM holdings_summary)
+          AND total_holding_value > 200000
+      ),
+      using_mtf AS (
+        SELECT DISTINCT ucc FROM mtf_monthly
+        WHERE month_year = (SELECT MAX(month_year) FROM mtf_monthly)
+      )
+      SELECT fo.ucc, c.name, c.client_type, hold.holdings, fo.fo_to, rm.rm_name
+      FROM fo JOIN hold ON hold.ucc = fo.ucc
+      LEFT JOIN clients c ON c.ucc = fo.ucc
+      LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
+      WHERE fo.ucc NOT IN (SELECT ucc FROM using_mtf)
+      ORDER BY hold.holdings DESC
+      LIMIT 500
+    `);
+    res.json(q.rows);
+  } catch (err) { console.error('MTF-ELIGIBLE ERROR:', err.message); res.status(500).json({ message: 'Server error' }); }
+});
+
 // ── CONCENTRATION RISK ──────────────────────────────────────────
 // Concentration of turnover (options premium), float (ledger balance) and
 // MTF (interest) across the client base. Revenue concentration is measured on
@@ -322,7 +393,7 @@ router.get('/concentration', auth, async (req, res) => {
         FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2
       ),
       fl AS (
-        SELECT COALESCE(SUM(opening_balance),0)::float AS bal FROM daily_ledger
+        SELECT COALESCE(SUM(opening_balance) FILTER (WHERE opening_balance > 0),0)::float AS bal FROM daily_ledger
         WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)
       ),
       mtf AS (
@@ -380,19 +451,30 @@ router.get('/concentration', auth, async (req, res) => {
     const fbk = floatBuckets.rows[0] || {};
 
     // MTF concentration — top 10 + top5 share + book total
+    // #16: Top 10 Exposures ranked by MTF BALANCE (the exposure). Columns wired:
+    //   MTF Balance = avg_mtf_balance · % of Book = balance ÷ total book balance ·
+    //   Interest/Day = monthly interest ÷ 30 · Margin Status = collateral coverage
+    //   (latest post-haircut holdings value ÷ MTF balance).
     const mtfTop = await pool.query(`
       WITH latest AS (SELECT MAX(month_year) m FROM mtf_monthly),
       base AS (
         SELECT ucc, SUM(interest_earned) AS interest, SUM(avg_mtf_balance) AS bal
         FROM mtf_monthly WHERE month_year = (SELECT m FROM latest) GROUP BY ucc
       ),
+      coll AS (
+        SELECT ucc, total_holding_value AS collateral FROM holdings_summary
+        WHERE holding_date = (SELECT MAX(holding_date) FROM holdings_summary)
+      ),
       ranked AS (
-        SELECT ucc, interest, bal, ROW_NUMBER() OVER (ORDER BY interest DESC) rn,
-               SUM(interest) OVER () grand
+        SELECT ucc, interest, bal, ROW_NUMBER() OVER (ORDER BY bal DESC NULLS LAST) rn,
+               SUM(interest) OVER () grand_int, SUM(bal) OVER () grand_bal
         FROM base
       )
-      SELECT r.rn, r.ucc, r.interest::float, r.bal::float, r.grand::float, c.name
-      FROM ranked r LEFT JOIN clients c ON c.ucc = r.ucc
+      SELECT r.rn, r.ucc, r.interest::float, r.bal::float,
+             r.grand_int::float, r.grand_bal::float, cl.collateral::float, c.name
+      FROM ranked r
+      LEFT JOIN clients c ON c.ucc = r.ucc
+      LEFT JOIN coll cl ON cl.ucc = r.ucc
       WHERE r.rn <= 10 ORDER BY r.rn
     `);
     const mtfAgg = await pool.query(`
@@ -472,10 +554,23 @@ router.get('/concentration', auth, async (req, res) => {
         balance: Number(r.opening_balance), pct_of_total: pct(r.opening_balance, floatTotal),
         cum_pct: Number(r.cum_pct), traded_this_month: !!r.traded_this_month,
       })),
-      mtf_top: mtfTop.rows.map(r => ({
-        rank: Number(r.rn), ucc: r.ucc, name: r.name || r.ucc,
-        interest: Number(r.interest), balance: Number(r.bal), pct_of_book: pct(r.interest, mtfTotal),
-      })),
+      mtf_top: mtfTop.rows.map(r => {
+        const bal = Number(r.bal || 0), interest = Number(r.interest || 0);
+        const grandBal = Number(r.grand_bal || 0), collateral = Number(r.collateral || 0);
+        const coverage = bal > 0 ? collateral / bal : null;
+        // Margin status from collateral coverage: ≥1.5× healthy · 1–1.5× adequate · <1× shortfall.
+        const margin_status = coverage == null ? 'No exposure'
+                            : coverage >= 1.5 ? 'Healthy'
+                            : coverage >= 1.0 ? 'Adequate' : 'Shortfall';
+        return {
+          rank: Number(r.rn), ucc: r.ucc, name: r.name || r.ucc,
+          balance: bal, interest,
+          pct_of_book: grandBal > 0 ? (bal / grandBal) * 100 : 0,   // % of MTF book by balance
+          interest_per_day: interest / 30,
+          collateral, coverage: coverage == null ? null : +coverage.toFixed(2),
+          margin_status,
+        };
+      }),
     });
   } catch (err) {
     console.error('CONCENTRATION ERROR:', err.message);
@@ -597,12 +692,30 @@ router.get('/options', auth, async (req, res) => {
       if (r.key === 'rate_comm_options') rCommOpt = parseFloat(r.value) || 0;
     });
 
+    // Baseline for the OLDEST displayed month's MoM: the eq-options per-day turnover of the
+    // calendar month just before it. Not shown as a row — only used so the first month in the
+    // table (e.g. July, when August's baseline pulled it in) still gets its own MoM %.
+    let oldestPrevPerDay = null;
+    if (monthKeys.length) {
+      const [oy, omo] = monthKeys[0].split('-').map(Number);
+      const bd = new Date(Date.UTC(oy, omo - 2, 1));
+      const bs = `${bd.getUTCFullYear()}-${String(bd.getUTCMonth() + 1).padStart(2, '0')}-01`;
+      const bq = await pool.query(`
+        SELECT COALESCE(SUM(traded_value),0)::float AS to_, COUNT(DISTINCT trade_date)::int AS days
+        FROM trades WHERE ${EQ} AND trade_date >= $1::date AND trade_date < ($1::date + interval '1 month')`, [bs]);
+      const bto = Number(bq.rows[0]?.to_ || 0), bdays = Number(bq.rows[0]?.days || 0);
+      oldestPrevPerDay = bdays ? bto / bdays : null;
+    }
+
     const monthly = monthKeys.map((k, i) => {
       const m = months[k];
       const eqPerDay   = m.eq_days ? m.eq_to / m.eq_days : 0;
       const commPerDay = m.comm_days ? m.comm_to / m.comm_days : 0;
       const prev = i > 0 ? months[monthKeys[i - 1]] : null;
-      const prevPerDay = prev && prev.eq_days ? prev.eq_to / prev.eq_days : null;
+      // i>0 → compare to the previous displayed month; i===0 (oldest) → compare to the fetched
+      // baseline month, so the first row shows a real MoM instead of "—".
+      const prevPerDay = (i > 0 && prev && prev.eq_days) ? prev.eq_to / prev.eq_days
+                        : (i === 0 ? oldestPrevPerDay : null);
       const eqClrDay   = eqPerDay   * rEqOpt   / 100;   // equity-options clearing ₹/day
       const commClrDay = commPerDay * rCommOpt / 100;   // commodity-options clearing ₹/day
       return {
@@ -836,13 +949,14 @@ router.get('/inactive', auth, async (req, res) => {
     const summary = await pool.query(`
       WITH h AS (${HOLD})
       SELECT
-        COUNT(*) FILTER (WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date)::int AS inactive_total,
+        COUNT(*) FILTER (WHERE (LOWER(COALESCE(c.status,'')) NOT LIKE 'clos%') AND (c.last_trade_date IS NULL OR c.last_trade_date < $1::date))::int AS inactive_total,
         COUNT(*) FILTER (WHERE (c.last_trade_date IS NULL OR c.last_trade_date < $1::date) AND h.ucc IS NOT NULL)::int AS inactive_with_dp,
         COALESCE(SUM(h.total_holding_value) FILTER (WHERE (c.last_trade_date IS NULL OR c.last_trade_date < $1::date) AND h.ucc IS NOT NULL),0)::float AS inactive_dp_value,
         COUNT(*) FILTER (WHERE c.last_trade_date IS NULL)::int AS never_traded,
         COUNT(*) FILTER (WHERE c.last_trade_date IS NULL AND h.ucc IS NOT NULL)::int AS never_with_dp,
         COUNT(*) FILTER (WHERE c.last_trade_date IS NULL AND c.account_open_date > $2::date - 90)::int AS never_recent
       FROM clients c LEFT JOIN h ON h.ucc = c.ucc
+      WHERE (LOWER(COALESCE(c.status,'')) NOT LIKE 'clos%')   -- exclude ONLY closed accounts; Suspended clients stay in the Inactive & DP counts
     `, P);
 
     const bands = await pool.query(`
@@ -856,7 +970,7 @@ router.get('/inactive', auth, async (req, res) => {
                ELSE '365+ days' END AS band,
           (h.ucc IS NOT NULL) AS has_dp
         FROM clients c LEFT JOIN h ON h.ucc = c.ucc
-        WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date
+        WHERE (LOWER(COALESCE(c.status,'')) NOT LIKE 'clos%') AND (c.last_trade_date IS NULL OR c.last_trade_date < $1::date)
       )
       SELECT band, COUNT(*) FILTER (WHERE has_dp)::int AS with_dp,
              COUNT(*) FILTER (WHERE NOT has_dp)::int AS no_dp
@@ -869,7 +983,7 @@ router.get('/inactive', auth, async (req, res) => {
       -- column is unloaded, so reading it flattened everyone to RI and hid the ~1,100 NRI holders.
       SELECT CASE WHEN UPPER(c.ucc) LIKE 'N%' THEN 'NRI' ELSE 'RI' END AS client_type, COUNT(*)::int AS n
       FROM clients c JOIN h ON h.ucc = c.ucc
-      WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date
+      WHERE (LOWER(COALESCE(c.status,'')) NOT LIKE 'clos%') AND (c.last_trade_date IS NULL OR c.last_trade_date < $1::date)
       GROUP BY 1 ORDER BY n DESC
     `, P);
 
@@ -878,15 +992,15 @@ router.get('/inactive', auth, async (req, res) => {
       inact AS (
         SELECT h.total_holding_value AS v
         FROM clients c JOIN h ON h.ucc = c.ucc
-        WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date
+        WHERE (LOWER(COALESCE(c.status,'')) NOT LIKE 'clos%') AND (c.last_trade_date IS NULL OR c.last_trade_date < $1::date)
       )
       SELECT
-        COUNT(*) FILTER (WHERE v < 50000)::int                      AS b1,
-        COUNT(*) FILTER (WHERE v >= 50000 AND v < 200000)::int      AS b2,
-        COUNT(*) FILTER (WHERE v >= 200000 AND v < 500000)::int     AS b3,
-        COUNT(*) FILTER (WHERE v >= 500000 AND v < 1000000)::int    AS b4,
-        COUNT(*) FILTER (WHERE v >= 1000000 AND v < 2500000)::int   AS b5,
-        COUNT(*) FILTER (WHERE v >= 2500000)::int                   AS b6
+        -- #19: DP holding-value ranges → ₹1–10L, 10–25L, 25L–1Cr, 1–5Cr, Above 5Cr
+        COUNT(*) FILTER (WHERE v >= 100000  AND v < 1000000)::int    AS b1,
+        COUNT(*) FILTER (WHERE v >= 1000000 AND v < 2500000)::int    AS b2,
+        COUNT(*) FILTER (WHERE v >= 2500000 AND v < 10000000)::int   AS b3,
+        COUNT(*) FILTER (WHERE v >= 10000000 AND v < 50000000)::int  AS b4,
+        COUNT(*) FILTER (WHERE v >= 50000000)::int                   AS b5
       FROM inact
     `, P);
 
@@ -902,9 +1016,9 @@ router.get('/inactive', auth, async (req, res) => {
       -- Same inactivity rule as the cards / bands / doughnut: never-traded (NULL last_trade_date)
       -- OR last trade before the cutoff. The old "IS NOT NULL" excluded all never-traded DP holders,
       -- which is almost the entire list — so it showed empty while the cards counted 6,982.
-      WHERE c.last_trade_date IS NULL OR c.last_trade_date < $1::date
+      WHERE (LOWER(COALESCE(c.status,'')) NOT LIKE 'clos%') AND (c.last_trade_date IS NULL OR c.last_trade_date < $1::date)
       ORDER BY h.total_holding_value DESC
-      LIMIT 15
+      LIMIT 30
     `, P);
 
     const s = summary.rows[0] || {};
@@ -926,12 +1040,11 @@ router.get('/inactive', auth, async (req, res) => {
       bands: bandOrder.map(b => ({ band: b, with_dp: Number(bandMap[b]?.with_dp || 0), no_dp: Number(bandMap[b]?.no_dp || 0) })),
       by_type: byType.rows.map(r => ({ client_type: r.client_type, count: Number(r.n) })),
       value_dist: [
-        { bucket: '<₹50K', count: Number(vd.b1 || 0) },
-        { bucket: '₹50K–₹2L', count: Number(vd.b2 || 0) },
-        { bucket: '₹2L–₹5L', count: Number(vd.b3 || 0) },
-        { bucket: '₹5L–₹10L', count: Number(vd.b4 || 0) },
-        { bucket: '₹10L–₹25L', count: Number(vd.b5 || 0) },
-        { bucket: '>₹25L', count: Number(vd.b6 || 0) },
+        { bucket: '₹1–10L',    count: Number(vd.b1 || 0) },
+        { bucket: '₹10–25L',   count: Number(vd.b2 || 0) },
+        { bucket: '₹25L–1Cr',  count: Number(vd.b3 || 0) },
+        { bucket: '₹1–5Cr',    count: Number(vd.b4 || 0) },
+        { bucket: 'Above ₹5Cr', count: Number(vd.b5 || 0) },
       ],
       priority: priority.rows.map(r => ({
         ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type,
@@ -1107,7 +1220,7 @@ router.get('/company-dashboard', auth, async (req, res) => {
     // prior ledger balance so interest accrues 7 days a week. Bounded by the latest ledger date —
     // never projects a balance past the last data actually held.
     const floatRange = await pool.query(`
-      WITH daybal AS (SELECT ledger_date, SUM(opening_balance) AS bal FROM daily_ledger GROUP BY ledger_date)
+      WITH daybal AS (SELECT ledger_date, SUM(opening_balance) FILTER (WHERE opening_balance > 0) AS bal FROM daily_ledger GROUP BY ledger_date)
       SELECT COALESCE(SUM(
                (SELECT db.bal FROM daybal db WHERE db.ledger_date <= gs::date ORDER BY db.ledger_date DESC LIMIT 1)
              ),0)::float AS bal_sum
@@ -1171,13 +1284,14 @@ router.get('/company-dashboard', auth, async (req, res) => {
       WHERE gs::date BETWEEN $1 AND $2 GROUP BY 1
     `, [fromD, toD]);
     const floatDaily = await pool.query(`
-      WITH daybal AS (SELECT ledger_date, SUM(opening_balance) AS bal FROM daily_ledger GROUP BY ledger_date)
+      WITH daybal AS (SELECT ledger_date, SUM(opening_balance) FILTER (WHERE opening_balance > 0) AS bal FROM daily_ledger GROUP BY ledger_date)
       SELECT to_char(gs::date,'YYYY-MM-DD') AS d,
              (SELECT db.bal FROM daybal db WHERE db.ledger_date <= gs::date ORDER BY db.ledger_date DESC LIMIT 1)::float AS bal
       FROM generate_series($1::date, LEAST($2::date, (SELECT MAX(ledger_date) FROM daily_ledger)), interval '1 day') gs
     `, [fromD, toD]);
     const ledgerSnap = await pool.query(`
-      SELECT (SELECT MAX(ledger_date) FROM daily_ledger) AS d, COALESCE(SUM(opening_balance),0)::float AS bal
+      SELECT (SELECT MAX(ledger_date) FROM daily_ledger) AS d,
+             COALESCE(SUM(opening_balance) FILTER (WHERE opening_balance > 0),0)::float AS bal
       FROM daily_ledger WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)
     `);
     // Trade date = latest business date with REAL trades (turnover > 0). Ignores brokerage-only
@@ -1406,7 +1520,9 @@ router.post('/mapping-approvals/action', auth, async (req, res) => {
     );
     if (action === 'approve' && r.rows[0]?.ucc) {
       await client.query(
-        `UPDATE clients SET assigned_rm_id = $1, is_mapped = true, updated_at = NOW() WHERE ucc = $2`,
+        // mapped_at = COALESCE(existing, NOW()) so the FIRST mapping date is preserved and
+        // powers the RM Impact pre/post analysis. (Column added via migration; see notes.)
+        `UPDATE clients SET assigned_rm_id = $1, is_mapped = true, mapped_at = COALESCE(mapped_at, NOW()), updated_at = NOW() WHERE ucc = $2`,
         [r.rows[0].rm_id, r.rows[0].ucc]
       );
     }
@@ -1530,7 +1646,7 @@ router.get('/rm-performance', auth, async (req, res) => {
              COALESCE(MAX(ytd.rev),0)::float AS ytd_rev,
              (SELECT COUNT(*) FROM lead_pool lp WHERE COALESCE(lp.assigned_rm_id, lp.assigned_to_rm) = rm.id)::int AS leads,
              (SELECT COUNT(*) FROM lead_pool lp WHERE COALESCE(lp.assigned_rm_id, lp.assigned_to_rm) = rm.id AND lp.status='mapped')::int AS converted,
-             (SELECT COUNT(*) FROM interactions i WHERE i.rm_id = rm.id AND i.interaction_date >= date_trunc('month', CURRENT_DATE))::int AS interactions,
+             (SELECT COUNT(*) FROM interactions i WHERE i.rm_id = rm.id AND i.interaction_date::date BETWEEN $1 AND $2)::int AS interactions,
              COUNT(c.ucc) FILTER (WHERE sc.churn_risk_score >= 60)::int AS churn_alerts
       FROM rm_master rm
       LEFT JOIN clients c ON c.assigned_rm_id = rm.id
@@ -1572,7 +1688,10 @@ router.get('/rm-performance', auth, async (req, res) => {
     monthly.rows.forEach(r => {
       const k = mLabel(r.mon);
       (byMonth[k] = byMonth[k] || { month: k });
-      byMonth[k][r.rm_name] = +(Number(r.turnover) / 1e7).toFixed(2);
+      // Send RAW turnover (rupees); the frontend formats adaptively (₹K/L/Cr). Rounding to
+      // 2-decimal crores here flattened sub-₹1L months to 0.00 (invisible bars) and made
+      // clearly different months (e.g. ₹68k vs ₹1.01L) render as equal-height bars.
+      byMonth[k][r.rm_name] = Math.round(Number(r.turnover));
     });
     const chart = Object.values(byMonth);
 
@@ -1609,31 +1728,147 @@ router.get('/rm-performance', auth, async (req, res) => {
 router.get('/rm-impact', auth, async (req, res) => {
   try {
     const span = await pool.query(`
-      SELECT MIN(trade_date) AS min_d, MAX(trade_date) AS max_d,
-             ((MAX(trade_date) - MIN(trade_date)) / 30.0) AS months
-      FROM daily_trades
+      SELECT ((MAX(trade_date) - MIN(trade_date)) / 30.0) AS months FROM daily_trades
     `);
     const monthsSpan = Number(span.rows[0]?.months || 0);
-    const perRm = await pool.query(`
-      SELECT rm.rm_name, COUNT(c.ucc)::int AS clients
+
+    // Month math on 'YYYY-MM' keys
+    const addMon = (ym, k) => {
+      const [y, m] = ym.split('-').map(Number);
+      const idx = (y * 12 + (m - 1)) + k;
+      return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, '0')}`;
+    };
+    const WIN = 3;   // up to 3 calendar months on each side of the mapping (adaptive: fewer is OK)
+
+    // Total mapped clients per RM (live), even those we can't measure yet
+    const totalPerRm = await pool.query(`
+      SELECT rm.id, rm.rm_name, COUNT(c.ucc)::int AS clients
       FROM rm_master rm LEFT JOIN clients c ON c.assigned_rm_id = rm.id
-      GROUP BY rm.rm_name ORDER BY clients DESC
+      GROUP BY rm.id, rm.rm_name ORDER BY clients DESC
     `);
-    // "measured" = mapped clients with at least 3 months of trade history on each side — none yet
-    const insufficient = monthsSpan < 6;
+
+    // Per-mapped-client MONTHLY revenue (brokerage + clearing commission) and options turnover
+    const tradeMon = await pool.query(`
+      WITH mc AS (
+        SELECT ucc, assigned_rm_id, to_char(mapped_at,'YYYY-MM') AS map_mon
+        FROM clients
+        WHERE is_mapped = true AND mapped_at IS NOT NULL AND assigned_rm_id IS NOT NULL
+      )
+      SELECT mc.ucc, mc.assigned_rm_id AS rm_id, mc.map_mon,
+             to_char(dt.trade_date,'YYYY-MM') AS mon,
+             SUM(COALESCE(dt.brokerage_earned,0) + COALESCE(dt.commission_earned,0))::float AS rev,
+             SUM(COALESCE(dt.options_premium_turnover,0))::float AS opt_to
+      FROM mc JOIN daily_trades dt ON dt.ucc = mc.ucc
+      GROUP BY mc.ucc, mc.assigned_rm_id, mc.map_mon, mon
+    `);
+    // Per-client MONTHLY credit ledger balance (float base)
+    const ledgerMon = await pool.query(`
+      WITH mc AS (
+        SELECT ucc FROM clients WHERE is_mapped = true AND mapped_at IS NOT NULL AND assigned_rm_id IS NOT NULL
+      )
+      SELECT dl.ucc, to_char(dl.ledger_date,'YYYY-MM') AS mon,
+             AVG(dl.opening_balance) FILTER (WHERE dl.opening_balance > 0)::float AS bal
+      FROM mc JOIN daily_ledger dl ON dl.ucc = mc.ucc
+      GROUP BY dl.ucc, mon
+    `);
+    const nameRes = await pool.query(`SELECT ucc, name FROM clients WHERE is_mapped = true`);
+    const nameOf = {}; nameRes.rows.forEach(r => { nameOf[r.ucc] = r.name; });
+    const rmNameById = {}; totalPerRm.rows.forEach(r => { rmNameById[r.id] = r.rm_name; });
+
+    // Fold monthly rows into per-client structures
+    const cli = {};   // ucc -> { rm_id, map_mon, m:{mon:{rev,opt}}, bal:{mon:v} }
+    tradeMon.rows.forEach(r => {
+      const c = (cli[r.ucc] = cli[r.ucc] || { rm_id: r.rm_id, map_mon: r.map_mon, m: {}, bal: {} });
+      c.m[r.mon] = { rev: Number(r.rev) || 0, opt: Number(r.opt_to) || 0 };
+    });
+    ledgerMon.rows.forEach(r => { if (cli[r.ucc]) cli[r.ucc].bal[r.mon] = Number(r.bal) || 0; });
+
+    // Average a metric over the WIN months on one side (only months that actually have data)
+    const sideAvg = (months, pick) => {
+      let sum = 0, n = 0;
+      months.forEach(mon => { if (mon != null && pick(mon) != null) { sum += pick(mon); n++; } });
+      return n > 0 ? { avg: sum / n, n } : { avg: 0, n: 0 };
+    };
+
+    const measured = [];   // per-client measured records
+    for (const ucc of Object.keys(cli)) {
+      const c = cli[ucc];
+      const preM  = Array.from({ length: WIN }, (_, i) => addMon(c.map_mon, -(i + 1)));   // 3 months before
+      const postM = Array.from({ length: WIN }, (_, i) => addMon(c.map_mon, i));           // mapping month + 2
+      const revPre  = sideAvg(preM,  mon => c.m[mon]?.rev);
+      const revPost = sideAvg(postM, mon => c.m[mon]?.rev);
+      const optPre  = sideAvg(preM,  mon => c.m[mon]?.opt);
+      const optPost = sideAvg(postM, mon => c.m[mon]?.opt);
+      const balPre  = sideAvg(preM,  mon => c.bal[mon]);
+      const balPost = sideAvg(postM, mon => c.bal[mon]);
+      // Measured = at least one month of trade data on EACH side of the mapping
+      const isMeasured = (revPre.n > 0 || optPre.n > 0) && (revPost.n > 0 || optPost.n > 0);
+      if (!isMeasured) continue;
+      measured.push({
+        ucc, name: nameOf[ucc] || ucc, rm_id: c.rm_id, rm_name: rmNameById[c.rm_id] || '—',
+        map_mon: c.map_mon,
+        rev_pre: revPre.avg, rev_post: revPost.avg,
+        opt_pre: optPre.avg, opt_post: optPost.avg,
+        bal_pre: balPre.avg, bal_post: balPost.avg,
+      });
+    }
+
+    const round2 = (v) => Math.round(v * 100) / 100;
+    const pct = (a, b) => (b > 0 ? Math.round(((a - b) / b) * 100) : null);
+
+    // Per-RM aggregation (sum of member clients' avg-monthly figures = RM book/month)
+    const per_rm = totalPerRm.rows.map(r => {
+      const mine = measured.filter(x => x.rm_id === r.id);
+      const revPre  = mine.reduce((s, x) => s + x.rev_pre, 0);
+      const revPost = mine.reduce((s, x) => s + x.rev_post, 0);
+      const optPre  = mine.reduce((s, x) => s + x.opt_pre, 0);
+      const optPost = mine.reduce((s, x) => s + x.opt_post, 0);
+      const balPre  = mine.reduce((s, x) => s + x.bal_pre, 0);
+      const balPost = mine.reduce((s, x) => s + x.bal_post, 0);
+      const noImp = mine.filter(x => x.rev_post <= x.rev_pre).length;
+      return {
+        rm_name: r.rm_name, clients_measured: mine.length, total_clients: Number(r.clients),
+        rev_pre: round2(revPre), rev_post: round2(revPost), rev_change_pct: pct(revPost, revPre),
+        to_pre: round2(optPre), to_post: round2(optPost), to_change_pct: pct(optPost, optPre),   // raw ₹ (frontend formats adaptively)
+        float_change: round2(balPost - balPre), unmap_candidates: noImp,
+      };
+    });
+
+    // Team cards
+    const M = measured.length;
+    const revUp = measured.filter(x => x.rev_post > x.rev_pre).length;
+    const noImp = measured.filter(x => x.rev_post <= x.rev_pre).length;
+    const sum = (f) => measured.reduce((s, x) => s + f(x), 0);
+    const cards = {
+      rev_increase_pct:   M ? Math.round((revUp / M) * 100) : null,
+      to_increase_pct:    pct(sum(x => x.opt_post), sum(x => x.opt_pre)),
+      float_increase_pct: pct(sum(x => x.bal_post), sum(x => x.bal_pre)),
+      no_improve_pct:     M ? Math.round((noImp / M) * 100) : null,
+    };
+
+    // Unmap candidates — measured clients with no revenue lift
+    const no_improvement = measured
+      .filter(x => x.rev_post <= x.rev_pre)
+      .map(x => ({
+        ucc: x.ucc, name: x.name, rm_name: x.rm_name,
+        mapped_since: `${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][+x.map_mon.split('-')[1] - 1]} '${x.map_mon.split('-')[0].slice(2)}`,
+        to_pre: round2(x.opt_pre), to_post: round2(x.opt_post),   // raw ₹
+        rev_pre: round2(x.rev_pre), rev_post: round2(x.rev_post),
+        recommendation: x.rev_post < x.rev_pre
+          ? 'Revenue fell after mapping — review RM fit or consider reassignment.'
+          : 'No revenue lift after mapping — monitor next quarter.',
+      }));
 
     res.json({
       meta: {
-        insufficient_history: insufficient,
+        insufficient_history: M === 0,
         trade_months: Math.round(monthsSpan * 10) / 10,
-        reason: 'Pre/post-mapping comparison needs a stored mapping date and ~3 months of trade history before and after each mapping. The current trade window is too short and mapped-client history is not yet available.',
+        window_months: WIN,
+        measured_clients: M,
       },
-      cards: { rev_increase_pct: null, to_increase_pct: null, float_increase_pct: null, no_improve_pct: null },
-      per_rm: perRm.rows.map(r => ({
-        rm_name: r.rm_name, clients_measured: 0, total_clients: Number(r.clients),
-        rev_pre: null, rev_post: null, to_pre: null, to_post: null, float_change: null, unmap_candidates: 0,
-      })),
-      no_improvement: [],
+      cards,
+      per_rm,
+      no_improvement,
     });
   } catch (err) {
     console.error('RM-IMPACT ERROR:', err.message);
@@ -1835,7 +2070,20 @@ router.get('/daily-mis', auth, async (req, res) => {
              COUNT(DISTINCT ucc)::int AS clients
       FROM mtf_monthly WHERE month_year = (SELECT MAX(month_year) FROM mtf_monthly)
     `);
-    const ledger = await pool.query(`SELECT COALESCE(SUM(opening_balance),0)::float AS bal FROM daily_ledger WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)`);
+    // Distinct MTF clients per month — powers the Prior 1M/2M/3M columns on the MTF-clients
+    // activity row (MTF is a monthly book, so its per-month counts come from mtf_monthly, not
+    // the daily trades used by the other activity rows).
+    const mtfCliMonth = await pool.query(`
+      SELECT month_year, COUNT(DISTINCT ucc)::int AS clients,
+             COALESCE(SUM(avg_mtf_balance),0)::float AS funding
+      FROM mtf_monthly GROUP BY month_year
+    `);
+    const mtfCliByMonth = {}, mtfFundByMonth = {};
+    mtfCliMonth.rows.forEach(r => { mtfCliByMonth[r.month_year] = Number(r.clients); mtfFundByMonth[r.month_year] = Number(r.funding); });
+    // Float income accrues on CREDIT balances only (money lying with the broker). Debit
+    // clients (opening_balance < 0) owe money and earn no float, so they are excluded — a
+    // block of debit balances was pulling the net down (e.g. 31 Jul: net ₹40.8Cr vs credit ₹50.5Cr).
+    const ledger = await pool.query(`SELECT COALESCE(SUM(opening_balance) FILTER (WHERE opening_balance > 0),0)::float AS bal FROM daily_ledger WHERE ledger_date = (SELECT MAX(ledger_date) FROM daily_ledger)`);
 
     // Real daily MTF interest per date — each period's interest spread evenly across its days
     // (interest ÷ inclusive day-count). e.g. ₹7.02 over 04–10 Apr (7 days) = ₹1.00/day.
@@ -1857,7 +2105,7 @@ router.get('/daily-mis', auth, async (req, res) => {
     // first to the last ledger date; days beyond the latest ledger fall back to the latest snapshot.
     const floatByDate = {};
     const ledgerDaily = await pool.query(`
-      WITH daybal AS (SELECT ledger_date, SUM(opening_balance) AS bal FROM daily_ledger GROUP BY ledger_date)
+      WITH daybal AS (SELECT ledger_date, SUM(opening_balance) FILTER (WHERE opening_balance > 0) AS bal FROM daily_ledger GROUP BY ledger_date)
       SELECT to_char(gs::date,'YYYY-MM-DD') AS d,
              (SELECT db.bal FROM daybal db WHERE db.ledger_date <= gs::date ORDER BY db.ledger_date DESC LIMIT 1)::float AS bal
       FROM generate_series((SELECT MIN(ledger_date) FROM daily_ledger), (SELECT MAX(ledger_date) FROM daily_ledger), interval '1 day') gs
@@ -1999,6 +2247,17 @@ router.get('/daily-mis', auth, async (req, res) => {
         comm_fut: sum(x => x.comm_fut), comm_opt: sum(x => x.comm_opt), turnover: sum(x => x.turnover) } };
     }
 
+    // MTF book "Prior 3M avg" column: average each metric across the 3 prior calendar months
+    // (pm1/pm2/pm3), using only months that actually have MTF data. Daily interest is averaged
+    // the same way as the MTD column (per-day, from mtfByDate) so the columns are comparable.
+    const p3m = [pm1, pm2, pm3];
+    const meanOf = (arr) => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+    const p3Fund = meanOf(p3m.map(m => mtfFundByMonth[m]).filter(v => v != null));
+    const p3Cli  = meanOf(p3m.map(m => mtfCliByMonth[m]).filter(v => v != null));
+    const p3Apc  = meanOf(p3m.map(m => (mtfCliByMonth[m] ? mtfFundByMonth[m] / mtfCliByMonth[m] : null)).filter(v => v != null));
+    const p3RowsAll = [...p1Rows, ...p2Rows, ...p3Rows];
+    const p3DailyInt = p3RowsAll.length ? avg(p3RowsAll, r => mtfByDate[r.d] || 0) : null;
+
     res.json({
       range,
       meta: { today: fmtDate(today?.d), yesterday_date: fmtDate(yday?.d), day_before_date: fmtDate(dbef?.d),
@@ -2017,7 +2276,15 @@ router.get('/daily-mis', auth, async (req, res) => {
         actSeg('F&O clients (Eq)', r => r.fo_eq_clients),
         actSeg('F&O clients (Comm)', r => r.fo_comm_clients),
         actSeg('Equity cash clients', r => r.cash_clients),
-        { category: 'MTF clients', today: Number(mtf.rows[0]?.clients || 0), yesterday: Number(mtf.rows[0]?.clients || 0), mtd_avg: Number(mtf.rows[0]?.clients || 0), prior1m_avg: null, prior2m_avg: null, prior3m_avg: null, vs: null },
+        // MTF is a monthly book, so each column is that month's distinct MTF clients (from
+        // mtf_monthly): current month for today/MTD, and the three prior calendar months for
+        // Prior 1M/2M/3M. `?? null` keeps a month with no MTF data blank ("—") rather than 0.
+        (() => {
+          const cur = mtfCliByMonth[curMonth] ?? 0;
+          const p1 = mtfCliByMonth[pm1] ?? null, p2 = mtfCliByMonth[pm2] ?? null, p3 = mtfCliByMonth[pm3] ?? null;
+          return { category: 'MTF clients', note: 'monthly book', today: cur, yesterday: cur, mtd_avg: cur,
+                   prior1m_avg: p1, prior2m_avg: p2, prior3m_avg: p3, vs: vsPct(cur, p3 || 0) };
+        })(),
         actSeg('Resident clients', r => r.resident_clients),
         actSeg('NRI clients', r => r.nri_clients),
       ],
@@ -2026,6 +2293,9 @@ router.get('/daily-mis', auth, async (req, res) => {
         clients: Number(mtf.rows[0]?.clients || 0),
         daily_interest: Math.round(mtfToday), mtd_interest: Math.round(mtfMtd),
         avg_per_client: Number(mtf.rows[0]?.clients || 0) > 0 ? Number(mtf.rows[0]?.bal || 0) / Number(mtf.rows[0]?.clients || 0) : 0,
+        // Prior-3-month averages for the MTF book "Prior 3M avg" column (null → "—").
+        prior3m_funding: p3Fund, prior3m_clients: p3Cli == null ? null : Math.round(p3Cli),
+        prior3m_avg_per_client: p3Apc, prior3m_daily_interest: p3DailyInt == null ? null : Math.round(p3DailyInt),
       },
       revenue_mix: revenueMix,
       trend: rows.slice(Math.max(0, anchorIdx - 16), anchorIdx + 1).map(r => ({
@@ -2037,6 +2307,248 @@ router.get('/daily-mis', auth, async (req, res) => {
     console.error('DAILY-MIS ERROR:', err.message);
     res.status(500).json({ message: 'Server error' });
   }
+});
+
+// ============================================================================
+// CORPORATE DAILY MIS — export & email (PDF / Excel / email to management)
+// The client POSTs the already-loaded /daily-mis payload so the export matches
+// exactly what the supervisor sees on screen (including any validated range).
+// PDF  : pdfmake with the built-in Helvetica AFM fonts — no font files shipped,
+//        so amounts use "Rs" notation (the ₹ glyph is absent from WinAnsi Helvetica).
+// Excel: the xlsx package already used by the importer, one sheet per section.
+// Email: nodemailer 'updates' mailbox, with the PDF + Excel attached.
+// ============================================================================
+const PDF_FONTS = {
+  Helvetica: { normal: 'Helvetica', bold: 'Helvetica-Bold', italics: 'Helvetica-Oblique', bolditalics: 'Helvetica-BoldOblique' },
+};
+const misPrinter = new PdfPrinter(PDF_FONTS);
+
+const misRs  = (n) => (n == null || n === '' || isNaN(Number(n))) ? '—' : 'Rs ' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+const misPct = (n) => (n == null) ? '—' : (Number(n) >= 0 ? '+' : '') + n + '%';
+const misNum = (n) => (n == null) ? '—' : Number(n).toLocaleString('en-IN');
+const misEsc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// One normalized list of tables from a daily-mis payload.
+// Each: { sheet, title, headers[], rows[][] (display strings) } — reused by PDF, Excel and email.
+function misTables(data) {
+  const d = data || {}, meta = d.meta || {}, tables = [];
+  if (Array.isArray(d.income) && d.income.length) tables.push({
+    sheet: 'Income', title: 'Daily income summary — all revenue lines',
+    headers: ['Revenue line', `Last traded (${meta.today || ''})`, `Prev day (${meta.yesterday_date || ''})`, `2nd prev (${meta.day_before_date || ''})`, 'MTD avg', 'Prior 1M', 'Prior 2M', 'Prior 3M', 'vs 3M', 'Share'],
+    rows: d.income.map((r) => [
+      (r.line || '') + (r.note ? ` (${r.note})` : ''),
+      misRs(r.today), misRs(r.yesterday), misRs(r.day_before),
+      misRs(r.mtd_avg), misRs(r.prior1m_avg), misRs(r.prior2m_avg), misRs(r.prior3m_avg),
+      misPct(r.vs), r.total ? '100%' : (r.share == null ? '—' : r.share + '%'),
+    ]),
+  });
+  if (Array.isArray(d.volume) && d.volume.length) tables.push({
+    sheet: 'Volume', title: 'Daily volume — all segments (Rs Cr)',
+    headers: ['Segment', `Last traded (${meta.today || ''})`, `Prev day (${meta.yesterday_date || ''})`, 'MTD avg', 'Prior 1M', 'Prior 2M', 'Prior 3M', 'vs 3M', 'Expiry premium'],
+    rows: d.volume.map((r) => [
+      r.segment || '',
+      r.today + ' Cr', r.yesterday + ' Cr', r.mtd_avg + ' Cr', r.prior1m_avg + ' Cr', r.prior2m_avg + ' Cr', r.prior3m_avg + ' Cr',
+      misPct(r.vs), r.expiry_premium == null ? '—' : misPct(r.expiry_premium) + ' vs normal',
+    ]),
+  });
+  if (Array.isArray(d.activity) && d.activity.length) tables.push({
+    sheet: 'Activity', title: 'Daily client activity',
+    headers: ['Category', `Last traded (${meta.today || ''})`, `Prev day (${meta.yesterday_date || ''})`, 'MTD avg', 'Prior 1M', 'Prior 2M', 'Prior 3M', 'vs 3M'],
+    rows: d.activity.map((r) => [
+      (r.category || '') + (r.note ? ` (${r.note})` : ''),
+      misNum(r.today), misNum(r.yesterday), misNum(r.mtd_avg), misNum(r.prior1m_avg), misNum(r.prior2m_avg), misNum(r.prior3m_avg), misPct(r.vs),
+    ]),
+  });
+  if (d.mtf) { const m = d.mtf; tables.push({
+    sheet: 'MTF', title: 'MTF book summary',
+    headers: ['Metric', 'Value'],
+    rows: [
+      ['Net MTF funding (Rs Cr)', (Number(m.funding || 0) / 1e7).toFixed(2)],
+      ['MTF interest earned today (Rs)', misRs(m.daily_interest)],
+      ['MTF interest MTD (Rs)', misRs(m.mtd_interest)],
+      ['MTF clients', misNum(m.clients)],
+      ['Avg book per client (Rs L)', (Number(m.avg_per_client || 0) / 1e5).toFixed(2)],
+    ],
+  }); }
+  if (Array.isArray(d.revenue_mix) && d.revenue_mix.length) tables.push({
+    sheet: 'Revenue mix', title: `Revenue mix — ${meta.today || ''}`,
+    headers: ['Stream', 'Share'],
+    rows: d.revenue_mix.map((r) => [r.label || '', (r.pct == null ? '—' : r.pct + '%')]),
+  });
+  if (Array.isArray(d.trend) && d.trend.length) tables.push({
+    sheet: 'Trend', title: 'Recent trading-day trend',
+    headers: ['Date', 'Revenue (Rs L)', 'Options prem TO (Rs Cr)', 'Clients traded', 'Expiry day'],
+    rows: d.trend.map((r) => ['' + r.date, 'Rs ' + r.revenue_l + ' L', 'Rs ' + r.options_cr + ' Cr', misNum(r.clients), r.is_expiry ? 'Yes' : '—']),
+  });
+  if (d.range && Array.isArray(d.range.days) && d.range.days.length) { const t = d.range.totals || {}; tables.push({
+    sheet: 'Range validation', title: `Selected range — daily revenue validation (${d.range.from} to ${d.range.to})`,
+    headers: ['Date', 'MTF interest', 'Equity brokerage', 'Clearing (comm)', 'Float income', 'Day total'],
+    rows: [
+      ...d.range.days.map((x) => [x.label, misRs(x.mtf_interest), misRs(x.brokerage), misRs(x.commission), misRs(x.float_income), misRs(x.total)]),
+      [`Total (${d.range.days.length} days)`, misRs(t.mtf_interest), misRs(t.brokerage), misRs(t.commission), misRs(t.float_income), misRs(t.total)],
+    ],
+  }); }
+  return tables;
+}
+
+function buildMisPdf(data) {
+  const meta = (data && data.meta) || {};
+  const content = [
+    { text: 'Navia Markets', style: 'brand' },
+    { text: 'Corporate Daily MIS', style: 'h1' },
+    { text: `As of ${meta.today || '—'}${meta.is_expiry ? '  ·  weekly expiry day' : ''}`, style: 'sub' },
+    { text: `Generated ${new Date().toLocaleString('en-IN')}`, style: 'sub2', margin: [0, 0, 0, 10] },
+  ];
+  misTables(data).forEach((tb) => {
+    content.push({ text: tb.title, style: 'h2', margin: [0, 8, 0, 4] });
+    content.push({
+      table: {
+        headerRows: 1,
+        widths: tb.headers.map((h, i) => (i === 0 ? '*' : 'auto')),
+        body: [
+          tb.headers.map((h) => ({ text: h, style: 'th' })),
+          ...tb.rows.map((r) => r.map((c, i) => ({ text: c, style: i === 0 ? 'tdL' : 'td' }))),
+        ],
+      },
+      layout: {
+        fillColor: (rowIndex) => (rowIndex === 0 ? '#1B3F7A' : rowIndex % 2 === 0 ? '#f3f6fb' : null),
+        hLineWidth: () => 0.5, vLineWidth: () => 0, hLineColor: () => '#d9e1ee',
+      },
+    });
+  });
+  content.push({ text: 'Float income = client credit ledger balance × FD rate ÷ 365. Amounts in Rs; "Cr" = crore, "L" = lakh. Figures reflect the last traded date.', style: 'foot', margin: [0, 12, 0, 0] });
+
+  const docDefinition = {
+    pageOrientation: 'landscape', pageSize: 'A4', pageMargins: [24, 28, 24, 28],
+    defaultStyle: { font: 'Helvetica', fontSize: 8, color: '#1f2a44' },
+    content,
+    styles: {
+      brand: { fontSize: 10, bold: true, color: '#1B3F7A' },
+      h1: { fontSize: 16, bold: true, margin: [0, 2, 0, 0] },
+      sub: { fontSize: 9, color: '#5b6577' },
+      sub2: { fontSize: 8, color: '#9aa3b2' },
+      h2: { fontSize: 10, bold: true, color: '#1B3F7A' },
+      th: { fontSize: 7.5, bold: true, color: '#ffffff', margin: [1, 3, 1, 3] },
+      td: { fontSize: 7.5, alignment: 'right', margin: [1, 2, 1, 2] },
+      tdL: { fontSize: 7.5, alignment: 'left', margin: [1, 2, 1, 2] },
+      foot: { fontSize: 7, italics: true, color: '#9aa3b2' },
+    },
+    footer: (cur, tot) => ({ text: `Navia ClientIQ · Corporate Daily MIS · page ${cur} of ${tot}`, alignment: 'center', fontSize: 7, color: '#9aa3b2', margin: [0, 6, 0, 0] }),
+  };
+
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = misPrinter.createPdfKitDocument(docDefinition);
+      const chunks = [];
+      doc.on('data', (c) => chunks.push(c));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
+      doc.end();
+    } catch (e) { reject(e); }
+  });
+}
+
+function buildMisXlsx(data) {
+  const wb = XLSX.utils.book_new();
+  const meta = (data && data.meta) || {};
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+    ['Navia Markets — Corporate Daily MIS'],
+    ['As of', meta.today || ''],
+    ['Expiry day', meta.is_expiry ? 'Yes' : 'No'],
+    ['Generated', new Date().toLocaleString('en-IN')],
+  ]), 'Summary');
+  const used = {};
+  misTables(data).forEach((tb) => {
+    let name = (tb.sheet || 'Sheet').slice(0, 31);
+    if (used[name]) { name = (name.slice(0, 28) + ' ' + (++used[name])).slice(0, 31); } else { used[name] = 1; }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([tb.headers, ...tb.rows]), name);
+  });
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+function misSummaryHtml(data, note) {
+  const meta = (data && data.meta) || {};
+  let html = '<div style="font-family:Arial,sans-serif;max-width:840px;margin:0 auto;color:#1f2a44">'
+    + '<div style="background:#1B3F7A;padding:16px 20px;border-radius:8px 8px 0 0"><h2 style="color:#fff;margin:0">Navia Markets — Corporate Daily MIS</h2>'
+    + `<div style="color:#cdd8ee;font-size:13px;margin-top:4px">As of ${misEsc(meta.today || '—')}${meta.is_expiry ? ' · weekly expiry day' : ''}</div></div>`
+    + '<div style="padding:16px 20px;border:1px solid #e6e9f0;border-top:none;border-radius:0 0 8px 8px">';
+  if (note) html += `<p style="background:#f3f6fb;padding:10px 12px;border-radius:6px;font-size:14px;white-space:pre-wrap">${misEsc(note)}</p>`;
+  misTables(data).forEach((tb) => {
+    html += `<h3 style="color:#1B3F7A;font-size:14px;margin:16px 0 6px">${misEsc(tb.title)}</h3>`
+      + '<table style="border-collapse:collapse;width:100%;font-size:12px"><thead><tr>'
+      + tb.headers.map((h) => `<th style="background:#1B3F7A;color:#fff;text-align:left;padding:5px 7px;font-weight:600">${misEsc(h)}</th>`).join('')
+      + '</tr></thead><tbody>'
+      + tb.rows.map((r, ri) => `<tr style="background:${ri % 2 ? '#fff' : '#f3f6fb'}">` + r.map((c, ci) => `<td style="padding:4px 7px;border-bottom:1px solid #e6e9f0;text-align:${ci ? 'right' : 'left'}">${misEsc(c)}</td>`).join('') + '</tr>').join('')
+      + '</tbody></table>';
+  });
+  html += `<p style="font-size:11px;color:#9aa3b2;margin-top:16px">Generated ${misEsc(new Date().toLocaleString('en-IN'))} · Navia ClientIQ. Amounts in Rs; Cr = crore, L = lakh. Full PDF and Excel are attached.</p></div></div>`;
+  return html;
+}
+
+// 'updates' mailbox — same host/credentials the app already uses for client updates.
+function misMailer() {
+  return {
+    transporter: nodemailer.createTransport({
+      host: 'smtp.zatpatmail.com', port: 587, secure: false,
+      auth: { user: 'emailapikey', pass: 'PHtE6r1YS+Hq2Wcs9RMF7fKxEc/wPIksq+IzKAZHuYpLDvRXFk0Br9F/wzO/rxcoBvEQE/+fnoNgtLuf4L3Xc27vMG5FX2qyqK3sx/VYSPOZsbq6x00fuVkZcUzUUY7od9Nj3CHVstbaNA==' },
+    }),
+    from: 'updates@navia.co.in',
+  };
+}
+
+// POST /analytics/daily-mis/export/pdf  { data }
+router.post('/daily-mis/export/pdf', auth, async (req, res) => {
+  try {
+    const data = req.body && req.body.data;
+    if (!data || !data.meta) return res.status(400).json({ message: 'Missing MIS data' });
+    const pdf = await buildMisPdf(data);
+    const fname = `Daily_MIS_${String(data.meta.today || 'export').replace(/[^\w]+/g, '_')}.pdf`;
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+    res.send(pdf);
+  } catch (err) { console.error('MIS PDF ERROR:', err); res.status(500).json({ message: 'Could not build PDF' }); }
+});
+
+// POST /analytics/daily-mis/export/xlsx  { data }
+router.post('/daily-mis/export/xlsx', auth, async (req, res) => {
+  try {
+    const data = req.body && req.body.data;
+    if (!data || !data.meta) return res.status(400).json({ message: 'Missing MIS data' });
+    const buf = buildMisXlsx(data);
+    const fname = `Daily_MIS_${String(data.meta.today || 'export').replace(/[^\w]+/g, '_')}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+    res.send(buf);
+  } catch (err) { console.error('MIS XLSX ERROR:', err); res.status(500).json({ message: 'Could not build Excel' }); }
+});
+
+// POST /analytics/daily-mis/email  { data, to, note } — sends the MIS with PDF + Excel attached.
+router.post('/daily-mis/email', auth, async (req, res) => {
+  try {
+    const { data, to, note } = req.body || {};
+    if (!data || !data.meta) return res.status(400).json({ message: 'Missing MIS data' });
+    const recipients = String(to || '').split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (!recipients.length) return res.status(400).json({ message: 'Enter at least one recipient email.' });
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    const bad = recipients.filter((r) => !emailRe.test(r));
+    if (bad.length) return res.status(400).json({ message: 'Invalid email(s): ' + bad.join(', ') });
+
+    const pdf = await buildMisPdf(data);
+    const xlsx = buildMisXlsx(data);
+    const dtag = String(data.meta.today || 'export').replace(/[^\w]+/g, '_');
+    const { transporter, from } = misMailer();
+    await transporter.sendMail({
+      from: '"Navia Markets MIS" <' + from + '>',
+      to: recipients.join(', '),
+      subject: `Corporate Daily MIS — ${data.meta.today || ''}`,
+      html: misSummaryHtml(data, note),
+      attachments: [
+        { filename: `Daily_MIS_${dtag}.pdf`, content: pdf },
+        { filename: `Daily_MIS_${dtag}.xlsx`, content: xlsx },
+      ],
+    });
+    res.json({ success: true, message: `MIS emailed to ${recipients.join(', ')} (PDF + Excel attached).` });
+  } catch (err) { console.error('MIS EMAIL ERROR:', err); res.status(500).json({ message: err.message || 'Could not send email' }); }
 });
 
 const MON_A = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -2124,6 +2636,19 @@ router.get('/retention', auth, async (req, res) => {
     const latest = seg.rows.length ? seg.rows[seg.rows.length - 1] : null;
     const asOfRet = await pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') a FROM daily_trades`);
 
+    // #7 "RD" = Revenue per Day. Per month: total book revenue (brokerage + clearing commission)
+    // ÷ number of actual trading days that month. Exposes the PREVIOUS month's avg/day (and the
+    // current month's, for context). Trading days = distinct dates with real turnover.
+    const revDay = await pool.query(`
+      SELECT to_char(trade_date,'YYYY-MM') AS mon,
+             COALESCE(SUM(brokerage_earned + commission_earned),0)::float AS revenue,
+             COUNT(DISTINCT trade_date)::int AS days
+      FROM daily_trades WHERE turnover > 0 GROUP BY 1 ORDER BY 1
+    `);
+    const rdRows = revDay.rows.map(r => ({ mon: r.mon, rd: Number(r.days) ? Number(r.revenue) / Number(r.days) : 0 }));
+    const rdCurr = rdRows.length ? rdRows[rdRows.length - 1] : null;
+    const rdPrev = rdRows.length > 1 ? rdRows[rdRows.length - 2] : null;
+
     // ── Cohort retention matrix + blended curve ──────────────────────────────
     // We can only OBSERVE retention in a calendar month for which we actually hold
     // trade files. So for a cohort that opened in month C, the cell "M-k" (k months
@@ -2167,8 +2692,8 @@ router.get('/retention', auth, async (req, res) => {
     }
     const cohortRows = cohorts.rows.slice().reverse().map(r => {
       const cmon = r.mon, opened = Number(r.opened);
-      const ret = {};              // k(1..12) -> pct | null
-      for (let k = 1; k <= 12; k++) {
+      const ret = {};              // k(0..12) -> pct | null   (#14: M0 = opening month itself)
+      for (let k = 0; k <= 12; k++) {
         const target = addMonths(cmon, k);
         if (!dataMonths.has(target)) { ret[k] = null; continue; }   // month not observed → "—"
         const act = (activeByCohortK[cmon] && activeByCohortK[cmon][k]) || 0;
@@ -2212,6 +2737,11 @@ router.get('/retention', auth, async (req, res) => {
         retention_30: curvePct(1),
         retention_90: curvePct(3),
         churn: (latest && prevObserved) ? Number(latest.churned) : null,
+        // #7 Revenue per Day — previous month's average, with label + current month for context
+        rd_prev_month: rdPrev ? +rdPrev.rd.toFixed(2) : null,
+        rd_prev_label: rdPrev ? monLbl(rdPrev.mon) : null,
+        rd_curr_month: rdCurr ? +rdCurr.rd.toFixed(2) : null,
+        rd_curr_label: rdCurr ? monLbl(rdCurr.mon) : null,
       },
       monthly_active: a,
       cohorts: cohortRows,

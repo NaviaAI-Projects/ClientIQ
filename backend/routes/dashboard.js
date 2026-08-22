@@ -50,17 +50,27 @@ router.get('/rm', auth, async (req, res) => {
   try {
     const userResult = await pool.query('SELECT name FROM users WHERE id = $1 LIMIT 1', [req.user.id]);
     const userName   = userResult.rows[0]?.name || '';
-    const rmResult   = await pool.query('SELECT id FROM rm_master WHERE LOWER(rm_name) = LOWER($1) LIMIT 1', [userName]);
+    const rmResult   = await pool.query('SELECT id, capacity FROM rm_master WHERE LOWER(rm_name) = LOWER($1) LIMIT 1', [userName]);
     const rmId       = rmResult.rows[0]?.id || null;
+    const rmCapacity = rmResult.rows[0]?.capacity != null ? parseInt(rmResult.rows[0].capacity) : null;
 
     if (!rmId) {
       console.warn(`No rm_master record for user: ${userName}`);
       return res.json({ my_clients: 0, my_leads: 0, interactions_30d: 0 });
     }
 
-    const [clients, leads, interactions, asOf, rev, monthlyBrok, monthlyMtf, top] = await Promise.all([
+    const [clients, leads, optedIn, churn, interactions, asOf, rev, monthlyBrok, monthlyMtf, top] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM clients WHERE assigned_rm_id = $1', [rmId]),
       pool.query("SELECT COUNT(*) FROM lead_pool WHERE assigned_to_rm = $1 AND status = 'assigned'", [rmId]),
+      // "Interested" = leads that have opted in (real lifecycle state), still awaiting mapping
+      pool.query("SELECT COUNT(*) FROM lead_pool WHERE assigned_to_rm = $1 AND status = 'opted_in'", [rmId]),
+      // Churn alerts = mapped clients whose latest churn risk score is high (0–10 scale, ≥7)
+      pool.query(`
+        SELECT COUNT(*) FROM clients c
+        JOIN ai_scores a ON a.ucc = c.ucc
+          AND a.score_date = (SELECT MAX(score_date) FROM ai_scores WHERE ucc = c.ucc)
+        WHERE c.assigned_rm_id = $1 AND a.churn_risk_score >= 7
+      `, [rmId]),
       pool.query(`
         SELECT COUNT(*) FROM interactions
         WHERE rm_id = $1
@@ -88,13 +98,12 @@ router.get('/rm', auth, async (req, res) => {
       `, [rmId]),
       // Monthly brokerage (last 6 months) for this RM's clients
       pool.query(`
-        SELECT to_char(to_date(cms.month_year||'-01','YYYY-MM-DD'),'Mon'' 'YY') AS month,
-               to_date(cms.month_year||'-01','YYYY-MM-DD') AS ms,
+        SELECT to_date(cms.month_year||'-01','YYYY-MM-DD') AS ms,
                COALESCE(SUM(cms.brokerage),0)::float AS brokerage
         FROM client_monthly_summary cms
         JOIN clients c ON c.ucc = cms.ucc AND c.assigned_rm_id = $1
         WHERE cms.month_year >= to_char((SELECT MAX(trade_date) FROM daily_trades) - INTERVAL '6 months','YYYY-MM')
-        GROUP BY 1, 2 ORDER BY ms
+        GROUP BY 1 ORDER BY 1
       `, [rmId]),
       // Monthly MTF interest for this RM's clients
       pool.query(`
@@ -129,14 +138,23 @@ router.get('/rm', auth, async (req, res) => {
     const mtdMtf  = monthly.length ? monthly[monthly.length-1].MTF : 0;
     const mtdTotal = mtdBrok + mtdMtf;
 
+    const toContact  = parseInt(leads.rows[0].count);      // assigned, not yet opted in
+    const interested = parseInt(optedIn.rows[0].count);    // opted in (real lifecycle state)
+
     res.json({
       rm_name:          userName || 'RM',
       data_as_of:       asOf.rows[0]?.d || null,
       my_clients:       parseInt(clients.rows[0].count),
-      my_leads:         parseInt(leads.rows[0].count),
+      capacity:         rmCapacity,                          // real RM capacity (null if unset)
+      my_leads:         toContact + interested,              // active = to-contact + interested
+      interested_leads: interested,
+      to_contact:       toContact,
+      churn_alerts:     parseInt(churn.rows[0].count),
       interactions_30d: parseInt(interactions.rows[0].count),
       // Real revenue figures (null-safe; will be 0 when the RM has no mapped clients yet)
       mtd_revenue:      mtdTotal,
+      mtd_brokerage:    mtdBrok,
+      mtd_mtf:          mtdMtf,
       ytd_revenue:      Number(r0.ytd_brokerage || 0) + monthlyMtf.rows.reduce((s,r)=>s+Number(r.mtf),0),
       revenue_clients:  parseInt(r0.revenue_clients || 0),
       brokerage_share:  mtdTotal > 0 ? Math.round(mtdBrok / mtdTotal * 100) : null,

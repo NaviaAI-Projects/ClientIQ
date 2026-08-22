@@ -77,6 +77,14 @@ router.get('/my/clients', auth, async (req, res) => {
       return res.json([]); // or appropriate empty response
     }
 
+    // Optional dormant filter (used by the Dormant Clients page): mapped clients who
+    // previously traded but have had no trade for >3 months. Default (no param) is
+    // unchanged — returns all of the RM's mapped clients (used by Mapped Clients).
+    const dormantOnly = req.query.dormant === 'true';
+    const dormantClause = dormantOnly
+      ? `AND c.last_trade_date IS NOT NULL AND c.last_trade_date < (CURRENT_DATE - INTERVAL '3 months')`
+      : '';
+
     const result = await pool.query(`
       SELECT c.*,
         rm.rm_name as rm_name,
@@ -85,6 +93,7 @@ router.get('/my/clients', auth, async (req, res) => {
       FROM clients c
       LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
       WHERE c.assigned_rm_id = $1
+      ${dormantClause}
       ORDER BY c.name ASC
     `, [rmId]);
 
@@ -186,6 +195,61 @@ router.get('/:ucc/chart-data', auth, async (req, res) => {
       });
 
     res.json(chartData);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// #20 Client 360 income/revenue breakup — 4 sections: Clearing charges, Turnover, Float, MTF.
+// Computed over all trade detail held for the client (the ~90-day retained window).
+router.get('/:ucc/income-breakup', auth, async (req, res) => {
+  try {
+    const { ucc } = req.params;
+    const fdRow = await pool.query(`
+      SELECT COALESCE(
+        (SELECT rate FROM float_rate_history h WHERE h.effective_from <= (SELECT MAX(ledger_date) FROM daily_ledger) ORDER BY h.effective_from DESC LIMIT 1),
+        (SELECT value::numeric FROM settings WHERE key='fd_rate'),
+        6.5) AS fd_rate`);
+    const fdRate = parseFloat(fdRow.rows[0]?.fd_rate ?? 6.5);
+
+    const trade = await pool.query(`
+      SELECT COALESCE(SUM(turnover),0)::float           AS turnover,
+             COALESCE(SUM(commission_earned),0)::float  AS clearing,
+             COALESCE(SUM(brokerage_earned),0)::float   AS brokerage,
+             MIN(trade_date) AS from_d, MAX(trade_date) AS to_d,
+             COUNT(DISTINCT trade_date)::int            AS trade_days
+      FROM daily_trades WHERE ucc = $1
+    `, [ucc]);
+
+    const mtf = await pool.query(`
+      SELECT COALESCE(SUM(interest),0)::float AS mtf FROM mtf_interest WHERE ucc = $1
+    `, [ucc]);
+
+    const led = await pool.query(`
+      SELECT opening_balance::float AS bal, ledger_date
+      FROM daily_ledger WHERE ucc = $1 ORDER BY ledger_date DESC LIMIT 1
+    `, [ucc]);
+    // Float accrues only on a CREDIT (positive) ledger balance. Monthly estimate = credit × rate ÷ 365 × 30.
+    const creditBal = Math.max(0, Number(led.rows[0]?.bal || 0));
+    const floatMonthly = creditBal * (fdRate / 100) / 365 * 30;
+
+    const t = trade.rows[0] || {};
+    const clearing = Number(t.clearing || 0);
+    const mtfInterest = Number(mtf.rows[0]?.mtf || 0);
+
+    res.json({
+      fd_rate: fdRate,
+      window: { from: t.from_d || null, to: t.to_d || null, trade_days: Number(t.trade_days || 0) },
+      turnover: Number(t.turnover || 0),
+      clearing,
+      brokerage: Number(t.brokerage || 0),
+      mtf_interest: mtfInterest,
+      float_income: floatMonthly,
+      ledger_balance: creditBal,
+      ledger_date: led.rows[0]?.ledger_date || null,
+      // Revenue = income streams only (turnover is volume, shown for context, not summed here)
+      total_income: clearing + mtfInterest + floatMonthly,
+    });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import api from '../api';
-import { InfoBtn, NotesBtn, DateRange, rangeParams } from '../components/ui';
+import { InfoBtn, NotesBtn, ViewToggle, DateRange, rangeParams } from '../components/ui';
 
 const rupee = (n) => {
   const v = Number(n) || 0;
@@ -51,17 +51,35 @@ const RMPerformance = () => {
 
       <div className="panel">
         <div className="ptitle">📊 RM revenue comparison (5 months)
-          <InfoBtn text="Monthly client turnover per RM (₹Cr) over the last few months, as an activity proxy for revenue. Independent of the date-range filter above." />
+          <InfoBtn text="Monthly client turnover per RM over the last few months, as an activity proxy for revenue. Amounts auto-scale (₹ / L / Cr). Independent of the date-range filter above." />
           <NotesBtn text={"Bars show each RM's total client turnover per calendar month (₹ crore), not brokerage — brokerage revenue is thin until the brokerage file is imported.\n\nThis 5-month trend is fixed and does NOT change with the date-range filter; the filter drives the KPI cards and the detailed table below.\n\nTurnover = EQ cash + EQ F&O + commodity F&O + options premium, summed across the RM's mapped clients."} /></div>
+        <ViewToggle
+          chart={
         <ResponsiveContainer width="100%" height={220}>
           <BarChart data={chart} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
             <XAxis dataKey="month" tick={{ fontSize: 10 }} />
-            <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v + 'Cr'} />
-            <Tooltip formatter={v => '₹' + v + 'Cr'} /><Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
+            <YAxis tick={{ fontSize: 10 }} tickFormatter={rupee} />
+            <Tooltip formatter={v => rupee(v)} /><Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
             {rm_names.map((rm, i) => <Bar key={rm} dataKey={rm} fill={BAR_COLORS[i % BAR_COLORS.length]} radius={[3, 3, 0, 0]} />)}
           </BarChart>
         </ResponsiveContainer>
+          }
+          table={
+            <table>
+              <thead><tr><th>Month</th>{rm_names.map(rm => <th key={rm}>{rm} turnover</th>)}</tr></thead>
+              <tbody>
+                {chart.map(row => (
+                  <tr key={row.month}>
+                    <td>{row.month}</td>
+                    {rm_names.map(rm => <td key={rm}>{row[rm] != null ? rupee(row[rm]) : '—'}</td>)}
+                  </tr>
+                ))}
+                {chart.length === 0 && <tr><td colSpan={rm_names.length + 1} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
+              </tbody>
+            </table>
+          }
+        />
         <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Revenue is brokerage-based (thin until imported); chart shows client turnover per RM as the activity proxy.</p>
       </div>
 

@@ -57,6 +57,23 @@ function cleanMobile(number) {
   return num.slice(-10);
 }
 
+// ── Helper: org-wide click-to-call config from Admin → API Integrations (settings table).
+// Falls back to the hardcoded SmartFlo endpoint / caller ID when a field is left blank.
+async function getCallConfig() {
+  const s = {};
+  try {
+    const r = await pool.query(
+      "SELECT key, value FROM settings WHERE key IN ('click_to_call_url','click_to_call_key','caller_id')"
+    );
+    r.rows.forEach(row => { s[row.key] = row.value; });
+  } catch (e) { console.log('call config fetch failed:', e.message); }
+  return {
+    url:      (s.click_to_call_url || '').trim() || SMARTFLO_INBOUND_URL,
+    apiKey:   (s.click_to_call_key || '').trim(),
+    callerId: (s.caller_id || '').trim() || CALLER_ID_WITH_CODE,
+  };
+}
+
 // ══════════════════════════════════════════════
 // POST /api/calls/click-to-call
 // ══════════════════════════════════════════════
@@ -65,20 +82,33 @@ router.post('/click-to-call', auth, async (req, res) => {
   if (!ucc) return res.status(400).json({ message: 'UCC is required' });
 
   try {
-    // 1. Get RM's smartflo api key
+    // 1. Resolve the click-to-call API key. Prefer the org-wide key configured in
+    //    Admin → API Integrations (settings.click_to_call_key); fall back to a per-RM
+    //    key (users.smartflo_api_key) only if the global one is not set.
+    const cfg = await getCallConfig();
     const userResult = await pool.query(
-      'SELECT name, smartflo_api_key FROM users WHERE id = $1',
+      'SELECT name, phone, smartflo_api_key FROM users WHERE id = $1',
       [req.user.id]
     );
-    const rmUser = userResult.rows[0];
+    const rmUser = userResult.rows[0] || {};
+    const apiKey = cfg.apiKey || rmUser.smartflo_api_key;
 
-    if (!rmUser?.smartflo_api_key) {
+    if (!apiKey) {
       return res.status(400).json({
-        message: 'Smartflo API key not configured for your account. Contact admin.'
+        message: 'Click-to-call API key not configured. Set it in Admin → API Integrations (Click-to-call → API Key).'
       });
     }
 
-    // 2. Get client mobile
+    // 2. Agent number = the RM's phone / SmartFlo extension (SmartFlo dials the agent to bridge).
+    //    Digits only, no truncation (an extension can be longer than 10 digits).
+    const agentNumber = String(rmUser.phone || '').replace(/\D/g, '');
+    if (!agentNumber) {
+      return res.status(400).json({
+        message: 'Your agent phone number is not set. Add a phone number to your user profile to place calls.'
+      });
+    }
+
+    // 3. Get client mobile → SmartFlo wants the destination with the 91 country code (e.g. 918248652721)
     const rawMobile = await getClientMobile(ucc);
     if (!rawMobile) {
       return res.status(400).json({
@@ -86,27 +116,29 @@ router.post('/click-to-call', auth, async (req, res) => {
       });
     }
 
-    const destinationNumber = cleanMobile(rawMobile);
-
-    if (destinationNumber.length !== 10) {
+    const clientTen = cleanMobile(rawMobile);
+    if (clientTen.length !== 10) {
       return res.status(400).json({
         message: `Invalid client mobile number: ${rawMobile}`
       });
     }
+    const destinationNumber = '91' + clientTen;
+    const callerId = cleanMobile(cfg.callerId);   // SmartFlo caller_id is the 10-digit DID
 
-    console.log(`Smartflo click-to-call: rm=${rmUser.name} customer=${destinationNumber}`);
+    console.log(`Smartflo click-to-call: rm=${rmUser.name} agent=${agentNumber} destination=${destinationNumber} caller_id=${callerId}`);
 
-    // 3. Call Smartflo - client gets called first
-    const smartfloRes = await axios.post(SMARTFLO_INBOUND_URL, {
-      async:                 1,
-      customer_number:       destinationNumber,
-      customer_ring_timeout: 30,
-      caller_id:             CALLER_ID_WITH_CODE,
-      api_key:               rmUser.smartflo_api_key
+    // 4. Call SmartFlo — body shape per Tata SmartFlo click_to_call API
+    const smartfloRes = await axios.post(cfg.url, {
+      async:              1,
+      agent_number:       agentNumber,
+      destination_number: destinationNumber,
+      caller_id:          callerId
     }, {
       headers: {
         accept:         'application/json',
-        'content-type': 'application/json'
+        'content-type': 'application/json',
+        // Tata SmartFlo authenticates via the Authorization header, not the body api_key.
+        Authorization:  apiKey
       },
       timeout: 10000
     });
@@ -145,11 +177,22 @@ router.post('/click-to-call', auth, async (req, res) => {
 // GET /api/calls/test
 // ══════════════════════════════════════════════
 router.get('/test', auth, async (req, res) => {
-  res.json({
-    success:  true,
-    message:  'Smartflo configured correctly',
-    endpoint: SMARTFLO_INBOUND_URL
-  });
+  try {
+    const cfg = await getCallConfig();
+    const u = await pool.query('SELECT smartflo_api_key FROM users WHERE id = $1', [req.user.id]);
+    const apiKey = cfg.apiKey || u.rows[0]?.smartflo_api_key;
+    res.json({
+      success:        !!apiKey,
+      message:        apiKey
+        ? 'Click-to-call is configured.'
+        : 'Click-to-call API key not set. Configure it in Admin → API Integrations.',
+      endpoint:       cfg.url,
+      caller_id:      cfg.callerId,
+      key_configured: !!apiKey,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 module.exports = router;

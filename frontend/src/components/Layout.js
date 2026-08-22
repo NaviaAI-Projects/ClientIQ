@@ -65,13 +65,24 @@ const Layout = () => {
   const fetchCounts = async () => {
     try {
       if (user?.role === 'rm' || user?.role === 'team_leader') {
-        const [leadsRes] = await Promise.all([api.get('/leads/my')]);
-        const leads = leadsRes.data || [];
+        // Each badge maps to what its page actually shows:
+        //  • To Call Today  → the to-call list (leads still needing a call today), NOT assigned count
+        //  • AI Daily Digest → priority (high-score) clients, using the digest's own ≥60 threshold
+        //  • Dormant Clients → mapped clients with no trade >3 months
+        const [leadsRes, toCallRes, dormantRes] = await Promise.all([
+          api.get('/leads/my'),
+          api.get('/leads/to-call-today'),
+          api.get('/clients/my/clients?dormant=true'),
+        ]);
+        const leads   = leadsRes.data   || [];
+        const toCall  = toCallRes.data  || [];
+        const dormant = dormantRes.data || [];
         setCounts(prev => ({
           ...prev,
-          to_call:        leads.length,
+          to_call:        toCall.filter(c => !c.contacted_today).length,
           assigned_leads: leads.length,
-          ai_digest:      leads.filter(l => l.lead_score >= 50).length,
+          ai_digest:      leads.filter(l => (l.lead_score || 0) >= 60).length,
+          dormant:        dormant.length,
         }));
       }
       if (user?.role === 'supervisor' || user?.role === 'admin') {

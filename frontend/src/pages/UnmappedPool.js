@@ -26,6 +26,12 @@ const UnmappedPool = () => {
   const [toast, setToast]         = useState(null);  // { ok: bool, msg: string }
   const [search, setSearch]       = useState('');
 
+  // Round-robin auto-assign (preview → confirm)
+  const [autoPlan, setAutoPlan]   = useState(null);  // preview response
+  const [autoOpen, setAutoOpen]   = useState(false);
+  const [autoLoading, setAutoLoading] = useState(false);
+  const [autoBusy, setAutoBusy]   = useState(false);
+
   const loadPool = (term = '') =>
     api.get('/analytics/unmapped-pool' + (term ? `?search=${encodeURIComponent(term)}` : ''))
       .then(res => setData(res.data))
@@ -62,6 +68,39 @@ const UnmappedPool = () => {
       setToast({ ok: false, msg: err.response?.data?.message || 'Assignment failed. Please try again.' });
     } finally {
       setBusy(false);
+    }
+  };
+
+  const openAutoAssign = async () => {
+    setAutoLoading(true); setToast(null);
+    try {
+      const res = await api.get('/leads/auto-assign/preview');
+      setAutoPlan(res.data);
+      setAutoOpen(true);
+    } catch (err) {
+      setToast({ ok: false, msg: err.response?.data?.message || 'Could not build the auto-assign plan.' });
+    } finally {
+      setAutoLoading(false);
+    }
+  };
+
+  const confirmAutoAssign = async () => {
+    if (!autoPlan?.plan?.length) return;
+    setAutoBusy(true);
+    try {
+      const assignments = autoPlan.plan.map(p => ({ ucc: p.ucc, rm_id: p.rm_id }));
+      const res = await api.post('/leads/auto-assign/commit', { assignments });
+      const d = res.data || {};
+      setAutoOpen(false); setAutoPlan(null);
+      setToast({ ok: true, msg:
+        `Auto-assign complete — ${d.assigned || 0} client(s) assigned across RMs, ${d.emailed || 0} opt-in email(s) sent` +
+        (d.skipped ? `, ${d.skipped} skipped (already assigned)` : '') +
+        (d.failed ? `, ${d.failed} failed` : '') + '.' });
+      await loadPool(search.trim());
+    } catch (err) {
+      setToast({ ok: false, msg: err.response?.data?.message || 'Auto-assign failed. Please try again.' });
+    } finally {
+      setAutoBusy(false);
     }
   };
 
@@ -120,7 +159,10 @@ const UnmappedPool = () => {
                      border: '1px solid var(--br2, #cbd5e1)', fontSize: 13, color: 'var(--tx2, #334155)' }}
           />
           {search && <span style={{ fontSize: 12, color: 'var(--tx3)' }}>{clients.length} match{clients.length === 1 ? '' : 'es'}</span>}
-          <button className="btn" onClick={exportCsv} style={{ marginLeft: 'auto' }}>⬇️ Export scored list</button>
+          <button className="btn bp" onClick={openAutoAssign} disabled={autoLoading} style={{ marginLeft: 'auto' }}>
+            {autoLoading ? 'Building plan…' : '🤖 Round-robin auto-assign'}
+          </button>
+          <button className="btn" onClick={exportCsv}>⬇️ Export scored list</button>
         </div>
         <div className="tw"><table>
           <thead><tr><th>UCC</th><th>Name</th><th>Type</th><th>Plan</th><th>Score</th><th>Top signals</th><th>MTD TO</th><th>Holdings</th><th>Last trade</th><th>Action</th></tr></thead>
@@ -181,6 +223,57 @@ const UnmappedPool = () => {
               <button className="btn" onClick={closeAssign} disabled={busy}>Cancel</button>
               <button className="btn bp" onClick={confirmAssign} disabled={busy || !rmId}>
                 {busy ? 'Assigning…' : 'Assign & send opt-in'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Round-robin auto-assign preview modal ────────────────── */}
+      {autoOpen && autoPlan && (
+        <div onClick={() => { if (!autoBusy) { setAutoOpen(false); } }} style={{
+          position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+        }}>
+          <div onClick={e => e.stopPropagation()} style={{
+            background: 'var(--card, #fff)', borderRadius: 12, padding: '22px 24px',
+            width: 560, maxWidth: '94vw', maxHeight: '86vh', overflowY: 'auto',
+            boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
+          }}>
+            <h3 style={{ margin: '0 0 4px', fontSize: 16, color: 'var(--tx)' }}>Round-robin auto-assign — preview</h3>
+            <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--tx3)' }}>
+              {autoPlan.counts.assignable} of {autoPlan.counts.eligible} eligible client(s) (score ≥ {autoPlan.counts.threshold}) will be
+              distributed round-robin across RMs, respecting each RM's remaining capacity.
+              {autoPlan.counts.overflow > 0 && ` ${autoPlan.counts.overflow} client(s) can't be placed — no RM capacity left.`}
+            </p>
+
+            <div className="tw" style={{ marginBottom: 14 }}><table>
+              <thead><tr><th>RM</th><th>Current</th><th>Adding</th><th>New total</th><th>Capacity</th></tr></thead>
+              <tbody>
+                {autoPlan.per_rm.map(r => (
+                  <tr key={r.rm_id}>
+                    <td>{r.rm_name}</td>
+                    <td>{r.current}</td>
+                    <td style={{ color: r.adding > 0 ? 'var(--sc)' : 'var(--tx3)', fontWeight: r.adding > 0 ? 600 : 400 }}>
+                      {r.adding > 0 ? '+' + r.adding : '—'}
+                    </td>
+                    <td>{r.new_total}</td>
+                    <td>{r.capacity}</td>
+                  </tr>
+                ))}
+                {autoPlan.per_rm.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tx3)' }}>No RMs configured.</td></tr>}
+              </tbody>
+            </table></div>
+
+            <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '9px 11px',
+                          fontSize: 12, color: '#9a3412', marginBottom: 16 }}>
+              ⚠️ On confirm, each of the {autoPlan.counts.assignable} client(s) is assigned and an opt-in email is sent to that client. This cannot be undone in bulk.
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={() => setAutoOpen(false)} disabled={autoBusy}>Cancel</button>
+              <button className="btn bp" onClick={confirmAutoAssign} disabled={autoBusy || autoPlan.counts.assignable === 0}>
+                {autoBusy ? 'Assigning…' : `Confirm & assign ${autoPlan.counts.assignable}`}
               </button>
             </div>
           </div>

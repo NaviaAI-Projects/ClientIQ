@@ -33,6 +33,8 @@ const InactiveDP = () => {
   const [durFilter, setDurFilter]   = useState('all');
   const [typeFilter, setTypeFilter] = useState('all');
   const [range, setRange]     = useState({ key: '30d' });
+  const [page, setPage]       = useState(1);   // #18: paginate the priority list
+  const PER_PAGE = 15;
 
   useEffect(() => {
     if (range.key === 'custom' && !(range.from && range.to)) return;
@@ -42,6 +44,9 @@ const InactiveDP = () => {
       .catch(() => setError('Could not load inactive/DP data.'))
       .finally(() => setLoading(false));
   }, [range]);
+
+  // #18: reset to the first page whenever the filters/sort/range change
+  useEffect(() => { setPage(1); }, [durFilter, typeFilter, sortBy, range]);
 
   if (loading && !data) return <div className="ph"><h2>Inactive accounts &amp; DP holdings</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Inactive accounts &amp; DP holdings</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
@@ -74,6 +79,10 @@ const InactiveDP = () => {
       if (sortBy === 'age') return new Date(a.account_open_date || 0) - new Date(b.account_open_date || 0);
       return 0;
     });
+  // #18: 15 per page, Page 1 / Page 2 … pager
+  const totalPages = Math.max(1, Math.ceil(sortedPriority.length / PER_PAGE));
+  const curPage = Math.min(page, totalPages);
+  const pagedPriority = sortedPriority.slice((curPage - 1) * PER_PAGE, curPage * PER_PAGE);
 
   return (
     <div>
@@ -183,7 +192,7 @@ const InactiveDP = () => {
         <div className="tw"><table>
           <thead><tr><th>UCC</th><th>Name</th><th>Type</th><th>Last trade</th><th>Inactive (days)</th><th>Holding value</th><th>No. of stocks</th><th>Account age</th><th>RM</th><th>Action</th></tr></thead>
           <tbody>
-            {sortedPriority.map(r => (
+            {pagedPriority.map(r => (
               <tr key={r.ucc}>
                 <td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
                 <td><TypeBadge t={r.client_type} /></td>
@@ -201,6 +210,20 @@ const InactiveDP = () => {
             {sortedPriority.length === 0 && <tr><td colSpan={10} style={{ color: 'var(--tx3)' }}>No inactive clients with DP holdings.</td></tr>}
           </tbody>
         </table></div>
+        {sortedPriority.length > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 10, flexWrap: 'wrap', gap: 8 }}>
+            <span style={{ fontSize: 12, color: 'var(--tx3)' }}>
+              Showing {(curPage - 1) * PER_PAGE + 1}–{Math.min(curPage * PER_PAGE, sortedPriority.length)} of {sortedPriority.length.toLocaleString('en-IN')}
+            </span>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button className="btn sm" disabled={curPage <= 1} onClick={() => setPage(curPage - 1)}>‹ Prev</button>
+              {Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+                <button key={p} className={`btn sm${p === curPage ? ' bp' : ''}`} onClick={() => setPage(p)}>Page {p}</button>
+              ))}
+              <button className="btn sm" disabled={curPage >= totalPages} onClick={() => setPage(curPage + 1)}>Next ›</button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="panel">
