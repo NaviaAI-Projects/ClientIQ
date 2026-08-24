@@ -9,6 +9,37 @@ const vsColor = (n) => (n == null ? 'var(--tx2)' : n >= 0 ? 'var(--sc)' : 'var(-
 const vsFmt = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n + '%');
 const num = (n) => (n == null ? '—' : Number(n).toLocaleString('en-IN'));
 const cr  = (n) => (n == null ? '0.00' : (Number(n) / 1e7).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+// Collapse the calendar-day range into TRADING days only for the income table, folding each
+// non-trading day's income (MTF interest + float accrue on weekends/holidays; brokerage &
+// clearing are ₹0 there) FORWARD into the next trading day. The range total is preserved exactly
+// — nothing is dropped, it's just attributed to when the market reopened. Any trailing non-trading
+// days (range ends on a weekend) fold back into the last trading day. If the range somehow has no
+// trading day at all, fall back to showing every calendar day.
+const foldIncomeToTradingDays = (days) => {
+  const out = [];
+  let c = { mtf_interest: 0, brokerage: 0, commission: 0, float_income: 0 };
+  const zero = () => { c = { mtf_interest: 0, brokerage: 0, commission: 0, float_income: 0 }; };
+  for (const d of days) {
+    if ((d.clients || 0) > 0) {
+      const mtf = (d.mtf_interest || 0) + c.mtf_interest, brk = (d.brokerage || 0) + c.brokerage;
+      const com = (d.commission || 0) + c.commission,     flt = (d.float_income || 0) + c.float_income;
+      out.push({ ...d, mtf_interest: mtf, brokerage: brk, commission: com, float_income: flt, total: mtf + brk + com + flt });
+      zero();
+    } else {
+      c.mtf_interest += (d.mtf_interest || 0); c.brokerage += (d.brokerage || 0);
+      c.commission   += (d.commission   || 0); c.float_income += (d.float_income || 0);
+    }
+  }
+  if (out.length && (c.mtf_interest || c.brokerage || c.commission || c.float_income)) {
+    const L = out[out.length - 1];
+    out[out.length - 1] = { ...L,
+      mtf_interest: L.mtf_interest + c.mtf_interest, brokerage: L.brokerage + c.brokerage,
+      commission: L.commission + c.commission, float_income: L.float_income + c.float_income,
+      total: L.total + c.mtf_interest + c.brokerage + c.commission + c.float_income };
+  }
+  return out.length ? out : days;
+};
 const MIX_COLORS = ['#185fa5', '#9FE1CB', '#AFA9EC', '#FAC775', '#e0803a'];
 
 const DailyMIS = () => {
@@ -107,11 +138,11 @@ const DailyMIS = () => {
 
       {range && (
         <div className="panel">
-          <div className="ptitle">🔎 Selected range — daily revenue validation ({range.from} → {range.to})<InfoBtn text="Every calendar day in the selected range with its real MTF interest, equity brokerage, clearing commission and float income, plus the range totals. Days with no data read ₹0. MTF interest is each period's interest spread evenly across its days." /></div>
+          <div className="ptitle">🔎 Selected range — daily revenue validation ({range.from} → {range.to})<InfoBtn text="Trading days in the selected range with their MTF interest, equity brokerage, clearing commission and float income, plus the range totals. Income that accrues on closed days (weekends/holidays) — mainly MTF interest and float — is folded into the next trading day, so the range total is preserved exactly. MTF interest is each period's interest spread evenly across its inclusive days." /></div>
           <div className="tw"><table>
             <thead><tr><th style={{ width: 120 }}>Date</th><th>MTF interest</th><th>Equity brokerage</th><th>Clearing (commission)</th><th>Float income</th><th>Day total</th></tr></thead>
             <tbody>
-              {range.days.map(d => (
+              {foldIncomeToTradingDays(range.days).map(d => (
                 <tr key={d.date}>
                   <td><strong>{d.label}</strong></td>
                   <td>{inr(d.mtf_interest)}</td><td>{inr(d.brokerage)}</td>
@@ -120,20 +151,23 @@ const DailyMIS = () => {
                 </tr>
               ))}
               <tr style={{ fontWeight: 600, borderTop: '.5px solid var(--br)' }}>
-                <td><strong>Total ({range.days.length} days)</strong></td>
+                <td><strong>Total ({foldIncomeToTradingDays(range.days).length} trading days)</strong></td>
                 <td>{inr(range.totals.mtf_interest)}</td><td>{inr(range.totals.brokerage)}</td>
                 <td>{inr(range.totals.commission)}</td><td>{inr(range.totals.float_income)}</td>
                 <td>{inr(range.totals.total)}</td>
               </tr>
             </tbody>
           </table></div>
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>MTF interest is sourced from the mtf_interest periods, each period's interest spread evenly across its inclusive days — the same source used by the daily income line above.</p>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>Trading days only. MTF interest is sourced from the mtf_interest periods, each spread evenly across its inclusive days; interest &amp; float that accrue on closed days (weekends/holidays) are folded into the next trading day, so the totals are unchanged.</p>
 
           <div className="ptitle" style={{ marginTop: 16 }}>📊 Selected range — segment turnover (₹Cr)<InfoBtn text="Per-day traded turnover by segment for the selected range (₹ crore): equity cash, equity futures, equity options premium, commodity futures, commodity options. Same raw-trades source as the daily volume table. BSE trades are included inside the NSE segments." /></div>
           <div className="tw"><table>
             <thead><tr><th style={{ width: 120 }}>Date</th><th>Eq Cash</th><th>Eq Futures</th><th>Eq Options (prem)</th><th>Comm Futures</th><th>Comm Options</th><th>Total TO</th><th>Clients</th></tr></thead>
             <tbody>
-              {range.days.map(d => (
+              {/* Trading days only — a day where clients actually traded. Weekends & holidays
+                  (all-₹0, 0 clients) are hidden here; the revenue-validation table above still
+                  shows every calendar day because MTF/float income accrues on non-trading days. */}
+              {range.days.filter(d => (d.clients || 0) > 0).map(d => (
                 <tr key={d.date}>
                   <td><strong>{d.label}</strong></td>
                   <td>₹{cr(d.eq_cash)}Cr</td><td>₹{cr(d.eq_fut)}Cr</td><td>₹{cr(d.eq_opt)}Cr</td>
@@ -142,7 +176,7 @@ const DailyMIS = () => {
                 </tr>
               ))}
               <tr style={{ fontWeight: 600, borderTop: '.5px solid var(--br)' }}>
-                <td><strong>Total ({range.days.length} days)</strong></td>
+                <td><strong>Total ({range.days.filter(d => (d.clients || 0) > 0).length} trading days)</strong></td>
                 <td>₹{cr(range.totals.eq_cash)}Cr</td><td>₹{cr(range.totals.eq_fut)}Cr</td><td>₹{cr(range.totals.eq_opt)}Cr</td>
                 <td>₹{cr(range.totals.comm_fut)}Cr</td><td>₹{cr(range.totals.comm_opt)}Cr</td>
                 <td>₹{cr(range.totals.turnover)}Cr</td><td>—</td>

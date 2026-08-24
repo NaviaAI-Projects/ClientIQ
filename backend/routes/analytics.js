@@ -1211,6 +1211,38 @@ router.post('/unmap-requests/action', auth, async (req, res) => {
   }
 });
 
+// RM-initiated unmap request — writes a pending row that appears in the "RM-requested"
+// section of the Unmap Requests page for a supervisor to approve/reject. The client stays
+// mapped until a supervisor approves. requested_by records who raised it.
+router.post('/unmap-requests/request', auth, async (req, res) => {
+  const { ucc, reason } = req.body || {};
+  if (!ucc) return res.status(400).json({ message: 'ucc is required' });
+  try {
+    // Client must exist and currently be mapped to an RM.
+    const c = await pool.query(
+      `SELECT ucc, assigned_rm_id, mapped_at FROM clients WHERE ucc = $1`, [ucc]
+    );
+    if (c.rowCount === 0) return res.status(404).json({ message: 'Client not found' });
+    if (!c.rows[0].assigned_rm_id) return res.status(400).json({ message: 'Client is not mapped to any RM' });
+
+    // De-dupe: never stack a second pending request for the same client (RM- or AI-raised).
+    const existing = await pool.query(
+      `SELECT id FROM unmap_requests WHERE ucc = $1 AND (status = 'pending' OR status IS NULL) LIMIT 1`, [ucc]
+    );
+    if (existing.rowCount > 0) return res.json({ ok: true, already: true });
+
+    await pool.query(
+      `INSERT INTO unmap_requests (ucc, type, reason, mapped_since, status, created_at, requested_by)
+       VALUES ($1, 'rm', $2, $3, 'pending', NOW(), $4)`,
+      [ucc, (reason && reason.trim()) || 'RM requested unmap', c.rows[0].mapped_at, req.user.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('UNMAP-REQUEST ERROR:', err.message);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
 // ── COMPANY DASHBOARD ───────────────────────────────────────────
 router.get('/company-dashboard', auth, async (req, res) => {
   try {
@@ -2488,44 +2520,43 @@ router.get('/daily-mis', auth, async (req, res) => {
     const timed = (label, p) => { const s = Date.now(); return p.then(r => { console.log(`[daily-mis] ${label} ${Date.now() - s}ms`); return r; }); };
 
     // All independent — run them concurrently instead of one-after-another.
-    const [fdRow, perDay, brok, commQ, mtf, mtfCliMonth, ledger, mtfD, ledgerDaily] = await Promise.all([
+    const [fdRow, perDay, expiryQ, brok, commQ, mtf, mtfCliMonth, ledger, mtfD, ledgerDaily] = await Promise.all([
       timed('fd_rate', pool.query(`SELECT COALESCE((SELECT rate FROM float_rate_history h WHERE h.effective_from <= (SELECT MAX(ledger_date) FROM daily_ledger) ORDER BY h.effective_from DESC LIMIT 1), (SELECT value::numeric FROM settings WHERE key='fd_rate'), 6.5) AS fd_rate`)),
       // 5-way segment split + client segments per day, from raw trades. (No clients JOIN — nothing
       // used it; NRI is derived from the UCC prefix.) Bounded to recent months + any validated range.
+      // Per-day 5-way segment turnover + client segments, sourced from daily_trades — NOT raw
+      // `trades`. Raw is purged per-DAY at 90 trading days, so a segment-turnover table built on
+      // it silently drops to ₹0 for any day older than the window (e.g. Apr 1–14 showing ₹0 while
+      // Apr 15+ was fine). daily_trades holds the per-UCC-per-day rollup and survives until its
+      // whole month graduates, so it keeps every in-window day's turnover intact. Segments use the
+      // clean commodity-split columns (comm_opt_to) so commodity options are never double-counted:
+      //   eq_opt   = all options − commodity options            (options_to − comm_opt_to)
+      //   comm_fut = all commodity − commodity options          (comm_to    − comm_opt_to)
+      // The five segments then sum to daily_trades.turnover (each symbol counted once).
       timed('perDay', pool.query(`
-        -- Two-level aggregation: collapse to one row per (trade_date, ucc) first, then count
-        -- rows per date. Replaces five separate COUNT(DISTINCT ucc) FILTER passes (each a full
-        -- sort/dedup) with a single GROUP BY (trade_date, ucc) hash pass — same numbers, far
-        -- cheaper on the big raw trades table.
-        WITH per_uc AS (
-          SELECT t.trade_date AS td, t.ucc AS ucc,
-                 SUM(t.traded_value) FILTER (WHERE t.product_type = 'FO' AND t.option_type IN ('CE','PE'))                                AS eq_opt,
-                 SUM(t.traded_value) FILTER (WHERE t.product_type = 'CO' AND t.option_type IN ('CE','PE'))                                AS comm_opt,
-                 SUM(t.traded_value) FILTER (WHERE t.product_type = 'FO' AND (t.option_type IS NULL OR t.option_type NOT IN ('CE','PE'))) AS eq_fut,
-                 SUM(t.traded_value) FILTER (WHERE t.product_type = 'CO' AND (t.option_type IS NULL OR t.option_type NOT IN ('CE','PE'))) AS comm_fut,
-                 SUM(t.traded_value) FILTER (WHERE t.product_type = 'CM')                                                                 AS eq_cash,
-                 BOOL_OR(t.product_type = 'FO') AS is_fo,
-                 BOOL_OR(t.product_type = 'CO') AS is_co,
-                 BOOL_OR(t.product_type = 'CM') AS is_cm,
-                 BOOL_OR(t.expiry_date = t.trade_date AND EXTRACT(DOW FROM t.trade_date) IN (2,4)) AS is_exp
-          FROM trades t
-          WHERE t.trade_date >= LEAST((SELECT MAX(trade_date) FROM trades) - INTERVAL '5 months', COALESCE($1::date, 'infinity'::date))
-          GROUP BY t.trade_date, t.ucc
-        )
-        SELECT td::text AS d,
-               COALESCE(SUM(eq_opt),0)::float   AS eq_opt,
-               COALESCE(SUM(comm_opt),0)::float AS comm_opt,
-               COALESCE(SUM(eq_fut),0)::float   AS eq_fut,
-               COALESCE(SUM(comm_fut),0)::float AS comm_fut,
-               COALESCE(SUM(eq_cash),0)::float  AS eq_cash,
-               COUNT(*)::int                                     AS total_clients,
-               COUNT(*) FILTER (WHERE is_fo)::int                AS fo_eq_clients,
-               COUNT(*) FILTER (WHERE is_co)::int                AS fo_comm_clients,
-               COUNT(*) FILTER (WHERE is_cm)::int                AS cash_clients,
-               COUNT(*) FILTER (WHERE UPPER(ucc) LIKE 'N%')::int AS nri_clients,
-               BOOL_OR(is_exp)                                   AS is_expiry
-        FROM per_uc GROUP BY td ORDER BY td
+        SELECT trade_date::text AS d,
+               COALESCE(SUM(options_to - comm_opt_to),0)::float AS eq_opt,
+               COALESCE(SUM(comm_opt_to),0)::float              AS comm_opt,
+               COALESCE(SUM(eq_fut_to),0)::float                AS eq_fut,
+               COALESCE(SUM(comm_to - comm_opt_to),0)::float    AS comm_fut,
+               COALESCE(SUM(eq_cash_to),0)::float               AS eq_cash,
+               COUNT(*)::int                                                       AS total_clients,
+               COUNT(*) FILTER (WHERE eq_fut_to > 0 OR (options_to - comm_opt_to) > 0)::int AS fo_eq_clients,
+               COUNT(*) FILTER (WHERE comm_to > 0)::int                            AS fo_comm_clients,
+               COUNT(*) FILTER (WHERE eq_cash_to > 0)::int                         AS cash_clients,
+               COUNT(*) FILTER (WHERE UPPER(ucc) LIKE 'N%')::int                   AS nri_clients
+        FROM daily_trades
+        WHERE trade_date >= LEAST((SELECT MAX(trade_date) FROM daily_trades) - INTERVAL '5 months', COALESCE($1::date, 'infinity'::date))
+        GROUP BY trade_date ORDER BY trade_date
       `, P)),
+      // Expiry-day highlight: the trade_date IS a contract expiry (Tue/Thu weekly). daily_trades
+      // doesn't carry expiry_date, so this reads raw `trades`; days older than the 90-day raw
+      // window just aren't flagged (cosmetic — the turnover numbers above are unaffected).
+      timed('expiry', pool.query(`
+        SELECT DISTINCT trade_date::text AS d FROM trades
+        WHERE expiry_date = trade_date AND EXTRACT(DOW FROM trade_date) IN (2,4)
+          AND trade_date >= LEAST((SELECT MAX(trade_date) FROM trades) - INTERVAL '5 months', COALESCE($1::date, 'infinity'::date))
+      `, P).catch(() => ({ rows: [] }))),
       timed('brok', pool.query(`SELECT trade_date::text AS d, SUM(brokerage_earned)::float AS brok FROM daily_trades
                   WHERE trade_date >= LEAST((SELECT MAX(trade_date) FROM daily_trades) - INTERVAL '5 months', COALESCE($1::date, 'infinity'::date))
                   GROUP BY 1`, P)),
@@ -2576,12 +2607,13 @@ router.get('/daily-mis', auth, async (req, res) => {
     const floatByDate = {};
     ledgerDaily.rows.forEach(r => { floatByDate[r.d] = (Number(r.bal) || 0) * (fdRate / 100) / 365; });
 
+    const expirySet = new Set((expiryQ.rows || []).map(r => String(r.d)));
     const rows = perDay.rows.map(r => ({
       d: String(r.d), eq_opt: Number(r.eq_opt), comm_opt: Number(r.comm_opt), eq_fut: Number(r.eq_fut),
       comm_fut: Number(r.comm_fut), eq_cash: Number(r.eq_cash), total_clients: Number(r.total_clients),
       fo_eq_clients: Number(r.fo_eq_clients), fo_comm_clients: Number(r.fo_comm_clients), cash_clients: Number(r.cash_clients),
       nri_clients: Number(r.nri_clients), resident_clients: Number(r.total_clients) - Number(r.nri_clients),
-      is_expiry: !!r.is_expiry, brok: brokBy[String(r.d)] || 0, comm: commBy[String(r.d)] || 0,
+      is_expiry: expirySet.has(String(r.d)), brok: brokBy[String(r.d)] || 0, comm: commBy[String(r.d)] || 0,
     }));
     const n = rows.length;
     // Optional as-of date (?asof=YYYY-MM-DD) anchors the Last-traded-date / Yesterday / Day-before

@@ -192,7 +192,7 @@ async function computeDailyTrades(dbClient, dateArr) {
       eq_cash_to, eq_fut_to, comm_to, comm_opt_to, options_to, call_to, put_to,
       cnc_to, mis_to, other_to, cnc_trades, mis_trades,
       buy_val, sell_val, buy_qty, sell_qty, realized_pnl, symbols, updated_at)
-    WITH sym AS (
+    WITH raw_sym AS (
       SELECT ucc, trade_date, trading_symbol AS s,
         MAX(UPPER(COALESCE(option_type,''))) AS ot,
         MAX(COALESCE(product_type,''))       AS pt,
@@ -209,6 +209,33 @@ async function computeDailyTrades(dbClient, dateArr) {
       FROM trades
       WHERE trade_date = ANY($1::date[])
       GROUP BY ucc, trade_date, trading_symbol
+    ),
+    -- ── Segment-scoped rebuild ────────────────────────────────────────────────────────────
+    -- Recompute ONLY the segments actually present in this raw batch and PRESERVE the rest from
+    -- what daily_trades already stores. So uploading just the MCX (commodity) file recomputes
+    -- commodity and leaves equity-cash & F&O untouched — a single-segment re-upload can no longer
+    -- zero the segments it didn't include, and uploading each file one at a time (any order) ends
+    -- with every segment correct. When raw already holds every segment (a normal full import),
+    -- nothing is preserved and this is identical to a plain full rebuild.
+    raw_pt AS (SELECT DISTINCT trade_date, pt FROM raw_sym),   -- segments (product_types) in this batch
+    preserved AS (                                             -- stored symbols for the OTHER segments
+      SELECT dt.ucc, dt.trade_date,
+             e->>'s' AS s, e->>'ot' AS ot, e->>'pt' AS pt, e->>'ex' AS ex,
+             COALESCE((e->>'q')::float,(e->>'qty')::float,0) AS q,
+             COALESCE((e->>'n')::int,0)    AS n,
+             COALESCE((e->>'to')::float,0) AS to_,
+             COALESCE((e->>'bv')::float,0) AS bv, COALESCE((e->>'sv')::float,0) AS sv,
+             COALESCE((e->>'bq')::float,0) AS bq, COALESCE((e->>'sq')::float,0) AS sq,
+             COALESCE((e->>'lots')::float,0) AS lots, COALESCE((e->>'qty')::float,0) AS qty
+      FROM daily_trades dt
+           CROSS JOIN LATERAL jsonb_array_elements(COALESCE(dt.symbols,'[]'::jsonb)) e
+      WHERE dt.trade_date = ANY($1::date[])
+        AND NOT EXISTS (SELECT 1 FROM raw_pt rp WHERE rp.trade_date = dt.trade_date AND rp.pt = e->>'pt')
+    ),
+    sym AS (
+      SELECT ucc, trade_date, s, ot, pt, ex, q, n, to_, bv, sv, bq, sq, lots, qty FROM raw_sym
+      UNION ALL
+      SELECT ucc, trade_date, s, ot, pt, ex, q, n, to_, bv, sv, bq, sq, lots, qty FROM preserved
     )
     SELECT
       ucc, trade_date,
@@ -233,7 +260,7 @@ async function computeDailyTrades(dbClient, dateArr) {
                ELSE 0 END) AS realized_pnl,
       jsonb_agg(jsonb_build_object(
         's', s, 'ot', ot, 'pt', pt, 'ex', ex,
-        'bv', bv, 'sv', sv, 'bq', bq, 'sq', sq, 'to', to_, 'n', n, 'lots', lots, 'qty', qty)) AS symbols,
+        'bv', bv, 'sv', sv, 'bq', bq, 'sq', sq, 'to', to_, 'n', n, 'lots', lots, 'qty', qty, 'q', q)) AS symbols,
       NOW()
     FROM sym
     GROUP BY ucc, trade_date
@@ -306,18 +333,20 @@ async function computeDailyTrades(dbClient, dateArr) {
     }).join(',');
     await dbClient.query(`
       WITH rate_periods (segment, rate, eff_from, eff_to) AS ( VALUES ${valueSql} ),
+      -- Commission is computed from the (segment-preserving) daily_trades segment turnovers, NOT
+      -- from raw trades — so a single-segment re-upload doesn't understate commission on the
+      -- segments it didn't include (matching the segment-scoped turnover rebuild above).
       seg AS (
-        SELECT ucc, trade_date,
-          CASE
-            WHEN product_type = 'CM' THEN 'eq_cash'
-            WHEN product_type = 'FO' AND UPPER(COALESCE(option_type,'')) IN ('CE','PE') THEN 'eq_options'
-            WHEN product_type = 'FO' THEN 'eq_futures'
-            WHEN product_type = 'CO' AND UPPER(COALESCE(option_type,'')) IN ('CE','PE') THEN 'comm_options'
-            WHEN product_type = 'CO' THEN 'comm_futures'
-            ELSE NULL END AS segment,
-          traded_value
-        FROM trades t
-        WHERE trade_date = ANY($1::date[])
+        SELECT dt.ucc, dt.trade_date, v.segment, v.amt AS traded_value
+        FROM daily_trades dt
+        CROSS JOIN LATERAL (VALUES
+          ('eq_cash',      COALESCE(dt.eq_cash_to,0)),
+          ('eq_futures',   COALESCE(dt.eq_fut_to,0)),
+          ('eq_options',   GREATEST(COALESCE(dt.options_to,0) - COALESCE(dt.comm_opt_to,0), 0)),
+          ('comm_futures', GREATEST(COALESCE(dt.comm_to,0)    - COALESCE(dt.comm_opt_to,0), 0)),
+          ('comm_options', COALESCE(dt.comm_opt_to,0))
+        ) v(segment, amt)
+        WHERE dt.trade_date = ANY($1::date[])
       ),
       commis AS (
         SELECT s.ucc, s.trade_date, SUM(s.traded_value * r.rate / 100.0) AS commission
@@ -666,7 +695,10 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         let pi = 1;
         for (const r of batch) {
           values.push(`($${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++},$${pi++})`);
-          params.push(r.ucc, r.name, r.clientType, 'zero-brokerage', r.regdDate, r.lastTrade, r.isActive, r.status);
+          // plan defaults to 'Zero-brokerage'; the brokerage-file import promotes a client to
+          // 'Brokerage' once they actually generate brokerage. ON CONFLICT never overwrites plan,
+          // so a promoted client is not reset to zero when the master is re-imported.
+          params.push(r.ucc, r.name, r.clientType, 'Zero-brokerage', r.regdDate, r.lastTrade, r.isActive, r.status);
         }
         await dbClient.query(`
           INSERT INTO clients (ucc, name, client_type, plan, account_open_date, last_trade_date, is_active, status)
@@ -1302,9 +1334,22 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         `, [brokMonths]);
       }
 
+      // ── Plan derivation ──────────────────────────────────────────────
+      // A client who generated brokerage in this file is on a brokerage-paying plan, not
+      // zero-brokerage. We only ever PROMOTE to 'Brokerage' here (never downgrade), so a later
+      // month with no brokerage can't wrongly flip a paying client back to 'Zero-brokerage'.
+      const payingUccs = [...new Set(dedupedBrokerage.filter(r => r.brokerage > 0).map(r => r.ucc))];
+      if (payingUccs.length) {
+        await dbClient.query(
+          `UPDATE clients SET plan = 'Brokerage', updated_at = NOW()
+           WHERE ucc = ANY($1) AND plan IS DISTINCT FROM 'Brokerage'`,
+          [payingUccs]
+        );
+      }
+
       // NOTE: brokerage and commission are independent revenue streams that BOTH apply to
       // every client — brokerage_earned comes from this file; commission (clearing charges)
-      // is computed for all clients at trade import. No paying/zero-brokerage distinction.
+      // is computed for all clients at trade import.
     }
 
     // ── LEDGER FILE ───────────────────────────────────────────────────

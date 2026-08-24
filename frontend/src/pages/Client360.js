@@ -11,17 +11,6 @@ const FMT = v => {
   return '₹' + v;
 };
 
-// #20: always 2 decimals — used by the income/revenue breakup so small values
-// (e.g. ₹3.26 clearing) don't print raw floats like ₹1.157005479452…
-const FMT2 = v => {
-  const n = Number(v) || 0;
-  if (n === 0) return '₹0';
-  if (Math.abs(n) >= 1e7) return '₹' + (n/1e7).toFixed(2) + 'Cr';
-  if (Math.abs(n) >= 1e5) return '₹' + (n/1e5).toFixed(2) + 'L';
-  if (Math.abs(n) >= 1e3) return '₹' + (n/1e3).toFixed(2) + 'K';
-  return '₹' + n.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-};
-
 const formatDate = date => date ? new Date(date).toLocaleDateString('en-IN') : '-';
 
 const Info = ({ label, value, highlight }) => (
@@ -48,6 +37,12 @@ const Client360 = () => {
   const [searching, setSearching]       = useState(false);
   const [clientLoading, setClientLoading] = useState(false);
   const [chartView, setChartView]       = useState('chart'); // 'chart' | 'table'
+
+  // ── RM-initiated "Request unmap" (goes to supervisor for approval) ──
+  const [reqOpen, setReqOpen]     = useState(false);
+  const [reqReason, setReqReason] = useState('');
+  const [reqBusy, setReqBusy]     = useState(false);
+  const [reqMsg, setReqMsg]       = useState(null);   // { ok, text }
 
   // On mount — load first client or navigate-passed UCC
   useEffect(() => {
@@ -102,6 +97,7 @@ const Client360 = () => {
     setIncome(null);
     setNudges([]);
     setUcc(clientUcc);
+    setReqOpen(false); setReqReason(''); setReqMsg(null);   // reset unmap form when switching clients
     try {
       const [clientRes, chartRes, incomeRes] = await Promise.all([
         api.get(`/clients/${clientUcc}`),
@@ -127,6 +123,21 @@ const Client360 = () => {
     setShowDropdown(false);
     setSearchResults([]);
     fetchClient(c.ucc);
+  };
+
+  const submitUnmap = async () => {
+    setReqBusy(true); setReqMsg(null);
+    try {
+      const res = await api.post('/analytics/unmap-requests/request', { ucc, reason: reqReason });
+      setReqMsg({ ok: true, text: res.data?.already
+        ? 'A request for this client is already pending approval.'
+        : 'Unmap request submitted — pending supervisor approval.' });
+      setReqReason('');
+    } catch (e) {
+      setReqMsg({ ok: false, text: e?.response?.data?.message || 'Could not submit request.' });
+    } finally {
+      setReqBusy(false);
+    }
   };
 
   return (
@@ -274,7 +285,14 @@ const Client360 = () => {
 
           {/* Client info */}
           <div className="panel">
-            <div className="ptitle">{client.name}</div>
+            <div className="ptitle" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{client.name}</span>
+              {client.is_mapped && client.rm_name && (
+                <button className="btn bd sm" onClick={() => { setReqOpen(o => !o); setReqMsg(null); }}>
+                  ➖ Request unmap
+                </button>
+              )}
+            </div>
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
               <Info label="UCC"               value={client.ucc}                                          highlight />
               <Info label="Client Type"       value={client.client_type} />
@@ -285,6 +303,33 @@ const Client360 = () => {
               <Info label="Status"            value={client.is_active ? 'Active' : 'Inactive'} />
               <Info label="Mapped"            value={client.is_mapped ? 'Yes' : 'No'} />
             </div>
+
+            {reqOpen && client.is_mapped && client.rm_name && (
+              <div style={{ marginTop: '14px', padding: '12px', background: 'var(--bg2)', border: '1px solid var(--br)', borderRadius: 'var(--r2)' }}>
+                <div style={{ fontSize: '12px', fontWeight: 600, marginBottom: '6px' }}>
+                  Request to unmap <strong>{client.name}</strong> from <strong>{client.rm_name}</strong>
+                </div>
+                <textarea
+                  value={reqReason}
+                  onChange={e => setReqReason(e.target.value)}
+                  placeholder="Reason for unmapping (e.g. client relocated, inactive, requested a different RM)…"
+                  rows={2}
+                  style={{ width: '100%', fontSize: '13px', fontFamily: 'var(--font)', padding: '8px 10px', border: '1px solid var(--br)', borderRadius: 'var(--r2)', resize: 'vertical' }}
+                />
+                <div style={{ display: 'flex', gap: '8px', marginTop: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <button className="btn bp sm" disabled={reqBusy} onClick={submitUnmap}>
+                    {reqBusy ? 'Submitting…' : 'Submit request'}
+                  </button>
+                  <button className="btn sm" disabled={reqBusy} onClick={() => setReqOpen(false)}>Cancel</button>
+                  {reqMsg && (
+                    <span style={{ fontSize: '12px', color: reqMsg.ok ? 'var(--sc)' : 'var(--dc)' }}>{reqMsg.text}</span>
+                  )}
+                </div>
+                <div style={{ fontSize: '11px', color: 'var(--tx3)', marginTop: '6px' }}>
+                  This goes to your supervisor for approval. The client stays mapped until the request is approved.
+                </div>
+              </div>
+            )}
           </div>
 
           {/* #20 Income / revenue breakup — Clearing charges, Turnover, Float, MTF */}
@@ -299,27 +344,27 @@ const Client360 = () => {
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
                 <div className="card cs">
                   <div className="clbl">Clearing charges</div>
-                  <div className="cval">{FMT2(income.clearing)}</div>
+                  <div className="cval">{FMT(income.clearing)}</div>
                   <div className="csub">Clearing commission earned</div>
                 </div>
                 <div className="card ci">
                   <div className="clbl">Turnover</div>
-                  <div className="cval">{FMT2(income.turnover)}</div>
+                  <div className="cval">{FMT(income.turnover)}</div>
                   <div className="csub">Total traded value (volume)</div>
                 </div>
                 <div className="card cw">
                   <div className="clbl">Float</div>
-                  <div className="cval">{FMT2(income.float_income)}</div>
-                  <div className="csub">Est. / month · {income.fd_rate}% on {FMT2(income.ledger_balance)} credit</div>
+                  <div className="cval">{FMT(income.float_income)}</div>
+                  <div className="csub">Est. / month · {income.fd_rate}% on {FMT(income.ledger_balance)} credit</div>
                 </div>
                 <div className="card cp">
                   <div className="clbl">MTF</div>
-                  <div className="cval">{FMT2(income.mtf_interest)}</div>
+                  <div className="cval">{FMT(income.mtf_interest)}</div>
                   <div className="csub">MTF interest earned</div>
                 </div>
               </div>
               <div style={{ marginTop: '10px', fontSize: '12px', color: 'var(--tx2)' }}>
-                Total revenue (Clearing + Float + MTF): <strong>{FMT2(income.total_income)}</strong>
+                Total revenue (Clearing + Float + MTF): <strong>{FMT(income.total_income)}</strong>
               </div>
             </div>
           )}
