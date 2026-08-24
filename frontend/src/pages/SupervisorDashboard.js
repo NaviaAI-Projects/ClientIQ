@@ -134,7 +134,7 @@ const SupervisorDashboard = () => {
               {rm_table.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tx3)' }}>No RMs.</td></tr>}
             </tbody>
           </table>
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Pace = book utilisation (clients ÷ capacity). Revenue is brokerage-based and fills in as the brokerage file is imported.</p>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Pace = book utilisation (clients ÷ capacity). Revenue = Brokerage + MTF + Float + Clearing (all four streams), same as RM Performance.</p>
         </div>
         <div className="panel">
           <div className="ptitle">📋 Pending approvals (top 3)<InfoBtn text="Top 3 unmapped clients in the lead pool awaiting mapping approval, ranked by AI lead score (0–100). Opt-in = whether the client clicked the outreach link." /></div>

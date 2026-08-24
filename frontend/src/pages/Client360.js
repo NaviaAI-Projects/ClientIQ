@@ -8,7 +8,7 @@ const FMT = v => {
   if (v >= 1000000) return '₹' + (v/100000).toFixed(0) + 'L';
   if (v >= 100000)  return '₹' + (v/100000).toFixed(1) + 'L';
   if (v >= 1000)    return '₹' + (v/1000).toFixed(0) + 'K';
-  return '₹' + v;
+  return '₹' + Number(v).toFixed(2);
 };
 
 const formatDate = date => date ? new Date(date).toLocaleDateString('en-IN') : '-';
@@ -446,7 +446,7 @@ const Client360 = () => {
                         if (v >= 1000)   return '₹' + (v/1000).toFixed(0) + 'K';
                         return '₹' + v;
                       }} />
-                      <Tooltip formatter={(v, n) => n === 'MTF interest' ? ['₹' + v] : [FMT(v), n]} />
+                      <Tooltip formatter={(v, n) => n === 'MTF interest' ? ['₹' + Number(v).toFixed(2)] : [FMT(v), n]} />
                       <Legend wrapperStyle={{ fontSize: 10 }} iconSize={10} />
                       <Bar  yAxisId="left"  dataKey="mtf_interest"  name="MTF interest"  fill="#9FE1CB" />
                       <Line yAxisId="right" dataKey="holding_value" name="Holding value"
@@ -520,7 +520,7 @@ const Client360 = () => {
                         {chartData.map((r, i) => (
                           <tr key={i} style={{ borderTop: '1px solid var(--br)', textAlign: 'right' }}>
                             <td style={{ textAlign: 'left', padding: '6px 0' }}>{r.month}</td>
-                            <td>₹{(r.mtf_interest || 0).toLocaleString('en-IN')}</td>
+                            <td>₹{Number(r.mtf_interest || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
                             <td>{FMT(r.holding_value)}</td>
                           </tr>
                         ))}

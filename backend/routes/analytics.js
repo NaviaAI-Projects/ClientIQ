@@ -1320,25 +1320,44 @@ router.get('/company-dashboard', auth, async (req, res) => {
     `);
     const rmTable = await pool.query(`
       WITH rng AS (
-        SELECT ucc, SUM(brok) AS brok, SUM(turnover) AS turnover FROM (
-          SELECT ucc, COALESCE(brokerage,0) AS brok, COALESCE(turnover,0) AS turnover
+        SELECT ucc, SUM(brok) AS brok, SUM(clr) AS clr, SUM(turnover) AS turnover FROM (
+          SELECT ucc, COALESCE(brokerage,0) AS brok, COALESCE(commission_earned,0) AS clr, COALESCE(turnover,0) AS turnover
           FROM client_monthly_summary WHERE ${wholeCond}
           UNION ALL
-          SELECT ucc, COALESCE(brokerage_earned,0) AS brok, COALESCE(turnover,0) AS turnover
+          SELECT ucc, COALESCE(brokerage_earned,0) AS brok, COALESCE(commission_earned,0) AS clr, COALESCE(turnover,0) AS turnover
           FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2 AND ${partialCond}
         ) u GROUP BY ucc
       )
       SELECT rm.id, rm.rm_name, rm.capacity,
              COUNT(c.ucc)::int AS clients,
-             COALESCE(SUM(rng.brok),0)::float AS revenue,
+             COALESCE(SUM(rng.brok),0)::float AS brokerage,
+             COALESCE(SUM(rng.clr),0)::float  AS clearing,
              COALESCE(SUM(rng.turnover),0)::float AS turnover,
              (SELECT COUNT(*) FROM lead_pool lp WHERE lp.assigned_rm_id = rm.id AND lp.status IN ('assigned','pending','opted_in'))::int AS leads
       FROM rm_master rm
       LEFT JOIN clients c ON c.assigned_rm_id = rm.id
       LEFT JOIN rng ON rng.ucc = c.ucc
       GROUP BY rm.id, rm.rm_name, rm.capacity
-      ORDER BY revenue DESC, clients DESC
+      ORDER BY brokerage DESC, clients DESC
     `, [fromD, toD]);
+    // Per-RM MTF interest (prorated to the range) and float income — so the dashboard RM revenue
+    // shows all four streams (brokerage + clearing + MTF + float), matching RM Performance's total.
+    const rmMtf = await pool.query(`
+      SELECT c.assigned_rm_id AS rm_id,
+             SUM(mi.interest / (GREATEST((mi.to_date - mi.from_date),0)+1)
+                 * (LEAST(mi.to_date,$2::date) - GREATEST(mi.from_date,$1::date) + 1))::float AS mtf
+      FROM clients c JOIN mtf_interest mi ON mi.ucc = c.ucc
+      WHERE c.assigned_rm_id IS NOT NULL AND mi.from_date <= $2::date AND mi.to_date >= $1::date
+      GROUP BY c.assigned_rm_id
+    `, [fromD, toD]).catch(() => ({ rows: [] }));
+    const rmFloat = await pool.query(`
+      SELECT c.assigned_rm_id AS rm_id, SUM(GREATEST(dl.opening_balance,0))::float AS bal
+      FROM clients c JOIN daily_ledger dl ON dl.ucc = c.ucc
+      WHERE dl.ledger_date BETWEEN $1 AND $2 AND c.assigned_rm_id IS NOT NULL
+      GROUP BY c.assigned_rm_id
+    `, [fromD, toD]).catch(() => ({ rows: [] }));
+    const rmMtfBy = {}; rmMtf.rows.forEach(r => { rmMtfBy[r.rm_id] = Number(r.mtf) || 0; });
+    const rmFloatBy = {}; rmFloat.rows.forEach(r => { rmFloatBy[r.rm_id] = (Number(r.bal) || 0) * (fdRate / 100) / 365; });
     // Total company turnover over the range (all clients, mapped + unmapped) — denominator for #14
     const totalTurnover = await pool.query(`
       SELECT
@@ -1431,7 +1450,9 @@ router.get('/company-dashboard', auth, async (req, res) => {
       pipeline: pipeline.rows[0],
       churn: churn.rows[0],
       rm_table: rmTable.rows.map(r => ({
-        rm_name: r.rm_name, clients: Number(r.clients), revenue: Number(r.revenue),
+        rm_name: r.rm_name, clients: Number(r.clients),
+        // Revenue = all four streams (brokerage + clearing + MTF + float), matching RM Performance.
+        revenue: Number(r.brokerage) + Number(r.clearing) + (rmMtfBy[r.id] || 0) + (rmFloatBy[r.id] || 0),
         turnover: Number(r.turnover), capacity: Number(r.capacity || 0), leads: Number(r.leads),
         utilization: Number(r.capacity) > 0 ? (Number(r.clients) / Number(r.capacity)) * 100 : 0,
       })),
@@ -2043,7 +2064,7 @@ router.get('/rm-monthly', auth, async (req, res) => {
                       THEN EXTRACT(YEAR FROM (SELECT MAX(trade_date) FROM daily_trades))::int
                       ELSE EXTRACT(YEAR FROM (SELECT MAX(trade_date) FROM daily_trades))::int - 1 END, 4, 1),'YYYY-MM') AS fy`;
 
-    const [tr, mtfQ, flQ, intQ, tgtQ, mapQ, leadsQ, fdRow, latestQ, fyQ, fdTrade, fdFloat, fdInt, fyTraded] = await Promise.all([
+    const [tr, mtfQ, flQ, intQ, tgtQ, mapQ, leadsQ, fdRow, latestQ, fyQ, fdTrade, fdFloat, fdInt, fyTraded, fdMtf] = await Promise.all([
       // Per-month brokerage + clearing + traded clients from the PERMANENT archive (won't gap on purge).
       pool.query(`SELECT cms.month_year AS mon,
                          SUM(cms.brokerage)::float AS brokerage,
@@ -2084,6 +2105,13 @@ router.get('/rm-monthly', auth, async (req, res) => {
                         CASE WHEN EXTRACT(MONTH FROM (SELECT MAX(trade_date) FROM daily_trades))::int >= 4
                              THEN EXTRACT(YEAR FROM (SELECT MAX(trade_date) FROM daily_trades))::int
                              ELSE EXTRACT(YEAR FROM (SELECT MAX(trade_date) FROM daily_trades))::int - 1 END, 4, 1),'YYYY-MM')`, P),
+      // "For day" MTF = the day's accrued MTF interest (each mtf_interest period spread evenly across
+      // its inclusive days), for the latest trading day — so the For-day revenue includes all 4 streams.
+      pool.query(`SELECT COALESCE(SUM(mi.interest / (GREATEST((mi.to_date - mi.from_date),0)+1)),0)::float AS mtf
+                  FROM clients c JOIN mtf_interest mi ON mi.ucc = c.ucc
+                  WHERE ${cCond}
+                    AND mi.from_date <= (SELECT MAX(trade_date) FROM daily_trades)
+                    AND mi.to_date   >= (SELECT MAX(trade_date) FROM daily_trades)`, P).catch(() => ({ rows: [{ mtf: 0 }] })),
     ]);
 
     const fd = parseFloat(fdRow.rows[0]?.fd_rate ?? 6.5);
@@ -2126,8 +2154,9 @@ router.get('/rm-monthly', auth, async (req, res) => {
     // For day = latest trading day.
     const b = Number(fdTrade.rows[0]?.brokerage || 0), c = Number(fdTrade.rows[0]?.clearing || 0);
     const fdFl = floatIncome(fdFloat.rows[0]?.bal || 0);
+    const fdMtfVal = Number(fdMtf.rows[0]?.mtf || 0);
     const fdTradedN = Number(fdTrade.rows[0]?.traded || 0);
-    const forDayRow = { label: 'For day', kind: 'day', revenue: b + c + fdFl, target: 0, pct_achieved: null,
+    const forDayRow = { label: 'For day', kind: 'day', revenue: b + c + fdFl + fdMtfVal, target: 0, pct_achieved: null,
       mapped: totalMapped, traded: fdTradedN, pct_traded: totalMapped > 0 ? (fdTradedN / totalMapped) * 100 : null,
       conv_pct: convPct, interactions: Number(fdInt.rows[0]?.interactions || 0), unmapped };
 

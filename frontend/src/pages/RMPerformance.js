@@ -168,7 +168,7 @@ const RMPerformance = () => {
             </tbody>
           </table></div>
         )}
-        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>MTF is a monthly book, so it is omitted from the single-day “For day” revenue. Leads Conv% and Unmapped are RM totals (all-time), repeated on each row for context.</p>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Revenue = Brokerage + MTF + Float + Clearing on every row. For “For day”, MTF is the day’s accrued interest (each MTF period spread evenly across its inclusive days). Leads Conv% and Unmapped are RM totals (all-time), repeated on each row for context.</p>
       </div>
 
       {/* ══ Table 3 — detailed comparison ══ */}
