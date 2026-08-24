@@ -174,7 +174,7 @@ const RMPerformance = () => {
       {/* ══ Table 3 — detailed comparison ══ */}
       <div className="panel">
         <div className="ptitle">📋 Detailed comparison
-          <InfoBtn text="Per-RM breakdown over its own date range. Rev (range) = Brokerage + MTF + Float + Clearing over the selected range; YTD Rev = the same, fiscal-year-to-date. Conv% = converted ÷ leads. Target% = Rev (range) ÷ the RM's target for the range. Churn alerts = mapped clients with an AI churn-risk score ≥ 60." />
+          <InfoBtn text="Per-RM breakdown over its own date range. Rev (range) = Brokerage + MTF + Float + Clearing over the selected range; YTD Rev = the same, fiscal-year-to-date. Conv% = converted ÷ leads. Target% = Rev (range) ÷ the RM's target for the range. Churn alerts = mapped clients with an AI churn-risk score ≥ 6 (out of 10)." />
         </div>
         <DateRange value={range3} onChange={setRange3}
           bounds={t3?.meta?.range ? { min: t3.meta.range.data_min, max: t3.meta.range.data_max } : undefined}

@@ -446,7 +446,20 @@ router.get('/insights', auth, async (req, res) => {
     const leadStats   = leadsRes.rows[0];
     const rmCount     = rmRes.rows[0]?.total || 0;
 
-    const dataContext = `
+    // ── Cache the AI narrative per scoring run ───────────────────────────────
+    // The narrative only depends on the latest ai_scores run, so generate it ONCE per run and
+    // reuse it — the live LLM call on every page load was the slow part. A cache miss (a new
+    // scoring run, or the first ever) regenerates via Groq and stores it in `settings`.
+    const runRow = await pool.query(`SELECT to_char(MAX(score_date),'YYYY-MM-DD') AS run FROM ai_scores`);
+    const runDate = runRow.rows[0]?.run || 'none';
+    const cacheRows = await pool.query(`SELECT key, value FROM settings WHERE key IN ('ai_insight_run','ai_insight_narrative')`);
+    const cache = {}; cacheRows.rows.forEach(r => { cache[r.key] = r.value; });
+
+    let insightText;
+    if (cache['ai_insight_run'] === runDate && cache['ai_insight_narrative']) {
+      insightText = cache['ai_insight_narrative'];   // cache hit — no LLM call, instant load
+    } else {
+      const dataContext = `
 Total active clients: ${clientStats.total}
 Average lead score: ${parseFloat(clientStats.avg_score || 0).toFixed(1)}
 High priority clients (score 50+): ${clientStats.high_priority}
@@ -455,11 +468,11 @@ Total leads in pipeline: ${leadStats.total}
 Unassigned leads: ${leadStats.unassigned}
 Active RMs: ${rmCount}`.trim();
 
-    const systemPrompt = `You are an AI analytics assistant for Navia Markets, a stock broking firm.
+      const systemPrompt = `You are an AI analytics assistant for Navia Markets, a stock broking firm.
 Generate concise supervisor-level insights about the client book and RM performance.
 Keep under 200 words. Be specific and actionable.`;
 
-    const userPrompt = `Generate AI insights for the Supervisor based on this data:
+      const userPrompt = `Generate AI insights for the Supervisor based on this data:
 ${dataContext}
 Format as:
 📊 Book Overview:
@@ -469,7 +482,11 @@ Format as:
 📈 Growth Opportunities:
 [1-2 opportunities]`;
 
-    const insightText = await callGroq(systemPrompt, userPrompt, 400);
+      insightText = await callGroq(systemPrompt, userPrompt, 400);
+      // Store so the next load of the same run is instant.
+      await pool.query(`INSERT INTO settings (key,value,updated_at) VALUES ('ai_insight_run',$1,NOW()) ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=NOW()`, [runDate]);
+      await pool.query(`INSERT INTO settings (key,value,updated_at) VALUES ('ai_insight_narrative',$1,NOW()) ON CONFLICT (key) DO UPDATE SET value=$1, updated_at=NOW()`, [insightText]);
+    }
 
     const [highPriorityRes, churnRes, oppRes] = await Promise.all([
       pool.query(`SELECT c.ucc, c.name, a.lead_score, a.churn_risk_score, u.name as rm_name

@@ -201,7 +201,8 @@ router.get('/:ucc/chart-data', auth, async (req, res) => {
 });
 
 // #20 Client 360 income/revenue breakup — 4 sections: Clearing charges, Turnover, Float, MTF.
-// Computed over all trade detail held for the client (the ~90-day retained window).
+// Computed over the client's FULL history from the permanent archive (client_monthly_summary /
+// mtf_monthly), so it is not capped at the ~90-day raw-detail window.
 router.get('/:ucc/income-breakup', auth, async (req, res) => {
   try {
     const { ucc } = req.params;
@@ -215,14 +216,15 @@ router.get('/:ucc/income-breakup', auth, async (req, res) => {
     const trade = await pool.query(`
       SELECT COALESCE(SUM(turnover),0)::float           AS turnover,
              COALESCE(SUM(commission_earned),0)::float  AS clearing,
-             COALESCE(SUM(brokerage_earned),0)::float   AS brokerage,
-             MIN(trade_date) AS from_d, MAX(trade_date) AS to_d,
-             COUNT(DISTINCT trade_date)::int            AS trade_days
-      FROM daily_trades WHERE ucc = $1
+             COALESCE(SUM(brokerage),0)::float          AS brokerage,
+             MIN((month_year||'-01')::date) AS from_d,
+             (MAX((month_year||'-01')::date) + INTERVAL '1 month - 1 day')::date AS to_d,
+             COALESCE(SUM(trade_days),0)::int           AS trade_days
+      FROM client_monthly_summary WHERE ucc = $1
     `, [ucc]);
 
     const mtf = await pool.query(`
-      SELECT COALESCE(SUM(interest),0)::float AS mtf FROM mtf_interest WHERE ucc = $1
+      SELECT COALESCE(SUM(interest_earned),0)::float AS mtf FROM mtf_monthly WHERE ucc = $1
     `, [ucc]);
 
     const led = await pool.query(`

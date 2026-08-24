@@ -2,16 +2,20 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
 
+// Module-level cache — survives navigation within the SPA session, so returning to this page
+// renders instantly from the last payload while a fresh copy loads in the background.
+let unmapCache = null;
+
 const UnmapRequests = () => {
-  const [data, setData] = useState({ rm_requested: [], ai_suggested: [] });
-  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState(unmapCache || { rm_requested: [], ai_suggested: [] });
+  const [loading, setLoading] = useState(!unmapCache);
   const [busy, setBusy] = useState(null);
   const navigate = useNavigate();
 
   const load = () => {
-    setLoading(true);
+    if (!unmapCache) setLoading(true);   // only block on the very first load; revisits refresh silently
     api.get('/analytics/unmap-requests')
-      .then(r => setData(r.data || { rm_requested: [], ai_suggested: [] }))
+      .then(r => { const d = r.data || { rm_requested: [], ai_suggested: [] }; unmapCache = d; setData(d); })
       .catch(console.error).finally(() => setLoading(false));
   };
   useEffect(load, []);

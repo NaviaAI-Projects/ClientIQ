@@ -1,286 +1,77 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../api';
-import { ClientLink } from '../components/ui';
 
-const rupee = (n) => {
-  const v = Number(n) || 0;
-  if (Math.abs(v) >= 1e7) return '₹' + (v / 1e7).toFixed(2) + 'Cr';
-  if (Math.abs(v) >= 1e5) return '₹' + (v / 1e5).toFixed(2) + 'L';
-  if (v === 0) return '—';
-  return '₹' + Math.round(v).toLocaleString('en-IN');
-};
-const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-const mmY = (d) => { if (!d) return '—'; const dt = new Date(d); return `${MON[dt.getUTCMonth()]} ${dt.getUTCFullYear()}`; };
-const scoreClass = (s) => (s == null ? 'ais l' : s >= 75 ? 'ais h' : s >= 60 ? 'ais m' : 'ais l');
+// Module-level cache — survives navigation within the SPA session, so returning to this page
+// renders instantly from the last payload while a fresh copy loads in the background.
+let unmapCache = null;
 
-const UnmappedPool = () => {
-  const [data, setData]       = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError]     = useState('');
-  const [rms, setRms]         = useState([]);
+const UnmapRequests = () => {
+  const [data, setData] = useState(unmapCache || { rm_requested: [], ai_suggested: [] });
+  const [loading, setLoading] = useState(!unmapCache);
+  const [busy, setBusy] = useState(null);
+  const navigate = useNavigate();
 
-  // Assign modal state
-  const [assignFor, setAssignFor] = useState(null); // the client row being assigned
-  const [rmId, setRmId]           = useState('');
-  const [busy, setBusy]           = useState(false);
-  const [toast, setToast]         = useState(null);  // { ok: bool, msg: string }
-  const [search, setSearch]       = useState('');
+  const load = () => {
+    if (!unmapCache) setLoading(true);   // only block on the very first load; revisits refresh silently
+    api.get('/analytics/unmap-requests')
+      .then(r => { const d = r.data || { rm_requested: [], ai_suggested: [] }; unmapCache = d; setData(d); })
+      .catch(console.error).finally(() => setLoading(false));
+  };
+  useEffect(load, []);
 
-  // Round-robin auto-assign (preview → confirm)
-  const [autoPlan, setAutoPlan]   = useState(null);  // preview response
-  const [autoOpen, setAutoOpen]   = useState(false);
-  const [autoLoading, setAutoLoading] = useState(false);
-  const [autoBusy, setAutoBusy]   = useState(false);
-
-  const loadPool = (term = '') =>
-    api.get('/analytics/unmapped-pool' + (term ? `?search=${encodeURIComponent(term)}` : ''))
-      .then(res => setData(res.data))
-      .catch(() => setError('Could not load unmapped pool.'));
-
-  useEffect(() => {
-    Promise.all([
-      loadPool(''),
-      api.get('/rm/list').then(res => setRms(res.data || [])).catch(() => setRms([])),
-    ]).finally(() => setLoading(false));
-  }, []);
-
-  // Debounced UCC / name search across the whole pool (skips the initial load)
-  useEffect(() => {
-    if (loading) return;
-    const t = setTimeout(() => loadPool(search.trim()), 300);
-    return () => clearTimeout(t);
-  }, [search]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const openAssign = (client) => { setAssignFor(client); setRmId(''); setToast(null); };
-  const closeAssign = () => { if (!busy) setAssignFor(null); };
-
-  const confirmAssign = async () => {
-    if (!rmId || !assignFor) return;
-    setBusy(true);
-    try {
-      const res = await api.post('/leads/assign', { ucc: assignFor.ucc, rm_id: rmId });
-      const rmName = rms.find(r => String(r.id) === String(rmId))?.rm_name || 'the RM';
-      setAssignFor(null);
-      setToast({ ok: true, msg: `${assignFor.name} assigned to ${rmName}. ` +
-        (res.data?.optin_link ? 'Opt-in email sent to the client.' : 'Assignment saved.') });
-      await loadPool(search.trim());   // refresh list + cards (keep current search)
-    } catch (err) {
-      setToast({ ok: false, msg: err.response?.data?.message || 'Assignment failed. Please try again.' });
-    } finally {
-      setBusy(false);
-    }
+  const act = (id, action) => {
+    setBusy(id + action);
+    api.post('/analytics/unmap-requests/action', { id, action })
+      .then(load).catch(console.error).finally(() => setBusy(null));
   };
 
-  const openAutoAssign = async () => {
-    setAutoLoading(true); setToast(null);
-    try {
-      const res = await api.get('/leads/auto-assign/preview');
-      setAutoPlan(res.data);
-      setAutoOpen(true);
-    } catch (err) {
-      setToast({ ok: false, msg: err.response?.data?.message || 'Could not build the auto-assign plan.' });
-    } finally {
-      setAutoLoading(false);
-    }
-  };
+  const rows = (list, isAi) => (
+    list.length === 0
+      ? <tr><td colSpan={isAi ? 4 : 5} style={{ padding: '18px', textAlign: 'center', color: 'var(--tx3)' }}>None pending.</td></tr>
+      : list.map(r => (
+        <tr key={r.id}>
+          <td><span className="lc" onClick={() => navigate('/client-360', { state: { ucc: r.ucc } })}>{r.name} — {r.ucc}</span></td>
+          <td>{r.rm_name}</td>
+          <td>{r.reason}</td>
+          {!isAi && <td>{r.mapped_since ? new Date(r.mapped_since).toLocaleDateString('en-IN') : '—'}</td>}
+          <td style={{ display: 'flex', gap: 6 }}>
+            <button className="btn bp sm" disabled={busy === r.id + 'approve'} onClick={() => act(r.id, 'approve')}>Approve Unmap</button>
+            <button className="btn bd sm" disabled={busy === r.id + 'reject'} onClick={() => act(r.id, 'reject')}>Reject</button>
+          </td>
+        </tr>
+      ))
+  );
 
-  const confirmAutoAssign = async () => {
-    if (!autoPlan?.plan?.length) return;
-    setAutoBusy(true);
-    try {
-      const assignments = autoPlan.plan.map(p => ({ ucc: p.ucc, rm_id: p.rm_id }));
-      const res = await api.post('/leads/auto-assign/commit', { assignments });
-      const d = res.data || {};
-      setAutoOpen(false); setAutoPlan(null);
-      setToast({ ok: true, msg:
-        `Auto-assign complete — ${d.assigned || 0} client(s) assigned across RMs, ${d.emailed || 0} opt-in email(s) sent` +
-        (d.skipped ? `, ${d.skipped} skipped (already assigned)` : '') +
-        (d.failed ? `, ${d.failed} failed` : '') + '.' });
-      await loadPool(search.trim());
-    } catch (err) {
-      setToast({ ok: false, msg: err.response?.data?.message || 'Auto-assign failed. Please try again.' });
-    } finally {
-      setAutoBusy(false);
-    }
-  };
-
-  const exportCsv = () => {
-    if (!data?.clients?.length) return;
-    const head = ['UCC','Name','Type','Plan','Score','Top signals','MTD Turnover','Holdings','Last trade'];
-    const rows = data.clients.map(r => [
-      r.ucc, r.name, r.client_type, r.plan, r.lead_score ?? '',
-      (r.signals || '').replace(/,/g, ';'),
-      Math.round(Number(r.mtd_to) || 0), Math.round(Number(r.holdings) || 0), mmY(r.last_trade),
-    ]);
-    const csv = [head, ...rows].map(a => a.map(v => `"${String(v ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
-    const a = document.createElement('a');
-    a.href = url; a.download = 'unmapped_scored_list.csv'; a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  if (loading) return <div className="ph"><h2>Unmapped client pool</h2><p>Loading…</p></div>;
-  if (error)   return <div className="ph"><h2>Unmapped client pool</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
-
-  const { cards, clients } = data;
+  if (loading) return <div className="ph"><h2>Unmap Requests</h2><p>Loading…</p></div>;
 
   return (
     <div>
       <div className="ph">
-        <h2>Unmapped client pool</h2>
-        <p>AI-ranked clients with highest potential for RM mapping — from {cards.pool_total.toLocaleString('en-IN')} unmapped</p>
+        <h2>Unmap Requests</h2>
+        <p>RM-requested and AI-suggested unmaps pending supervisor decision</p>
       </div>
-
-      {toast && (
-        <div className={`alert ${toast.ok ? 'a-s' : 'a-d'}`} style={{ marginBottom: 12 }}>
-          {toast.ok ? '✓ ' : '✗ '}{toast.msg}
-        </div>
-      )}
-
-      <div className="alert a-i">
-        🤖 {cards.score_gt60.toLocaleString('en-IN')} clients score above 60. Round-robin auto-assign respects RM capacity limit ({cards.capacity_limit} clients).
-      </div>
-
-      <div className="cards">
-        <div className="card cd"><div className="clbl">Score &gt;80 (high priority)</div><div className="cval">{cards.score_gt80.toLocaleString('en-IN')}</div></div>
-        <div className="card cw"><div className="clbl">Score 60–80</div><div className="cval">{cards.score_60_80.toLocaleString('en-IN')}</div></div>
-        <div className="card ci"><div className="clbl">In pipeline (leads)</div><div className="cval">{cards.in_pipeline.toLocaleString('en-IN')}</div></div>
-        <div className="card cs"><div className="clbl">RM capacity available</div><div className="cval">{cards.capacity_available.toLocaleString('en-IN')} slots</div></div>
+      <div className="alert a-w">
+        Approved unmaps free RM capacity slots. Revenue attribution stops from the unmap date.
       </div>
 
       <div className="panel">
-        <div className="brow" style={{ display: 'flex', gap: 8, marginBottom: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <input
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search by UCC or name…"
-            style={{ flex: '1 1 240px', maxWidth: 320, padding: '8px 12px', borderRadius: 8,
-                     border: '1px solid var(--br2, #cbd5e1)', fontSize: 13, color: 'var(--tx2, #334155)' }}
-          />
-          {search && <span style={{ fontSize: 12, color: 'var(--tx3)' }}>{clients.length} match{clients.length === 1 ? '' : 'es'}</span>}
-          <button className="btn bp" onClick={openAutoAssign} disabled={autoLoading} style={{ marginLeft: 'auto' }}>
-            {autoLoading ? 'Building plan…' : '🤖 Round-robin auto-assign'}
-          </button>
-          <button className="btn" onClick={exportCsv}>⬇️ Export scored list</button>
-        </div>
+        <div className="ptitle">🙋 RM-requested unmaps</div>
         <div className="tw"><table>
-          <thead><tr><th>UCC</th><th>Name</th><th>Type</th><th>Plan</th><th>Score</th><th>Top signals</th><th>MTD TO</th><th>Holdings</th><th>Last trade</th><th>Action</th></tr></thead>
-          <tbody>
-            {clients.map(r => (
-              <tr key={r.ucc}>
-                <td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
-                <td><span className="badge b-ri">{r.client_type}</span></td>
-                <td><span className="badge b-zero">{/paying/i.test(r.plan) ? 'Paying' : 'Zero-brk'}</span></td>
-                <td><span className={scoreClass(r.lead_score)}>{r.lead_score == null ? '—' : r.lead_score}</span></td>
-                <td>{r.signals}</td>
-                <td>{rupee(r.mtd_to)}</td>
-                <td>{rupee(r.holdings)}</td>
-                <td>{mmY(r.last_trade)}</td>
-                <td><button className="btn sm bp" onClick={() => openAssign(r)}>Assign</button></td>
-              </tr>
-            ))}
-            {clients.length === 0 && <tr><td colSpan={10} style={{ color: 'var(--tx3)' }}>{search ? `No unmapped clients match "${search}".` : 'No unmapped clients in the pool.'}</td></tr>}
-          </tbody>
+          <thead><tr><th>Client</th><th>Current RM</th><th>Reason</th><th>Mapped since</th><th>Action</th></tr></thead>
+          <tbody>{rows(data.rm_requested, false)}</tbody>
         </table></div>
       </div>
 
-      {/* ── Assign modal ─────────────────────────────────────────── */}
-      {assignFor && (
-        <div onClick={closeAssign} style={{
-          position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-        }}>
-          <div onClick={e => e.stopPropagation()} style={{
-            background: 'var(--card, #fff)', borderRadius: 12, padding: '22px 24px',
-            width: 420, maxWidth: '92vw', boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
-          }}>
-            <h3 style={{ margin: '0 0 4px', fontSize: 16, color: 'var(--tx)' }}>Assign relationship manager</h3>
-            <p style={{ margin: '0 0 16px', fontSize: 13, color: 'var(--tx3)' }}>
-              {assignFor.name} · UCC {assignFor.ucc}
-            </p>
-
-            <label style={{ fontSize: 12, fontWeight: 600, color: 'var(--tx2)', display: 'block', marginBottom: 6 }}>
-              Choose RM
-            </label>
-            <select value={rmId} onChange={e => setRmId(e.target.value)} disabled={busy}
-              style={{ width: '100%', padding: '9px 10px', borderRadius: 8, fontSize: 13,
-                       border: '1px solid var(--br2, #cbd5e1)', color: 'var(--tx2, #334155)', marginBottom: 14 }}>
-              <option value="">— Select an RM —</option>
-              {rms.map(rm => (
-                <option key={rm.id} value={rm.id}>
-                  {rm.rm_name}{rm.capacity != null ? ` (${rm.assigned_clients ?? 0}/${rm.capacity})` : ''}
-                </option>
-              ))}
-            </select>
-
-            <div style={{ background: 'var(--bg3, #f1f5f9)', borderRadius: 8, padding: '9px 11px',
-                          fontSize: 11, color: 'var(--tx3)', marginBottom: 16 }}>
-              On assign, an opt-in email is sent to the client to confirm their RM.
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="btn" onClick={closeAssign} disabled={busy}>Cancel</button>
-              <button className="btn bp" onClick={confirmAssign} disabled={busy || !rmId}>
-                {busy ? 'Assigning…' : 'Assign & send opt-in'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Round-robin auto-assign preview modal ────────────────── */}
-      {autoOpen && autoPlan && (
-        <div onClick={() => { if (!autoBusy) { setAutoOpen(false); } }} style={{
-          position: 'fixed', inset: 0, background: 'rgba(15,23,42,0.45)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
-        }}>
-          <div onClick={e => e.stopPropagation()} style={{
-            background: 'var(--card, #fff)', borderRadius: 12, padding: '22px 24px',
-            width: 560, maxWidth: '94vw', maxHeight: '86vh', overflowY: 'auto',
-            boxShadow: '0 20px 50px rgba(0,0,0,0.25)',
-          }}>
-            <h3 style={{ margin: '0 0 4px', fontSize: 16, color: 'var(--tx)' }}>Round-robin auto-assign — preview</h3>
-            <p style={{ margin: '0 0 14px', fontSize: 13, color: 'var(--tx3)' }}>
-              {autoPlan.counts.assignable} of {autoPlan.counts.eligible} eligible client(s) (score ≥ {autoPlan.counts.threshold}) will be
-              distributed round-robin across RMs, respecting each RM's remaining capacity.
-              {autoPlan.counts.overflow > 0 && ` ${autoPlan.counts.overflow} client(s) can't be placed — no RM capacity left.`}
-            </p>
-
-            <div className="tw" style={{ marginBottom: 14 }}><table>
-              <thead><tr><th>RM</th><th>Current</th><th>Adding</th><th>New total</th><th>Capacity</th></tr></thead>
-              <tbody>
-                {autoPlan.per_rm.map(r => (
-                  <tr key={r.rm_id}>
-                    <td>{r.rm_name}</td>
-                    <td>{r.current}</td>
-                    <td style={{ color: r.adding > 0 ? 'var(--sc)' : 'var(--tx3)', fontWeight: r.adding > 0 ? 600 : 400 }}>
-                      {r.adding > 0 ? '+' + r.adding : '—'}
-                    </td>
-                    <td>{r.new_total}</td>
-                    <td>{r.capacity}</td>
-                  </tr>
-                ))}
-                {autoPlan.per_rm.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tx3)' }}>No RMs configured.</td></tr>}
-              </tbody>
-            </table></div>
-
-            <div style={{ background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 8, padding: '9px 11px',
-                          fontSize: 12, color: '#9a3412', marginBottom: 16 }}>
-              ⚠️ On confirm, each of the {autoPlan.counts.assignable} client(s) is assigned and an opt-in email is sent to that client. This cannot be undone in bulk.
-            </div>
-
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="btn" onClick={() => setAutoOpen(false)} disabled={autoBusy}>Cancel</button>
-              <button className="btn bp" onClick={confirmAutoAssign} disabled={autoBusy || autoPlan.counts.assignable === 0}>
-                {autoBusy ? 'Assigning…' : `Confirm & assign ${autoPlan.counts.assignable}`}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <div className="panel">
+        <div className="ptitle">🤖 AI-suggested unmaps</div>
+        <div className="tw"><table>
+          <thead><tr><th>Client</th><th>Current RM</th><th>Reason</th><th>Action</th></tr></thead>
+          <tbody>{rows(data.ai_suggested, true)}</tbody>
+        </table></div>
+      </div>
     </div>
   );
 };
 
-export default UnmappedPool;
+export default UnmapRequests;

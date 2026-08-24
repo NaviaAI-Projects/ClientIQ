@@ -216,6 +216,7 @@ body {
   padding: 12px 10px;
   border-top: 1px solid rgba(255,255,255,0.08);
   flex-shrink: 0;
+  position: relative;   /* anchor the sign-out drop-up to the footer, not the scrollable sidebar */
 }
 
 .sb-user {

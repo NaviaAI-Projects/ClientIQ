@@ -247,7 +247,7 @@ const Layout = () => {
           </div>
           {showMenu && (
             <div style={{
-              position: 'absolute', bottom: '70px', left: '12px', right: '12px',
+              position: 'absolute', bottom: 'calc(100% + 6px)', left: '10px', right: '10px',
               background: '#FFFFFF', borderRadius: 'var(--r2)', boxShadow: 'var(--shadow-lg)',
               border: '1px solid var(--br)', zIndex: 300, overflow: 'hidden',
             }}>

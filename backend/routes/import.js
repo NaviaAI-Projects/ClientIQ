@@ -189,7 +189,7 @@ async function computeDailyTrades(dbClient, dateArr) {
   await dbClient.query(`
     INSERT INTO daily_trades (
       ucc, trade_date, total_trades, total_qty, turnover,
-      eq_cash_to, eq_fut_to, comm_to, options_to, call_to, put_to,
+      eq_cash_to, eq_fut_to, comm_to, comm_opt_to, options_to, call_to, put_to,
       cnc_to, mis_to, other_to, cnc_trades, mis_trades,
       buy_val, sell_val, buy_qty, sell_qty, realized_pnl, symbols, updated_at)
     WITH sym AS (
@@ -218,6 +218,7 @@ async function computeDailyTrades(dbClient, dateArr) {
       SUM(CASE WHEN pt = 'CM' THEN to_ ELSE 0 END) AS eq_cash_to,
       SUM(CASE WHEN pt = 'FO' AND (ot IS NULL OR ot = '') THEN to_ ELSE 0 END) AS eq_fut_to,
       SUM(CASE WHEN pt = 'CO' THEN to_ ELSE 0 END) AS comm_to,
+      SUM(CASE WHEN pt = 'CO' AND ot IN ('CE','PE') THEN to_ ELSE 0 END) AS comm_opt_to,   -- commodity OPTIONS only
       SUM(CASE WHEN ot IN ('CE','PE') THEN to_ ELSE 0 END) AS options_to,
       SUM(CASE WHEN ot = 'CE' THEN to_ ELSE 0 END) AS call_to,
       SUM(CASE WHEN ot = 'PE' THEN to_ ELSE 0 END) AS put_to,
@@ -239,6 +240,7 @@ async function computeDailyTrades(dbClient, dateArr) {
     ON CONFLICT (ucc, trade_date) DO UPDATE SET
       total_trades = EXCLUDED.total_trades, total_qty = EXCLUDED.total_qty, turnover = EXCLUDED.turnover,
       eq_cash_to = EXCLUDED.eq_cash_to, eq_fut_to = EXCLUDED.eq_fut_to, comm_to = EXCLUDED.comm_to,
+      comm_opt_to = EXCLUDED.comm_opt_to,
       options_to = EXCLUDED.options_to, call_to = EXCLUDED.call_to, put_to = EXCLUDED.put_to,
       cnc_to = EXCLUDED.cnc_to, mis_to = EXCLUDED.mis_to, other_to = EXCLUDED.other_to,
       cnc_trades = EXCLUDED.cnc_trades, mis_trades = EXCLUDED.mis_trades,
@@ -337,7 +339,7 @@ async function computeDailyTrades(dbClient, dateArr) {
 
   // (e) Roll the touched months up into the permanent client_monthly_summary archive.
   await dbClient.query(`
-    INSERT INTO client_monthly_summary (ucc, month_year, eq_cash_to, eq_fo_to, comm_to, opt_prem_to, brokerage, commission_earned, trade_days)
+    INSERT INTO client_monthly_summary (ucc, month_year, eq_cash_to, eq_fo_to, comm_to, opt_prem_to, brokerage, commission_earned, trade_days, turnover, comm_opt_to)
     SELECT ucc,
       TO_CHAR(trade_date, 'YYYY-MM') AS month_year,
       SUM(eq_cash_turnover),
@@ -346,7 +348,9 @@ async function computeDailyTrades(dbClient, dateArr) {
       SUM(options_premium_turnover),
       SUM(COALESCE(brokerage_earned,0)),
       SUM(COALESCE(commission_earned,0)),
-      COUNT(DISTINCT trade_date)
+      COUNT(DISTINCT trade_date),
+      SUM(COALESCE(turnover,0)),
+      SUM(COALESCE(comm_opt_to,0))
     FROM daily_trades
     WHERE trade_date = ANY($1::date[])
        OR TO_CHAR(trade_date,'YYYY-MM') = ANY(
@@ -359,7 +363,9 @@ async function computeDailyTrades(dbClient, dateArr) {
       opt_prem_to       = EXCLUDED.opt_prem_to,
       brokerage         = EXCLUDED.brokerage,
       commission_earned = EXCLUDED.commission_earned,
-      trade_days        = EXCLUDED.trade_days
+      trade_days        = EXCLUDED.trade_days,
+      turnover          = EXCLUDED.turnover,
+      comm_opt_to       = EXCLUDED.comm_opt_to
   `, [dateArr]);
 
   // (f) Refresh clients.last_trade_date from the raw trades (trades-driven).
@@ -1127,7 +1133,7 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       // Roll up every month that this import touched (not just the current calendar month),
       // and include brokerage so revenue reports can read it here too.
       await dbClient.query(`
-        INSERT INTO client_monthly_summary (ucc, month_year, eq_cash_to, eq_fo_to, comm_to, opt_prem_to, brokerage, commission_earned, trade_days)
+        INSERT INTO client_monthly_summary (ucc, month_year, eq_cash_to, eq_fo_to, comm_to, opt_prem_to, brokerage, commission_earned, trade_days, turnover, comm_opt_to)
         SELECT ucc,
           TO_CHAR(trade_date, 'YYYY-MM') AS month_year,
           SUM(eq_cash_turnover),
@@ -1136,7 +1142,9 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
           SUM(options_premium_turnover),
           SUM(COALESCE(brokerage_earned,0)),
           SUM(COALESCE(commission_earned,0)),
-          COUNT(DISTINCT trade_date)
+          COUNT(DISTINCT trade_date),
+          SUM(COALESCE(turnover,0)),
+          SUM(COALESCE(comm_opt_to,0))
         FROM daily_trades
         WHERE trade_date = ANY($1::date[])
            OR TO_CHAR(trade_date,'YYYY-MM') = ANY(
@@ -1149,7 +1157,9 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
           opt_prem_to       = EXCLUDED.opt_prem_to,
           brokerage         = EXCLUDED.brokerage,
           commission_earned = EXCLUDED.commission_earned,
-          trade_days        = EXCLUDED.trade_days
+          trade_days        = EXCLUDED.trade_days,
+          turnover          = EXCLUDED.turnover,
+          comm_opt_to       = EXCLUDED.comm_opt_to
       `, [Array.from(dates)]);
 
       // 3b. TIERED RETENTION (transfer-then-delete) — daily_trades keeps 90 days of detail.
