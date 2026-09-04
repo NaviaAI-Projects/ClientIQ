@@ -176,7 +176,7 @@ router.get('/rm-performance', auth, async (req, res) => {
     const rmId       = rmResult.rows[0]?.id || null;
     if (!rmId) return res.json({ rm_name: userName || 'RM', months: [] });
 
-    const [brok, mtf, leadsAssigned, converted, inter] = await Promise.all([
+    const [brok, mtf, leadsAssigned, converted, inter, targets] = await Promise.all([
       pool.query(`
         SELECT cms.month_year AS ym, COALESCE(SUM(cms.brokerage),0)::float AS brokerage
         FROM client_monthly_summary cms JOIN clients c ON c.ucc = cms.ucc AND c.assigned_rm_id = $1
@@ -197,6 +197,11 @@ router.get('/rm-performance', auth, async (req, res) => {
       pool.query(`
         SELECT to_char(date_trunc('month',created_at),'YYYY-MM') AS ym, COUNT(*)::int AS n
         FROM interactions WHERE rm_id = $1 GROUP BY 1`, [req.user.id]),
+      // Per-month revenue targets set by admin (analytics → RM targets). Missing table
+      // or no rows → empty, so target stays "—" and nothing is fabricated.
+      pool.query(`
+        SELECT month_year AS ym, COALESCE(target_amount,0)::float AS target
+        FROM rm_targets WHERE rm_id = $1`, [rmId]).catch(() => ({ rows: [] })),
     ]);
 
     // Build a 6-month spine anchored to the latest trade month.
@@ -205,17 +210,20 @@ router.get('/rm-performance', auth, async (req, res) => {
     const MONF = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const map = (rows) => { const m = {}; rows.forEach(r => { m[r.ym] = Number(r.brokerage ?? r.mtf ?? r.n); }); return m; };
     const bM = map(brok.rows), mM = map(mtf.rows), laM = map(leadsAssigned.rows), cM = map(converted.rows), iM = map(inter.rows);
+    // Targets keyed by 'YYYY-MM'. Only months with a stored target appear here.
+    const tM = {}; (targets.rows || []).forEach(r => { tM[r.ym] = Number(r.target) || 0; });
 
     const months = [];
     for (let k = 5; k >= 0; k--) {
       const d = new Date(Date.UTC(md.getUTCFullYear(), md.getUTCMonth() - k, 1));
       const ym = `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,'0')}`;
       const revenue = (bM[ym] || 0) + (mM[ym] || 0);
+      const target = Object.prototype.hasOwnProperty.call(tM, ym) ? tM[ym] : null;
       months.push({
         month: `${MONF[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(2)}`,
         revenue,
-        target: null,           // no targets table in the system
-        achieved_pct: null,     // needs target
+        target,                                                     // from rm_targets (admin), else null → "—"
+        achieved_pct: (target && target > 0) ? (revenue / target) * 100 : null,
         leads_assigned: laM[ym] || 0,
         converted: cM[ym] || 0,
         clients_eom: null,      // needs historical mapping snapshots

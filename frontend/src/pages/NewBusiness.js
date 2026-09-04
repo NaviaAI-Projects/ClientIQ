@@ -90,12 +90,16 @@ const NewBusiness = () => {
   const avgTurnover = l12Turnover / n12;
   const overallAccounts = beforeAccounts + last12Accounts;   // ≈ total client count (Dashboard)
   const overallTrading  = beforeTrading + l12Trading;
-  // Last-3-month aggregates + new-client turnover (Σ new-client turnover ÷ Σ newly opened accounts).
+  // Last-3-month cards. "Last 3M" = the current month plus the two prior opening months
+  // (e.g. Jul + Aug + Sep). "Trading" here = those new accounts that TRADED IN THE CURRENT MONTH
+  // (trading_cur / turnover_cur from the backend), not traded-ever — so the card reflects new
+  // accounts that are actively trading this month.
   const last3 = acquisition.slice(-3);
+  const curLabel = meta.cur_month || (acquisition.length ? acquisition[acquisition.length - 1].label : '');   // current month = range end month
   const l3Accounts = last3.reduce((s, r) => s + r.new_accounts, 0);
-  const l3Trading  = last3.reduce((s, r) => s + r.trading, 0);
-  const l3Turnover = last3.reduce((s, r) => s + (r.turnover || 0), 0);
-  const newCliTurnover = l3Trading ? l3Turnover / l3Trading : 0;   // avg turnover per new client who traded
+  const l3Trading  = last3.reduce((s, r) => s + (r.trading_cur || 0), 0);
+  const l3Turnover = last3.reduce((s, r) => s + (r.turnover_cur || 0), 0);
+  const newCliTurnover = l3Trading ? l3Turnover / l3Trading : 0;   // avg current-month turnover per active new client
 
   // Table 1 — all-clients segment summary, latest up to 3 months (descending)
   const tblMonths = segMonths.slice(-3).reverse();
@@ -126,7 +130,7 @@ const NewBusiness = () => {
         <div className="card cs">
           <div className="clbl">New clients trading (last 3M)</div>
           <div className="cval">{l3Trading.toLocaleString('en-IN')}</div>
-          <div className="csub">{l3Accounts ? (l3Trading / l3Accounts * 100).toFixed(1) : '0'}% of last-3M accounts · {fm}: {featured ? featured.trading.toLocaleString('en-IN') : '—'}</div>
+          <div className="csub">{l3Accounts ? (l3Trading / l3Accounts * 100).toFixed(1) : '0'}% of last-3M accounts traded in {curLabel || 'the current month'}</div>
         </div>
         <div className="card cw">
           <div className="clbl">New client ledger balance</div>
@@ -136,7 +140,7 @@ const NewBusiness = () => {
         <div className="card cp">
           <div className="clbl">Avg turnover / trading client (last 3M)</div>
           <div className="cval">{rupee(newCliTurnover)}</div>
-          <div className="csub">Total new-client turnover ÷ new clients who traded ({l3Trading.toLocaleString('en-IN')})</div>
+          <div className="csub">{curLabel || 'Current-month'} turnover ÷ new clients trading in {curLabel || 'the current month'} ({l3Trading.toLocaleString('en-IN')})</div>
         </div>
       </div>
 
@@ -200,7 +204,7 @@ const NewBusiness = () => {
 
       <div className="tc2">
         <div className="panel">
-          <div className="ptitle">📊 New accounts opened vs new clients trading<InfoBtn text="Per month: accounts newly opened, how many of those new clients traded, and the traded turnover (₹Cr) they generated. In TABLE view, use the segment filter to scope the trading + turnover columns to one segment (new accounts stays total). Months beyond the last 12 roll into a single 'Before' bucket which, with the 12 months, tallies to the total client count." /></div>
+          <div className="ptitle">📊 New accounts opened vs new clients trading<InfoBtn text="Per month: accounts newly opened, how many of those new clients traded, and the traded turnover (₹Cr) they generated. New-clients-trading and turnover are measured only for these recently-opened cohorts — so the 'Before' baseline and 'Total (overall)' rows show the account base with '—' in those two columns (existing clients trade heavily, they're just not new business). In TABLE view, use the segment filter to scope the trading + turnover columns to one segment (new accounts stays total). The 'Before' bucket plus the shown months tally to the total client count." /></div>
           <ViewToggle
             tableControls={
               <label style={{ fontSize: 11, color: 'var(--tx2)', display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -233,8 +237,11 @@ const NewBusiness = () => {
                     <tr style={{ fontWeight: 600, background: 'var(--bg2)' }}>
                       <td>{beforeLabel}</td>
                       <td>{beforeAccounts.toLocaleString('en-IN')}</td>
-                      <td>{beforeTrading.toLocaleString('en-IN')} <span style={pctSub}>({pctStr(beforeTrading, beforeAccounts)})</span></td>
-                      <td>₹{cr2(beforeTurnover)}Cr <span style={pctSub}>({pctStr(beforeTurnover, overallTurnover)})</span></td>
+                      {/* Trading & turnover are measured only for recently-opened cohorts, so this
+                          pre-period baseline shows "—" rather than a misleading ₹0 / 0% for clients
+                          who trade heavily but simply aren't "new business". */}
+                      <td style={{ color: 'var(--tx3)' }}>—</td>
+                      <td style={{ color: 'var(--tx3)' }}>—</td>
                     </tr>
                   )}
                   {last12.map(r => (
@@ -257,8 +264,11 @@ const NewBusiness = () => {
                     <tr style={{ fontWeight: 700 }}>
                       <td>Total (overall)</td>
                       <td>{overallAccounts.toLocaleString('en-IN')}</td>
-                      <td>{overallTrading.toLocaleString('en-IN')} <span style={pctSub}>({pctStr(overallTrading, overallAccounts)})</span></td>
-                      <td>₹{cr2(overallTurnover)}Cr <span style={pctSub}>(100.0%)</span></td>
+                      {/* Overall = the full account base. New-clients-trading and turnover apply only
+                          to the recent opening cohorts (the rows above), so they're "—" here — showing
+                          765 ÷ 75,868 = 1% would wrongly imply only 1% of the book ever trades. */}
+                      <td style={{ color: 'var(--tx3)' }}>—</td>
+                      <td style={{ color: 'var(--tx3)' }}>—</td>
                     </tr>
                   )}
                   {last12.length === 0 && <tr><td colSpan={4} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}

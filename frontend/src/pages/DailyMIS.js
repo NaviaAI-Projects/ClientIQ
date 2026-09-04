@@ -140,7 +140,7 @@ const DailyMIS = () => {
         <div className="panel">
           <div className="ptitle">🔎 Selected range — daily revenue validation ({range.from} → {range.to})<InfoBtn text="Trading days in the selected range with their MTF interest, equity brokerage, clearing commission and float income, plus the range totals. Income that accrues on closed days (weekends/holidays) — mainly MTF interest and float — is folded into the next trading day, so the range total is preserved exactly. MTF interest is each period's interest spread evenly across its inclusive days." /></div>
           <div className="tw"><table>
-            <thead><tr><th style={{ width: 120 }}>Date</th><th>MTF interest</th><th>Equity brokerage</th><th>Clearing (commission)</th><th>Float income</th><th>Day total</th></tr></thead>
+            <thead><tr><th style={{ width: 120 }}>Date</th><th>MTF interest</th><th>Brokerage</th><th>Clearing (commission)</th><th>Float income</th><th>Day total</th></tr></thead>
             <tbody>
               {foldIncomeToTradingDays(range.days).map(d => (
                 <tr key={d.date}>
@@ -269,7 +269,7 @@ const DailyMIS = () => {
           </table></div>
         </div>
         <div className="panel">
-          <div className="ptitle">🥧 Revenue mix — {meta.today}<InfoBtn text="Revenue split for the last traded date across streams as a percentage of total; clearing and brokerage read near zero until those feeds are imported." /></div>
+          <div className="ptitle">🥧 Revenue mix — {meta.mix_scope || meta.today}<InfoBtn text="Revenue split across streams as a percentage of total. Follows the validated From–To range when one is set (otherwise the last traded date); clearing and brokerage read near zero until those feeds are imported." /></div>
           {revenue_mix.map((r, i) => (
             <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
               <span style={{ width: 130, fontSize: 12 }}>{r.label}</span>

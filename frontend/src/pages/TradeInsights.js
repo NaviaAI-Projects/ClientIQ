@@ -19,6 +19,7 @@ const C = {
   blue2:  'rgba(74,143,245,0.13)',
   purp2:  'rgba(157,124,244,0.13)',
   gc:     'rgba(0,0,0,0.07)',
+  navy:   '#1B3F7A',   // Navia brand — used for UI chrome (tabs, period pills) so P&L green/red stay semantic
 };
 
 // Shared, high-contrast tooltip styling so hover values are always legible.
@@ -54,25 +55,32 @@ const FMTPR = v => {
 };
 
 // ── KPI Card — exact prototype structure ───────────────────────
-const Card = ({ label, value, sub, borderColor, valueColor }) => (
+const Card = ({ label, value, sub, borderColor, valueColor }) => {
+  const accent = borderColor || C.blue;
+  return (
   <div style={{
     background:   'var(--bg)',
-    border:       '1px solid rgba(0,0,0,0.08)',
-    borderTop:    `3px solid ${borderColor || C.blue}`,
-    borderRadius: '14px',
-    padding:      '18px 20px',
-    boxShadow:    '0 1px 4px rgba(0,0,0,0.08)',
-    transition:   'box-shadow .2s',
-  }}>
-    <div style={{ fontSize: '11px', fontFamily: 'monospace', fontWeight: '500', color: 'var(--tx3)', textTransform: 'uppercase', letterSpacing: '0.6px', marginBottom: '10px' }}>
-      {label}
+    border:       '1px solid var(--br)',
+    borderRadius: '15px',
+    padding:      '16px 18px',
+    boxShadow:    '0 2px 10px rgba(16,24,40,0.05)',
+    position:     'relative', overflow: 'hidden',
+  }} className="ti-card">
+    {/* gradient top accent — brand-coloured per card */}
+    <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '3px', background: `linear-gradient(90deg, ${accent}, ${accent}44)` }} />
+    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '10px' }}>
+      <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: accent, flexShrink: 0 }} />
+      <div style={{ fontSize: '10px', fontWeight: '700', color: 'var(--tx3)', textTransform: 'uppercase', letterSpacing: '0.7px' }}>
+        {label}
+      </div>
     </div>
-    <div style={{ fontSize: '28px', fontWeight: '800', lineHeight: 1.1, marginBottom: '6px', letterSpacing: '-0.5px', color: valueColor || 'var(--tx)' }}>
+    <div style={{ fontFamily: "'Sora', sans-serif", fontSize: '28px', fontWeight: '800', lineHeight: 1.05, marginBottom: '5px', letterSpacing: '-0.6px', color: valueColor || 'var(--tx)' }}>
       {value}
     </div>
     <div style={{ fontSize: '12px', color: 'var(--tx3)' }}>{sub}</div>
   </div>
-);
+  );
+};
 
 // ── Info dot — small "i" with a hover tooltip (self-contained) ──
 const InfoDot = ({ text }) => {
@@ -107,14 +115,15 @@ const InfoDot = ({ text }) => {
 
 // ── Panel ──────────────────────────────────────────────────────
 const Panel = ({ title, sub, info, children, style }) => (
-  <div style={{
-    background: 'var(--bg)', border: '1px solid rgba(0,0,0,0.08)',
-    borderRadius: '14px', padding: '20px 22px', marginBottom: '16px',
-    boxShadow: '0 1px 4px rgba(0,0,0,0.08)', ...style
+  <div className="ti-panel" style={{
+    background: 'var(--bg)', border: '1px solid var(--br)',
+    borderRadius: '15px', padding: '16px 18px', marginBottom: '12px',
+    boxShadow: '0 1px 4px rgba(0,0,0,0.06)', ...style
   }}>
     {title && (
-      <div style={{ marginBottom: '16px' }}>
-        <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--tx)', display: 'flex', alignItems: 'center', gap: '7px' }}>
+      <div style={{ marginBottom: '13px' }}>
+        <div style={{ fontSize: '14px', fontWeight: '700', color: 'var(--tx)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ width: '3px', height: '15px', borderRadius: '2px', background: C.navy, flexShrink: 0 }} />
           {title}<InfoDot text={info} />
         </div>
         {sub && <div style={{ fontSize: '11.5px', color: 'var(--tx3)', marginTop: '2px', fontFamily: 'monospace' }}>{sub}</div>}
@@ -260,7 +269,7 @@ const CalHeatmap = ({ days, tradeMode }) => {
 };
 
 // ── Main component ─────────────────────────────────────────────
-const TradeInsights = ({ ucc, clientName, token }) => {
+const TradeInsights = ({ ucc, clientName, token, jsucc }) => {
   const [tab,     setTab]     = useState('summary');
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
@@ -268,12 +277,15 @@ const TradeInsights = ({ ucc, clientName, token }) => {
   const [days,    setDays]    = useState(90);
 
   const fetchData = useCallback(async () => {
-    if (!ucc) return;
+    if (!ucc && !jsucc) return;
     setLoading(true);
     setError(null);
     try {
       let res;
-      if (token) {
+      if (jsucc) {
+        // Encrypted SSO link — the UCC is inside the jsucc token, decrypted server-side.
+        res = await api.post('/trade-insights/sso', { jsucc, days });
+      } else if (token) {
         res = await api.post('/trade-insights/public', { ucc, token, days });
       } else {
         res = await api.get(`/trade-insights/${ucc}?days=${days}`);
@@ -284,11 +296,11 @@ const TradeInsights = ({ ucc, clientName, token }) => {
     } finally {
       setLoading(false);
     }
-  }, [ucc, token, days]);
+  }, [ucc, token, jsucc, days]);
 
   useEffect(() => { fetchData(); }, [fetchData, days]); // eslint-disable-line
 
-  if (!ucc) return (
+  if (!ucc && !jsucc) return (
     <div style={{ padding: '40px', textAlign: 'center', color: 'var(--tx3)' }}>
       Select a client to view trade insights
     </div>
@@ -297,7 +309,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
   if (loading) return (
     <div style={{ padding: '60px', textAlign: 'center' }}>
       <div style={{ fontSize: '28px', marginBottom: '10px' }}>📊</div>
-      <div style={{ fontSize: '14px', color: 'var(--tx2)', fontWeight: '500' }}>Loading trade insights for {clientName || ucc}...</div>
+      <div style={{ fontSize: '14px', color: 'var(--tx2)', fontWeight: '500' }}>Loading trade insights for {clientName || ucc || 'your account'}...</div>
       <div style={{ fontSize: '12px', color: 'var(--tx3)', marginTop: '6px' }}>Analysing trading history, P&L and patterns</div>
     </div>
   );
@@ -344,16 +356,35 @@ const TradeInsights = ({ ucc, clientName, token }) => {
   ];
 
   return (
-    <div style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+    <div style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+
+      {/* Responsive + polish styles — scoped by ti- prefix so they only affect this page.
+          Grids collapse on smaller screens; cards lift on hover; the tab bar scrolls on mobile. */}
+      <style>{`
+        .ti-kpi{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+        .ti-2col{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+        .ti-3col{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+        .ti-scorecard{display:grid;grid-template-columns:repeat(3,1fr);gap:16px 20px;}
+        .ti-card{transition:transform .18s ease, box-shadow .18s ease;}
+        .ti-card:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(0,0,0,.10);}
+        .ti-panel{transition:box-shadow .18s ease;}
+        .ti-panel:hover{box-shadow:0 4px 16px rgba(0,0,0,.08);}
+        .ti-tabs{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+        .ti-tabs::-webkit-scrollbar{display:none;}
+        @media (max-width:900px){.ti-kpi{grid-template-columns:repeat(2,1fr);}}
+        @media (max-width:820px){.ti-2col{grid-template-columns:1fr;}}
+        @media (max-width:700px){.ti-3col{grid-template-columns:1fr;}.ti-scorecard{grid-template-columns:1fr;gap:4px;}}
+        @media (max-width:560px){.ti-kpi{grid-template-columns:1fr;}}
+      `}</style>
 
       {/* Period bar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0', paddingBottom: '14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '0', paddingBottom: '14px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '12px', color: 'var(--tx3)', fontFamily: 'monospace' }}>Period:</span>
         {[30, 60, 90].map(d => (
           <button key={d} onClick={() => setDays(d)} style={{
             padding: '5px 15px', borderRadius: '20px', border: '1px solid rgba(0,0,0,0.12)',
             fontSize: '12px', fontWeight: '500', cursor: 'pointer',
-            background: d === days ? C.green : 'var(--bg)',
+            background: d === days ? C.navy : 'var(--bg)',
             color: d === days ? '#fff' : 'var(--tx2)',
             borderColor: d === days ? 'transparent' : 'rgba(0,0,0,0.12)',
             fontFamily: 'inherit',
@@ -400,15 +431,16 @@ const TradeInsights = ({ ucc, clientName, token }) => {
         </div>
       )}
 
-      {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '1px solid rgba(0,0,0,0.08)', marginBottom: '24px' }}>
+      {/* Tab bar — segmented pill control */}
+      <div className="ti-tabs" style={{ display: 'flex', gap: '6px', marginBottom: '24px', padding: '5px', background: 'rgba(27,63,122,0.05)', borderRadius: '12px', width: 'fit-content', maxWidth: '100%' }}>
         {TABS.map(t => (
           <button key={t.id} onClick={() => setTab(t.id)} style={{
-            padding: '9px 20px', fontSize: '13.5px', fontWeight: '600',
-            background: 'none', border: 'none', cursor: 'pointer',
-            color: tab === t.id ? 'var(--tx)' : 'var(--tx3)',
-            borderBottom: tab === t.id ? `2px solid ${C.green}` : '2px solid transparent',
-            transition: 'all 0.15s', fontFamily: 'inherit', whiteSpace: 'nowrap',
+            padding: '9px 18px', fontSize: '13px', fontWeight: '600',
+            border: 'none', cursor: 'pointer', borderRadius: '8px',
+            background: tab === t.id ? C.navy : 'transparent',
+            color: tab === t.id ? '#fff' : 'var(--tx2)',
+            boxShadow: tab === t.id ? '0 2px 8px rgba(27,63,122,0.28)' : 'none',
+            transition: 'all 0.18s', fontFamily: 'inherit', whiteSpace: 'nowrap',
           }}>
             {t.label}
           </button>
@@ -419,13 +451,13 @@ const TradeInsights = ({ ucc, clientName, token }) => {
       {tab === 'summary' && summary && (
         <>
           {/* Section header */}
-          <div style={{ marginBottom: '22px' }}>
-            <h2 style={{ fontFamily: 'inherit', fontSize: '22px', fontWeight: '800', color: 'var(--tx)', marginBottom: '4px', letterSpacing: '-0.4px' }}>Your trading snapshot</h2>
+          <div style={{ marginBottom: '16px' }}>
+            <h2 style={{ fontFamily: "'Sora', sans-serif", fontSize: '21px', fontWeight: '800', color: 'var(--tx)', marginBottom: '4px', letterSpacing: '-0.5px' }}>Your trading snapshot</h2>
             <p style={{ fontSize: '12.5px', color: 'var(--tx3)', fontFamily: 'monospace' }}>{data.trade_days}-day overview · {(data.segments && data.segments.length ? data.segments.join(' · ') : 'Equity & derivatives')}</p>
           </div>
 
           {/* KPI cards */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px', marginBottom: '18px' }}>
+          <div className="ti-kpi" style={{ marginBottom: '18px' }}>
             <Card label="Net P&L"               value={pnlNA ? 'N/A' : FMTP(summary.net_pnl)}      sub={pnlNA ? 'Delivery-only account' : `${summary.pnl_pct >= 0 ? '+' : ''}${summary.pnl_pct}% on turnover`}  borderColor={C.green}  valueColor={pnlNA ? 'var(--tx3)' : (summary.net_pnl >= 0 ? C.green : C.red)} />
             <Card label="Win rate"               value={pnlNA ? 'N/A' : summary.win_rate + '%'}     sub={pnlNA ? 'Intraday P&L only' : `${summary.wins} wins · ${summary.losses} losses`}                              borderColor={C.blue}   valueColor={pnlNA ? 'var(--tx3)' : C.blue} />
             <Card label={data.has_options ? "Premium turnover" : "Turnover"}       value={FMT(summary.premium_to)}    sub={`${(summary.lots || 0).toLocaleString('en-IN')} ${data.has_options ? 'lots' : 'qty'} · ${summary.trades} trades`}                              borderColor={C.amber}  valueColor={C.amber} />
@@ -436,7 +468,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           {data.cnc_mis && (data.cnc_mis.cnc + data.cnc_mis.mis + data.cnc_mis.other) > 0 && (
             <div style={{ marginBottom: '18px' }}>
               <Panel title="CNC vs MIS" info="Delivery (CNC) vs intraday (MIS) turnover, split from the trade file's product type." sub="Delivery vs intraday turnover — from RMS trade file Product Type">
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '12px', padding: '6px 0' }}>
+                <div className="ti-3col" style={{ padding: '6px 0' }}>
                   <div>
                     <div style={{ fontSize: '11px', color: 'var(--tx3)' }}>CNC · Delivery</div>
                     <div style={{ fontSize: '19px', fontWeight: '800', color: C.blue }}>{FMT(data.cnc_mis.cnc)}</div>
@@ -457,7 +489,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           )}
 
           {/* Charts g2 */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+          <div className="ti-2col">
             <Panel title="Cumulative P&L trend" info="Running total of your realized intraday P&L, accumulated day by day over the period." sub="Running total by trading day">
               {pnlNA ? <NA h={224} /> : (
               <div style={{ height: '224px' }}>
@@ -497,7 +529,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             </Panel>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+          <div className="ti-2col">
             <Panel title="Activity by segment" info="Share of your activity across segments (options, futures, cash) by trade count and premium." sub="Trade count & premium split">
               <div style={{ height: '164px' }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -527,7 +559,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             </Panel>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+          <div className="ti-2col">
             <Panel title={`${pnlNA ? 'Trade calendar' : 'Daily P&L calendar'} — ${calendar?.month_label || new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' })}`} info="Each calendar day coloured by that day's realized P&L (green = profit, red = loss, grey = no trade)." sub={pnlNA ? 'Blue = traded day · Grey = no trade' : 'Green = profit day · Red = loss day'}>
               <CalHeatmap days={calendar?.days || []} tradeMode={pnlNA} />
             </Panel>
@@ -576,8 +608,8 @@ const TradeInsights = ({ ucc, clientName, token }) => {
       {/* ════════════════ TAB 2 — OPTIONS ════════════════ */}
       {tab === 'options' && options_stats && (
         <>
-          <div style={{ marginBottom: '22px' }}>
-            <h2 style={{ fontFamily: 'inherit', fontSize: '22px', fontWeight: '800', color: 'var(--tx)', marginBottom: '4px', letterSpacing: '-0.4px' }}>Options trading insights</h2>
+          <div style={{ marginBottom: '16px' }}>
+            <h2 style={{ fontFamily: "'Sora', sans-serif", fontSize: '21px', fontWeight: '800', color: 'var(--tx)', marginBottom: '4px', letterSpacing: '-0.5px' }}>Options trading insights</h2>
             <p style={{ fontSize: '12.5px', color: 'var(--tx3)', fontFamily: 'monospace' }}>Strike selection · Call/Put bias · Expiry behaviour · Holding duration</p>
           </div>
 
@@ -589,7 +621,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             </Panel>
           ) : (
           <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '12px', marginBottom: '18px' }}>
+          <div className="ti-kpi" style={{ marginBottom: '18px' }}>
             <Card label="Options win rate"      value={options_stats.win_rate + '%'}      sub={`${options_stats.wins}W · ${options_stats.losses}L over ${data.trade_days} days`}   borderColor={C.blue}   valueColor={C.blue} />
             <Card label="Call vs Put split"     value={options_stats.call_pct >= 50 ? options_stats.call_pct + '% Calls' : (100 - options_stats.call_pct) + '% Puts'} sub={`${options_stats.call_pct >= 50 ? 'Bullish' : 'Bearish'} bias · ${options_stats.call_pct >= 50 ? (100 - options_stats.call_pct) + '% Puts' : options_stats.call_pct + '% Calls'}`} borderColor={C.amber} valueColor={C.amber} />
             <Card label="Most-traded instrument" value={options_stats.best_strike || '—'} sub="By turnover"                                                                          borderColor={C.green}  valueColor={C.green} />
@@ -629,7 +661,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             )}
           </Panel>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+          <div className="ti-2col">
             <Panel title="Call vs Put — P&L by month" info="Monthly realized P&L split between your call trades and put trades.">
               <div style={{ height: '200px' }}>
                 <ResponsiveContainer width="100%" height="100%">
@@ -721,12 +753,12 @@ const TradeInsights = ({ ucc, clientName, token }) => {
       {/* ════════════════ TAB 3 — PATTERNS ════════════════ */}
       {tab === 'patterns' && patterns && (
         <>
-          <div style={{ marginBottom: '22px' }}>
-            <h2 style={{ fontFamily: 'inherit', fontSize: '22px', fontWeight: '800', color: 'var(--tx)', marginBottom: '4px', letterSpacing: '-0.4px' }}>Your trading patterns</h2>
+          <div style={{ marginBottom: '16px' }}>
+            <h2 style={{ fontFamily: "'Sora', sans-serif", fontSize: '21px', fontWeight: '800', color: 'var(--tx)', marginBottom: '4px', letterSpacing: '-0.5px' }}>Your trading patterns</h2>
             <p style={{ fontSize: '12.5px', color: 'var(--tx3)', fontFamily: 'monospace' }}>Behaviour analysis · Time of day · Day of week · Frequency vs outcome · Lot sizing</p>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+          <div className="ti-2col">
             <Panel title="Day-of-week performance" info="Win rate = share of that weekday's closed round-trips (matched buy/sell legs) that were profitable — a day with one winning and one losing trade reads 50%. Avg P&L is the average realized P&L per trading day." sub="Win rate and avg P&L by weekday">
               {pnlNA ? <NA h={224} /> : (
               <div style={{ height: '224px' }}>
@@ -781,7 +813,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             </Panel>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+          <div className="ti-2col">
             <Panel title="Lot sizing behaviour" info="Average lots you trade the day after a winning day vs the day after a losing day — shows revenge/over-sizing." sub="Average lots — after a winning day vs a losing day">
               {pnlNA ? <NA h={224} /> : (<>
               <div style={{ height: '224px' }}>
@@ -833,7 +865,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             <div style={{ background: 'rgba(245,166,35,0.08)', border: '1px solid rgba(245,166,35,0.3)', borderRadius: '14px', padding: '20px 22px', marginBottom: '16px' }}>
               <div style={{ fontSize: '14px', fontWeight: '700', color: C.amber, marginBottom: '6px' }}>⚡ Pattern signal: lot size escalation after losses</div>
               <div style={{ fontSize: '12px', color: 'var(--tx3)', fontFamily: 'monospace', marginBottom: '16px' }}>Statistical observation based on {data.trade_days}-day trade history · Not investment advice</div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '12px' }}>
+              <div className="ti-3col">
                 {[
                   { label: 'Avg lots after a loss',  value: patterns.lots_after_loss != null ? Number(patterns.lots_after_loss).toFixed(1) : '—', sub: 'Not available from feed', color: C.red },
                   { label: 'Win rate after a loss',   value: patterns.wr_after_loss != null ? patterns.wr_after_loss + '%' : '—',              sub: 'Needs trade sequencing', color: C.amber },
@@ -856,12 +888,12 @@ const TradeInsights = ({ ucc, clientName, token }) => {
       {/* ════════════════ TAB 4 — BEST & WORST ════════════════ */}
       {tab === 'bestandworst' && best_worst && (
         <>
-          <div style={{ marginBottom: '22px' }}>
-            <h2 style={{ fontFamily: 'inherit', fontSize: '22px', fontWeight: '800', color: 'var(--tx)', marginBottom: '4px', letterSpacing: '-0.4px' }}>Your best & worst</h2>
+          <div style={{ marginBottom: '16px' }}>
+            <h2 style={{ fontFamily: "'Sora', sans-serif", fontSize: '21px', fontWeight: '800', color: 'var(--tx)', marginBottom: '4px', letterSpacing: '-0.5px' }}>Your best & worst</h2>
             <p style={{ fontSize: '12.5px', color: 'var(--tx3)', fontFamily: 'monospace' }}>Top performers · Biggest drags · Monthly comparison · Trading score card</p>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+          <div className="ti-2col">
             {/* Top 5 */}
             <Panel title="Top 5 instruments by P&L" info="The five instruments that contributed the most realized profit over the period." sub="Your best performers" style={{ borderTop: `3px solid ${C.green}` }}>
               {pnlNA ? <NA h={180} /> : (
@@ -913,7 +945,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
             </Panel>
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px' }}>
+          <div className="ti-2col">
             {/* Best days */}
             <Panel title="Top 5 trading days" info="Your five best single-day realized P&L days in the period." sub="Best single-day P&L">
               {pnlNA ? <NA h={180} /> : (
@@ -991,7 +1023,7 @@ const TradeInsights = ({ ucc, clientName, token }) => {
           {/* Trading scorecard — exact prototype: 3-col progress bars */}
           <Panel title="Your trading score card" info="Scores computed only from your own trading history — not a benchmark against other traders." sub={`Computed from your own ${data.trade_days}-day history · Not a benchmark against other traders`}>
             {pnlNA ? <NA h={140} /> : (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 24px' }}>
+            <div className="ti-scorecard">
               {(best_worst.scorecard || []).map((s, i) => (
                 <ScoreBar key={i} label={s.label} score={s.score} gradient={SCORE_GRADIENTS[i]} />
               ))}

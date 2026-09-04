@@ -860,6 +860,35 @@ router.get('/new-business', auth, async (req, res) => {
       FROM client_monthly_summary cms JOIN newc n ON n.ucc = cms.ucc GROUP BY 1
     `);
     const acqTO = {}; acqTOq.rows.forEach(r => { acqTO[r.mon] = Number(r.turnover); });
+    // Per opening-month: new-client cohort members who TRADED IN THE CURRENT MONTH + their
+    // current-month turnover. "Current month" = the month of the selected range's END (rng.to),
+    // so it FOLLOWS the date filter (Jun–Aug -> August; All -> the latest data month). This drives
+    // the Last-3M cards: accounts opened in the last 3 months that are actively trading in that
+    // month — distinct from `trading` above (traded ever).
+    // TURNOVER FLOOR: a client counts as "trading" only if their current-month turnover exceeds
+    // TRADED_MIN_TURNOVER rupees. This trims the tail of micro-turnover accounts so the count
+    // reconciles with the business team's sheet (e.g. Aug Jun–Aug cohort 1,209 -> 1,115; the ~94
+    // excluded carry ₹0.0005 Cr combined). Set to 0 to count every client with any turnover.
+    const TRADED_MIN_TURNOVER = 104;
+    const acqCurQ = await pool.query(`
+      WITH cur AS (SELECT date_trunc('month', $1::date)::date AS m0),
+      newc AS (SELECT ucc, to_char(account_open_date,'YYYY-MM') AS omon FROM clients WHERE account_open_date IS NOT NULL),
+      pc AS (   -- per client: current-month turnover, keep only those above the floor
+        SELECT n.omon, d.ucc, SUM(d.turnover) AS turnover
+        FROM newc n
+        JOIN daily_trades d ON d.ucc = n.ucc
+        CROSS JOIN cur
+        WHERE d.trade_date >= cur.m0 AND d.trade_date < (cur.m0 + INTERVAL '1 month')
+        GROUP BY n.omon, d.ucc
+        HAVING SUM(d.turnover) > $2
+      )
+      SELECT omon AS mon,
+             COUNT(*)::int                    AS trading_cur,
+             COALESCE(SUM(turnover),0)::float AS turnover_cur
+      FROM pc GROUP BY omon
+    `, [rng.to, TRADED_MIN_TURNOVER]);
+    const acqCur = {};
+    acqCurQ.rows.forEach(r => { acqCur[r.mon] = { trading: Number(r.trading_cur), turnover: Number(r.turnover_cur) }; });
     // Per opening-month × segment: new-client trading count + turnover — drives the table-view
     // segment filter (scopes "New clients trading" and "Turnover" to the chosen segment).
     const acqSegQ = await pool.query(`
@@ -883,6 +912,9 @@ router.get('/new-business', auth, async (req, res) => {
       key: r.mon, label: mLabel(r.mon),
       new_accounts: Number(r.new_accounts), trading: Number(r.trading), ledger_bal: Number(r.ledger_bal),
       turnover: acqTO[r.mon] || 0,
+      // current-month activity for this opening cohort (used by the Last-3M cards)
+      trading_cur: acqCur[r.mon]?.trading || 0,
+      turnover_cur: acqCur[r.mon]?.turnover || 0,
     }));
 
     // Featured = latest complete month (if the newest month is mid-month, use the prior one)
@@ -923,6 +955,7 @@ router.get('/new-business', auth, async (req, res) => {
         prior_month: prior ? prior.label : null,
         featured_partial: !!partial,
         as_of: fmtFullDate(maxOpenRow.rows[0]?.d),
+        cur_month: mLabel(ymOf(rng.to)),   // current month = the selected range's end month
         range: rangeMeta(rng),
         seg_months: segMonths.map(mLabel),
         seg_months_keys: segMonths,
@@ -1084,14 +1117,20 @@ router.get('/unmapped-pool', auth, async (req, res) => {
     const term   = search ? '%' + search + '%' : null;   // UCC / name search across the whole pool
     const cards = await pool.query(`
       SELECT
-        (SELECT COUNT(*) FROM lead_pool WHERE status='unassigned' AND lead_score > 80)::int                         AS score_gt80,
-        (SELECT COUNT(*) FROM lead_pool WHERE status='unassigned' AND lead_score >= 60 AND lead_score <= 80)::int    AS score_60_80,
-        (SELECT COUNT(*) FROM lead_pool WHERE status='unassigned' AND lead_score >= 60)::int                         AS score_gt60,
+        -- Unassigned-pool counts exclude already-mapped clients (stale lead_pool rows), so the
+        -- KPI cards match the list, which now filters out clients with an assigned RM.
+        (SELECT COUNT(*) FROM lead_pool lp WHERE lp.status='unassigned' AND lp.lead_score > 80
+           AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.ucc=lp.ucc AND c.assigned_rm_id IS NOT NULL))::int        AS score_gt80,
+        (SELECT COUNT(*) FROM lead_pool lp WHERE lp.status='unassigned' AND lp.lead_score >= 60 AND lp.lead_score <= 80
+           AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.ucc=lp.ucc AND c.assigned_rm_id IS NOT NULL))::int        AS score_60_80,
+        (SELECT COUNT(*) FROM lead_pool lp WHERE lp.status='unassigned' AND lp.lead_score >= 60
+           AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.ucc=lp.ucc AND c.assigned_rm_id IS NOT NULL))::int        AS score_gt60,
         (SELECT COUNT(*) FROM lead_pool WHERE status IN ('assigned','pending','opted_in'))::int                      AS in_pipeline,
         (SELECT COALESCE(SUM(capacity),0) FROM rm_master)::int
           - (SELECT COUNT(*) FROM clients WHERE assigned_rm_id IS NOT NULL)::int                                     AS capacity_available,
         COALESCE((SELECT rm_capacity_limit FROM pipeline_settings ORDER BY id LIMIT 1), 100)::int                    AS capacity_limit,
-        (SELECT COUNT(*) FROM lead_pool WHERE status='unassigned')::int                                              AS pool_total
+        (SELECT COUNT(*) FROM lead_pool lp WHERE lp.status='unassigned'
+           AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.ucc=lp.ucc AND c.assigned_rm_id IS NOT NULL))::int        AS pool_total
     `);
 
     const rows = await pool.query(`
@@ -1114,6 +1153,10 @@ router.get('/unmapped-pool', auth, async (req, res) => {
       LEFT JOIN mtd ON mtd.ucc = lp.ucc
       LEFT JOIN hold ON hold.ucc = lp.ucc
       WHERE lp.status = 'unassigned'
+        -- Guard against stale lead_pool rows: a client who has since been mapped to an RM
+        -- (assigned_rm_id set) must never appear in the Unmapped Pool, even if their lead_pool
+        -- status wasn't flipped from 'unassigned'.
+        AND c.assigned_rm_id IS NULL
         AND ($1::text IS NULL OR lp.ucc ILIKE $1 OR COALESCE(lp.client_name, c.name) ILIKE $1)
       ORDER BY lp.lead_score DESC NULLS LAST
       LIMIT 50
@@ -1595,7 +1638,11 @@ router.get('/mapping-approvals', auth, async (req, res) => {
       FROM lead_pool lp
       LEFT JOIN clients c ON c.ucc = lp.ucc
       LEFT JOIN rm_master rm ON COALESCE(lp.assigned_rm_id, lp.assigned_to_rm) = rm.id
-      WHERE lp.status IN ('pending','opted_in') AND lp.lead_score >= 50
+      -- A client who has OPTED IN (given consent) must ALWAYS appear for approval,
+      -- regardless of lead score — otherwise a low-score but consented client is stuck
+      -- invisible forever. The score gate only applies to un-consented 'pending' leads.
+      WHERE lp.status = 'opted_in'
+         OR (lp.status = 'pending' AND lp.lead_score >= 50)
       ORDER BY lp.lead_score DESC NULLS LAST
     `);
     res.json({
@@ -2754,7 +2801,7 @@ router.get('/daily-mis', auth, async (req, res) => {
     };
     const income = [
       incLine('Clearing charges (commission)', r => r.comm, null),
-      incLine('Equity brokerage', r => r.brok, null),
+      incLine('Brokerage', r => r.brok, null),
       incLine('MTF interest (daily)', r => mtfByDate[r.d] || 0, null),
       // Per-day float = that day's total ledger balance × FD rate ÷ 365 (floatByDate).
       // Falls back to the latest-snapshot estimate only for a day with no ledger entry,
@@ -2771,7 +2818,7 @@ router.get('/daily-mis', auth, async (req, res) => {
       l.vs = vsPct(l.mtd_avg || 0, l.prior3m_avg);   // MTD avg vs Prior-3M avg
     };
     overrideIncPrior('Clearing charges (commission)', 'commission');
-    overrideIncPrior('Equity brokerage', 'brokerage');
+    overrideIncPrior('Brokerage', 'brokerage');
     const realLines = income.filter(l => !l.note);
     const totalToday = realLines.reduce((s, l) => s + (l.today || 0), 0);
     const totalMtd = realLines.reduce((s, l) => s + (l.mtd_avg || 0), 0);
@@ -2782,8 +2829,6 @@ router.get('/daily-mis', auth, async (req, res) => {
       day_before: realLines.reduce((s, l) => s + (l.day_before || 0), 0), mtd_avg: totalMtd,
       prior1m_avg: totalP1, prior2m_avg: totalP2, prior3m_avg: totalPrior, vs: vsPct(totalMtd, totalPrior), note: null, total: true });
     income.forEach(l => { l.share = (l.note || l.total) ? null : (totalToday > 0 ? Math.round((l.today || 0) / totalToday * 100) : 0); });
-
-    const revenueMix = realLines.map(l => ({ label: l.line.replace(' (daily)', '').replace(' (est.)', ''), pct: totalToday > 0 ? Math.round((l.today || 0) / totalToday * 100) : 0 }));
 
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
     const dLabel = (d) => { const dt = new Date(d); return `${dt.getUTCDate()} ${MON[dt.getUTCMonth()]} '${String(dt.getUTCFullYear()).slice(2)}`; };
@@ -2828,6 +2873,24 @@ router.get('/daily-mis', auth, async (req, res) => {
         comm_fut: sum(x => x.comm_fut), comm_opt: sum(x => x.comm_opt), turnover: sum(x => x.turnover) } };
     }
 
+    // Revenue mix — honours the validated From–To range when one is active, otherwise the last
+    // traded date. Uses the same four real streams (clearing, brokerage, MTF interest, float) so
+    // the pie recomputes for the selected window instead of being pinned to the anchor day.
+    const mixByLine = range
+      ? { 'Clearing charges (commission)': range.totals.commission,
+          'Brokerage':                     range.totals.brokerage,
+          'MTF interest (daily)':          range.totals.mtf_interest,
+          'Float income (est.)':           range.totals.float_income }
+      : null;
+    const mixTotal = range
+      ? (range.totals.commission + range.totals.brokerage + range.totals.mtf_interest + range.totals.float_income)
+      : totalToday;
+    const revenueMix = realLines.map(l => {
+      const v = range ? (mixByLine[l.line] || 0) : (l.today || 0);
+      return { label: l.line.replace(' (daily)', '').replace(' (est.)', ''),
+               pct: mixTotal > 0 ? Math.round(v / mixTotal * 100) : 0 };
+    });
+
     // MTF book "Prior 3M avg" column: average each metric across the 3 prior calendar months
     // (pm1/pm2/pm3), using only months that actually have MTF data. Daily interest is averaged
     // the same way as the MTD column (per-day, from mtfByDate) so the columns are comparable.
@@ -2866,7 +2929,8 @@ router.get('/daily-mis', auth, async (req, res) => {
     res.json({
       range,
       meta: { today: fmtDate(today?.d), yesterday_date: fmtDate(yday?.d), day_before_date: fmtDate(dbef?.d),
-              asof, is_expiry: today ? today.is_expiry : false, brokerage_loaded: rows.reduce((s, r) => s + r.brok, 0) > 0 },
+              asof, is_expiry: today ? today.is_expiry : false, brokerage_loaded: rows.reduce((s, r) => s + r.brok, 0) > 0,
+              mix_scope: range ? `${fmtDate(range.from)} → ${fmtDate(range.to)}` : fmtDate(today?.d) },
       income,
       volume,
       activity: [
@@ -2874,13 +2938,13 @@ router.get('/daily-mis', auth, async (req, res) => {
         actSeg('F&O clients (Eq)', r => r.fo_eq_clients),
         actSeg('F&O clients (Comm)', r => r.fo_comm_clients),
         actSeg('Equity cash clients', r => r.cash_clients),
-        // MTF is a monthly book, so each column is that month's distinct MTF clients (from
-        // mtf_monthly): current month for today/MTD, and the three prior calendar months for
-        // Prior 1M/2M/3M. `?? null` keeps a month with no MTF data blank ("—") rather than 0.
+        // MTF book column is that book's distinct MTF clients (from mtf_monthly): current
+        // period for today/MTD, and the three prior periods for Prior 1M/2M/3M. `?? null`
+        // keeps a period with no MTF data blank ("—") rather than 0.
         (() => {
           const cur = mtfCliByMonth[curMonth] ?? 0;
           const p1 = mtfCliByMonth[pm1] ?? null, p2 = mtfCliByMonth[pm2] ?? null, p3 = mtfCliByMonth[pm3] ?? null;
-          return { category: 'MTF clients', note: 'monthly book', today: cur, yesterday: cur, mtd_avg: cur,
+          return { category: 'MTF clients', note: 'Weekly book', today: cur, yesterday: cur, mtd_avg: cur,
                    prior1m_avg: p1, prior2m_avg: p2, prior3m_avg: p3, vs: vsPct(cur, p3 || 0) };
         })(),
         actSeg('Resident clients', r => r.resident_clients),
@@ -2980,7 +3044,7 @@ function misTables(data) {
   });
   if (d.range && Array.isArray(d.range.days) && d.range.days.length) { const t = d.range.totals || {}; tables.push({
     sheet: 'Range validation', title: `Selected range — daily revenue validation (${d.range.from} to ${d.range.to})`,
-    headers: ['Date', 'MTF interest', 'Equity brokerage', 'Clearing (comm)', 'Float income', 'Day total'],
+    headers: ['Date', 'MTF interest', 'Brokerage', 'Clearing (comm)', 'Float income', 'Day total'],
     rows: [
       ...d.range.days.map((x) => [x.label, misRs(x.mtf_interest), misRs(x.brokerage), misRs(x.commission), misRs(x.float_income), misRs(x.total)]),
       [`Total (${d.range.days.length} days)`, misRs(t.mtf_interest), misRs(t.brokerage), misRs(t.commission), misRs(t.float_income), misRs(t.total)],

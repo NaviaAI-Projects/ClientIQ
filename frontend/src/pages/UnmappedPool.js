@@ -60,7 +60,7 @@ const UnmappedPool = () => {
     try {
       await api.post('/leads/assign', { ucc: assignFor.ucc, rm_id: Number(rmId) });
       const rmName = rms.find(r => String(r.id) === String(rmId))?.rm_name || 'RM';
-      flash(true, `${assignFor.name} assigned to ${rmName}.`);
+      flash(true, `${assignFor.name} assigned to ${rmName}. The RM sends the opt-in after contact.`);
       setAssignFor(null); setRmId('');
       await loadPool(search.trim());
     } catch (e) {
@@ -173,7 +173,7 @@ const UnmappedPool = () => {
             ))}
           </tbody>
         </table></div>
-        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Top 50 by lead score. Assigning a client sends the opt-in email and moves them into the pipeline.</p>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Top 50 by lead score. Assigning hands the client to the RM — no email is sent. The RM sends the opt-in link from Assigned Leads after speaking to the client.</p>
       </div>
 
       {/* Single-assign modal */}
@@ -192,7 +192,7 @@ const UnmappedPool = () => {
             </select>
             <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
               <button className="btn sm" disabled={busy} onClick={() => setAssignFor(null)}>Cancel</button>
-              <button className="btn bp sm" disabled={busy || !rmId} onClick={submitAssign}>{busy ? 'Assigning…' : 'Assign & send opt-in'}</button>
+              <button className="btn bp sm" disabled={busy || !rmId} onClick={submitAssign}>{busy ? 'Assigning…' : 'Assign to RM'}</button>
             </div>
           </div>
         </div>

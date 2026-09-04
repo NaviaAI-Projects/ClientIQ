@@ -10,7 +10,7 @@ const axios   = require('axios');
 // ── Groq helper (same config as routes/ai.js) ─────────────────
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL   = 'llama-3.1-8b-instant';
+const GROQ_MODEL   = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 async function callGroq(systemPrompt, userPrompt, maxTokens = 700) {
   const response = await axios.post(GROQ_URL, {
     model: GROQ_MODEL, max_tokens: maxTokens,
@@ -38,14 +38,31 @@ function createTransporter() {
   });
 }
 
-// ── Shared: assign one lead to an RM (updates lead_pool + sends opt-in email) ──
-// Mirrors the single-client /assign flow so bulk auto-assign behaves identically.
-// rm_id is an rm_master.id (same id space the /rm/list dropdown and per-row Assign use).
+// ── Shared: assign one lead to an RM (lead_pool only — NO opt-in email) ──
+// Assignment just hands the lead to the RM: status 'assigned' = "To contact".
+// The opt-in email is deliberately NOT sent here — the RM sends the consent link
+// later from Assigned Leads, after speaking to the client (see sendOptinEmail /
+// POST /optin/send). rm_id is an rm_master.id (same id space the dropdown uses).
 async function assignLeadToRm(rm_id, ucc) {
   const expiry = new Date();
   expiry.setDate(expiry.getDate() + 30);
+  await pool.query(`
+    UPDATE lead_pool
+    SET assigned_to_rm=$1, assigned_at=NOW(), assignment_expires_at=$2,
+        status='assigned', updated_at=NOW()
+    WHERE ucc=$3
+  `, [rm_id, expiry, ucc]);
+  return { assigned: true };
+}
 
-  const rmRes      = await pool.query('SELECT id, name FROM users WHERE id=$1', [rm_id]);
+// ── Shared: send the client the opt-in ("Confirm My RM") consent link ──────────
+// Triggered by the RM from Assigned Leads AFTER their conversation. Fetches the
+// client's email (Sharepro fallback), emails the consent link, and moves the lead
+// to 'optin_sent'. Resend-safe — can be called again while 'assigned'/'optin_sent'.
+async function sendOptinEmail(rm_id, ucc) {
+  const rmRes      = await pool.query(
+    `SELECT COALESCE((SELECT rm_name FROM rm_master WHERE id=$1),
+                     (SELECT name FROM users WHERE id=$1), 'RM') AS name`, [rm_id]);
   const clientRes  = await pool.query('SELECT name, email FROM clients WHERE ucc=$1', [ucc]);
   const rmName     = rmRes.rows[0]?.name?.trim() || 'RM';
   const clientName = clientRes.rows[0]?.name?.trim() || ucc;
@@ -79,13 +96,6 @@ async function assignLeadToRm(rm_id, ucc) {
   const baseUrl    = process.env.OPTIN_BASE_URL || 'http://localhost:3000';
   const optinLink  = baseUrl + '/optin/' + optinToken;
 
-  await pool.query(`
-    UPDATE lead_pool
-    SET assigned_to_rm=$1, assigned_at=NOW(), assignment_expires_at=$2,
-        status='assigned', updated_at=NOW()
-    WHERE ucc=$3
-  `, [rm_id, expiry, ucc]);
-
   let emailed = false;
   if (clientEmail) {
     try {
@@ -112,6 +122,10 @@ async function assignLeadToRm(rm_id, ucc) {
     console.warn('No email for client', ucc, '— opt-in link:', optinLink);
   }
 
+  // Move the lead into the consent stage (link is logged even if email failed).
+  await pool.query(
+    `UPDATE lead_pool SET status='optin_sent', updated_at=NOW() WHERE ucc=$1`, [ucc]);
+
   return { optin_link: optinLink, emailed };
 }
 
@@ -134,7 +148,10 @@ router.get('/my', auth, async (req, res) => {
         lp.assignment_expires_at, lp.status
       FROM lead_pool lp
       JOIN clients c ON lp.ucc = c.ucc
-      WHERE lp.assigned_to_rm = $1 AND lp.status = 'assigned'
+      -- Show the full pre-mapping funnel so the RM can track a lead and act on it:
+      -- assigned (to contact) → optin_sent (awaiting consent) → opted_in (pending
+      -- supervisor approval) → declined. 'mapped' leads drop off (they're now clients).
+      WHERE lp.assigned_to_rm = $1 AND lp.status IN ('assigned','optin_sent','opted_in','declined')
       ORDER BY lp.lead_score DESC
     `, [rmId]);
     res.json(result.rows);
@@ -363,17 +380,28 @@ router.get('/optin', async (req, res) => {
     }
     const { ucc, rm_id } = decoded;
     const clientRes = await pool.query('SELECT ucc, name FROM clients WHERE ucc = $1', [ucc]);
-    const rmRes     = await pool.query('SELECT id, name, phone FROM users WHERE id = $1', [rm_id]);
-    if (!clientRes.rows.length || !rmRes.rows.length) {
-      return res.status(404).json({ message: 'Client or RM not found.' });
+    if (!clientRes.rows.length) {
+      return res.status(404).json({ message: 'Client not found.' });
     }
+    // rm_id is an rm_master.id (same id space as the assign dropdown / assigned_to_rm),
+    // NOT a users.id — so resolve the RM name from rm_master first, then fall back to
+    // users, then a generic label. (The old page auto-confirmed and never hit this,
+    // which is why the users-table lookup silently failed once the page started validating.)
+    const rmRes = await pool.query(
+      `SELECT COALESCE((SELECT rm_name FROM rm_master WHERE id=$1),
+                       (SELECT name    FROM users     WHERE id=$1),
+                       'your Relationship Manager') AS name`, [rm_id]);
+    // Current lead state so the page can show "already confirmed / already declined"
+    // instead of asking a client who has already responded to respond again.
+    const lpRes = await pool.query('SELECT status FROM lead_pool WHERE ucc = $1', [ucc]);
     res.json({
       valid:       true,
-      client_name: clientRes.rows[0].name.trim(),
+      client_name: clientRes.rows[0].name?.trim() || ucc,
       ucc,
-      rm_name:     rmRes.rows[0].name.trim(),
-      rm_phone:    rmRes.rows[0].phone || '',
+      rm_name:     rmRes.rows[0].name?.trim() || 'your Relationship Manager',
+      rm_phone:    '',
       rm_id,
+      status:      lpRes.rows[0]?.status || null,
     });
   } catch (err) {
     res.status(500).json({ message: err.message });
@@ -471,8 +499,10 @@ router.post('/assign', auth, async (req, res) => {
   const { ucc, rm_id } = req.body;
   if (!ucc || !rm_id) return res.status(400).json({ message: 'UCC and RM ID are required' });
   try {
-    const { optin_link } = await assignLeadToRm(rm_id, ucc);
-    res.json({ success: true, optin_link });
+    // Assignment only — no opt-in email here. The RM sends the consent link later
+    // from Assigned Leads (POST /optin/send) after speaking to the client.
+    await assignLeadToRm(rm_id, ucc);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ message: 'Server error', error: err.message });
   }
@@ -575,15 +605,47 @@ router.post('/auto-assign/commit', auth, async (req, res) => {
         `SELECT 1 FROM lead_pool WHERE ucc=$1 AND status='unassigned'`, [ucc]
       );
       if (chk.rowCount === 0) { results.skipped++; continue; }
-      const { emailed } = await assignLeadToRm(rm_id, ucc);
+      // Assignment only — opt-in is sent later by the RM from Assigned Leads.
+      await assignLeadToRm(rm_id, ucc);
       results.assigned++;
-      if (emailed) results.emailed++;
     } catch (err) {
       results.failed++;
       results.errors.push({ ucc, error: err.message });
     }
   }
   res.json({ success: true, ...results });
+});
+
+// ── POST /optin/send — RM sends the opt-in consent link to the client ──────────
+// Called from Assigned Leads AFTER the RM's conversation. Only the RM the lead is
+// assigned to may send it, and only while 'assigned' or 'optin_sent' (resend
+// allowed until the client responds). Moves the lead to 'optin_sent'.
+router.post('/optin/send', auth, async (req, res) => {
+  const ucc = req.body?.ucc;
+  if (!ucc) return res.status(400).json({ message: 'UCC is required' });
+  try {
+    // Resolve the logged-in user to their rm_master id (same mapping as GET /my).
+    const userRes  = await pool.query('SELECT name FROM users WHERE id=$1 LIMIT 1', [req.user.id]);
+    const userName = userRes.rows[0]?.name || '';
+    const rmRes    = await pool.query('SELECT id FROM rm_master WHERE LOWER(rm_name)=LOWER($1) LIMIT 1', [userName]);
+    const rmId     = rmRes.rows[0]?.id || null;
+
+    const lpRes = await pool.query('SELECT assigned_to_rm, status FROM lead_pool WHERE ucc=$1', [ucc]);
+    const lead  = lpRes.rows[0];
+    if (!lead) return res.status(404).json({ message: 'Lead not found' });
+    if (!rmId || String(lead.assigned_to_rm) !== String(rmId)) {
+      return res.status(403).json({ message: 'This lead is not assigned to you' });
+    }
+    if (!['assigned', 'optin_sent'].includes(lead.status)) {
+      return res.status(409).json({ message: `Opt-in can't be sent while the lead is '${lead.status}'` });
+    }
+
+    const { emailed, optin_link } = await sendOptinEmail(lead.assigned_to_rm, ucc);
+    res.json({ success: true, emailed, optin_link });
+    audit(req, 'OPTIN_SENT', 'Opt-in link sent to client ' + ucc, ucc, 'success', 'leads').catch(() => {});
+  } catch (err) {
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
 });
 
 // ── POST /approve-mapping ──────────────────────────────────────
@@ -596,7 +658,7 @@ router.post('/approve-mapping', auth, async (req, res) => {
     await pool.query(`
       UPDATE lead_pool
       SET assigned_to_rm=$1, assigned_at=NOW(), assignment_expires_at=$2,
-          status='assigned', updated_at=NOW()
+          status='mapped', updated_at=NOW()
       WHERE ucc=$3
     `, [rm_id, expiry, ucc]);
     await pool.query(`

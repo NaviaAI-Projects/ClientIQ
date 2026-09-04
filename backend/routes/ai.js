@@ -7,7 +7,10 @@ const audit = require('../utils/audit');
 
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const GROQ_URL     = 'https://api.groq.com/openai/v1/chat/completions';
-const GROQ_MODEL   = 'llama-3.1-8b-instant';
+// Model is env-configurable so a Groq deprecation/access change needs no code edit.
+// Default is the flagship production model (broadly accessible); set GROQ_MODEL to
+// override (e.g. 'llama-3.1-8b-instant' or 'openai/gpt-oss-20b' for a faster/cheaper run).
+const GROQ_MODEL   = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 
 async function callGroq(systemPrompt, userPrompt, maxTokens = 500) {
   const response = await axios.post(GROQ_URL, {
@@ -212,31 +215,99 @@ router.get('/digest', auth, async (req, res) => {
     const churn     = churnList.length;
     const crossSell = crossSellList.length;
 
-    // Deterministic fallback brief (used only if Groq is unavailable/errors).
+    // Compact INR formatter (lakh / crore) — shared by the fallback and the Groq path.
+    const inr = n => {
+      const v = Number(n) || 0;
+      if (v >= 1e7) return `₹${(v / 1e7).toFixed(2)} Cr`;
+      if (v >= 1e5) return `₹${(v / 1e5).toFixed(2)} L`;
+      if (v >= 1e3) return `₹${(v / 1e3).toFixed(1)}k`;
+      return `₹${Math.round(v)}`;
+    };
+
+    // Deterministic DETAILED fallback brief. This is what renders whenever Groq is
+    // unavailable or errors, so it is written to stand on its own with real per-client
+    // depth (never one-liners). Every number is used exactly as stored — nothing invented.
     let summary;
     if (assignedTotal === 0) {
-      summary = '<p>You have no active leads assigned right now. Check the mapping pool or contact your supervisor.</p>';
+      summary = '<p>You have no active leads assigned right now. Check the mapping pool or contact your supervisor to get leads mapped to you.</p>';
     } else {
-      summary =
-        `<p style="margin-bottom:10px"><strong>Good morning, ${firstName}!</strong> You have <strong>${assignedTotal}</strong> active lead${assignedTotal === 1 ? '' : 's'} assigned to you.</p>` +
-        `<p style="margin-bottom:10px"><strong>High score:</strong> ${highScoreList.length} priority client${highScoreList.length === 1 ? '' : 's'}${highScoreList.length ? ` (${highScoreList.slice(0,3).map(r => `${r.name} — ${r.lead_score}`).join(', ')})` : ''}.</p>` +
-        `<p style="margin-bottom:10px"><strong>Call today:</strong> ${toCallList.length} need${toCallList.length === 1 ? 's' : ''} a call${toCallList.length ? ` (${toCallList.slice(0,3).map(r => r.name).join(', ')})` : ''} — expiry, churn, or dormancy.</p>` +
-        `<p style="margin-bottom:10px"><strong>Retention:</strong> ${churn} at high churn risk${churnList.length ? ` (${churnList.slice(0,3).map(r => r.name).join(', ')})` : ''}.</p>` +
-        `<p style="margin-bottom:10px"><strong>Stable:</strong> ${lowRiskList.length} low-risk client${lowRiskList.length === 1 ? '' : 's'}${lowRiskList.length ? ` (${lowRiskList.slice(0,3).map(r => r.name).join(', ')})` : ''} — keep warm.</p>` +
-        `<p><strong>This month:</strong> ${workingDaysLeft} working day${workingDaysLeft === 1 ? '' : 's'} left to end of month.</p>`;
+      // Describe one client in a full sentence with the concrete reason + a talking point.
+      const activityPhrase = r =>
+        r.last_trade_date == null ? 'has never placed a trade'
+        : `last traded ${r.days_since_trade} day${r.days_since_trade === 1 ? '' : 's'} ago`;
+      const valuePhrase = r => {
+        const bits = [];
+        if (Number(r.total_turnover) > 0) bits.push(`lifetime turnover ${inr(r.total_turnover)}`);
+        if (Number(r.brokerage) > 0)      bits.push(`brokerage ${inr(r.brokerage)}`);
+        return bits.length ? ` (${bits.join(', ')})` : '';
+      };
+      const callReason = r => {
+        if (r.days_to_expiry != null && r.days_to_expiry <= 7)
+          return `their assignment expires in ${r.days_to_expiry} day${r.days_to_expiry === 1 ? '' : 's'}, so reach out before it auto-reassigns`;
+        if ((r.churn_risk_score || 0) >= 7)
+          return `churn risk is ${r.churn_risk_score} out of 10 — a retention call is overdue`;
+        if (r.last_trade_date == null)
+          return 'they have never traded, so a first-trade activation call is the priority';
+        return `they have been dormant for ${r.days_since_trade} days and need re-engaging`;
+      };
+      const talkPoint = r => {
+        if (r.last_trade_date == null) return 'walk them through placing a first delivery or intraday trade and confirm their funds/KYC are ready';
+        if ((r.churn_risk_score || 0) >= 7) return 'understand what has changed, review brokerage/plan fit, and offer an MTF or research idea to bring them back';
+        if (r.days_since_trade != null && r.days_since_trade > 30) return 'share a fresh trade idea (delivery vs intraday, or an options strategy) to restart activity';
+        return `explore an MTF or F&O upsell given their ${inr(r.total_turnover)} turnover`;
+      };
+
+      const P = [];
+      P.push(`<p style="margin-bottom:12px"><strong>Good morning, ${firstName}.</strong> You have <strong>${assignedTotal}</strong> active lead${assignedTotal === 1 ? '' : 's'} in your book. ${highScoreList.length} score 60+, ${toCallList.length} need a call today (expiry, churn or dormancy), ${churn} sit at high churn risk, and ${lowRiskList.length} are stable and low-risk. There ${workingDaysLeft === 1 ? 'is' : 'are'} ${workingDaysLeft} working day${workingDaysLeft === 1 ? '' : 's'} left this month.</p>`);
+
+      // High-score priorities — full sentence each.
+      if (highScoreList.length) {
+        const items = highScoreList.slice(0, 5).map(r =>
+          `<li style="margin-bottom:6px"><strong>${r.name}</strong> — lead score ${r.lead_score}, ${r.client_type || 'client'}, ${activityPhrase(r)}${valuePhrase(r)}. ${(r.churn_risk_score || 0) >= 7 ? 'High churn risk, so treat as urgent — ' : 'Prioritise a value conversation — '}${talkPoint(r)}.</li>`
+        ).join('');
+        P.push(`<p style="margin-bottom:6px"><strong>High-score priorities (${highScoreList.length}):</strong></p><ul style="margin:0 0 12px 18px;padding:0">${items}</ul>`);
+      } else {
+        P.push(`<p style="margin-bottom:12px"><strong>High-score priorities:</strong> none of your leads currently score 60 or above. Focus on activation to lift scores.</p>`);
+      }
+
+      // Call today — per-client reason + talking point.
+      if (toCallList.length) {
+        const items = toCallList.slice(0, 6).map(r =>
+          `<li style="margin-bottom:6px"><strong>${r.name}</strong> (score ${r.lead_score ?? 'NA'}) — ${callReason(r)}. On the call, ${talkPoint(r)}.</li>`
+        ).join('');
+        P.push(`<p style="margin-bottom:6px"><strong>Call today (${toCallList.length}):</strong></p><ul style="margin:0 0 12px 18px;padding:0">${items}</ul>`);
+      } else {
+        P.push(`<p style="margin-bottom:12px"><strong>Call today:</strong> nothing is expiring, churning or dormant right now — a quiet day for firefighting. Use it to deepen relationships with your stable book.</p>`);
+      }
+
+      // Retention.
+      if (churnList.length) {
+        const items = churnList.slice(0, 5).map(r =>
+          `<li style="margin-bottom:6px"><strong>${r.name}</strong> — churn risk ${r.churn_risk_score} out of 10, ${activityPhrase(r)}${valuePhrase(r)}. ${talkPoint(r)}.</li>`
+        ).join('');
+        P.push(`<p style="margin-bottom:6px"><strong>Retention watch (${churnList.length}):</strong></p><ul style="margin:0 0 12px 18px;padding:0">${items}</ul>`);
+      } else {
+        P.push(`<p style="margin-bottom:12px"><strong>Retention watch:</strong> no client is at high churn risk (7+). Keep logging interactions to hold it there.</p>`);
+      }
+
+      // Stable / keep warm.
+      if (lowRiskList.length) {
+        P.push(`<p style="margin-bottom:12px"><strong>Stable clients (${lowRiskList.length}):</strong> ${lowRiskList.slice(0,5).map(r => `${r.name} (churn ${r.churn_risk_score}/10)`).join(', ')} are low-risk. A light monthly check-in and a timely trade idea keep them engaged and protect the relationship.</p>`);
+      }
+
+      // Opportunities.
+      if (crossSellList.length) {
+        P.push(`<p><strong>Opportunities (${crossSellList.length}):</strong> ${crossSellList.slice(0,5).map(r => `${r.name}${valuePhrase(r).trim()}`).join('; ')} are actively trading and high-value — strong candidates for an MTF, F&O or premium-plan pitch. Tie the pitch to their recent activity and turnover.</p>`);
+      } else {
+        P.push(`<p><strong>Opportunities:</strong> no active high-value cross-sell candidate today. Re-activating a dormant client is the fastest way to create one.</p>`);
+      }
+
+      summary = P.join('');
     }
 
     // Groq-written brief based on the RM's client data.
     if (GROQ_API_KEY && assignedTotal > 0) {
       try {
-        // Compact INR formatter (lakh / crore) for turnover & brokerage.
-        const inr = n => {
-          const v = Number(n) || 0;
-          if (v >= 1e7) return `₹${(v / 1e7).toFixed(2)} Cr`;
-          if (v >= 1e5) return `₹${(v / 1e5).toFixed(2)} L`;
-          if (v >= 1e3) return `₹${(v / 1e3).toFixed(1)}k`;
-          return `₹${Math.round(v)}`;
-        };
         // Full per-client profile so the AI can write real detail, not one-liners.
         const profile = r => {
           const bits = [];
@@ -704,7 +775,7 @@ Keep it brief, practical and specific to this client's numbers. No generic advic
     const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
     const completion = await groq.chat.completions.create({
-      model: 'llama-3.1-8b-instant',
+      model: process.env.GROQ_MODEL || 'llama-3.3-70b-versatile',
       max_tokens:  400,
       temperature: 0.7,
       messages: [{ role: 'user', content: prompt }]

@@ -284,4 +284,168 @@ router.get('/:ucc', auth, async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// POST /api/clients/ingest — machine-to-machine client creation for the
+// account-opening cron. Authenticated with the shared TRADING_APP_API_KEY via the
+// `X-API-Key` header (NOT the human JWT). Idempotent upsert on ucc, so the cron can
+// safely re-push the same day's accounts without creating duplicates.
+//
+// Body — a single record, an array, or { clients: [...] }. Field aliases accepted:
+//   ucc               (required)  [uccode, ucc_code, client_code]
+//   name                          [client_name, clientName]
+//   client_type       default RI  [type, clientType]
+//   account_open_date             [open_date, regd_date, account_open]  YYYY-MM-DD (DD-MM-YYYY / DD/MM/YYYY also parsed)
+//   status            default Active [account_status, overall_status]
+//   email
+//
+// Returns { ok, received, created, updated, skipped, errors[] }. plan is set to
+// 'Zero-brokerage' on create (the brokerage import later promotes payers to 'Brokerage')
+// and is never overwritten on update. account_open_date/name are never blanked on update.
+// ════════════════════════════════════════════════════════════════════════════
+router.post('/ingest', async (req, res) => {
+  // ── API-key auth (server-to-server) ──
+  const provided = req.headers['x-api-key'] || req.headers['x-apikey'] || req.query.api_key;
+  const expected = process.env.TRADING_APP_API_KEY;
+  if (!expected) return res.status(500).json({ message: 'Ingest key not configured (TRADING_APP_API_KEY)' });
+  if (!provided || String(provided) !== String(expected)) {
+    return res.status(401).json({ message: 'Invalid or missing API key' });
+  }
+
+  // ── Normalise the body into an array of records ──
+  const body = req.body;
+  const list = Array.isArray(body) ? body
+    : Array.isArray(body?.clients) ? body.clients
+    : (body && typeof body === 'object' && Object.keys(body).length) ? [body]
+    : [];
+  if (!list.length) return res.status(400).json({ message: 'No client records provided' });
+  if (list.length > 5000) return res.status(413).json({ message: 'Batch too large — send ≤ 5000 records per call' });
+
+  const pick = (r, ...keys) => { for (const k of keys) { const v = r?.[k]; if (v != null && String(v).trim() !== '') return String(v).trim(); } return null; };
+  const toISO = (s) => {
+    if (!s) return null;
+    s = String(s).trim();
+    let m;
+    if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/)))            return `${m[1]}-${m[2]}-${m[3]}`;   // ISO
+    if ((m = s.match(/^(\d{2})[-/](\d{2})[-/](\d{4})$/)))     return `${m[3]}-${m[2]}-${m[1]}`;   // DD-MM-YYYY / DD/MM/YYYY
+    const d = new Date(s);                                                                        // last resort
+    return isNaN(d.getTime()) ? null : d.toISOString().slice(0, 10);
+  };
+
+  const result = { received: list.length, created: 0, updated: 0, skipped: 0, errors: [] };
+  try {
+    // Ensure the optional email column exists (idempotent), so the upsert can set it.
+    await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS email TEXT`).catch(() => {});
+
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i] || {};
+      const ucc  = pick(r, 'ucc', 'uccode', 'ucc_code', 'client_code');
+      if (!ucc) { result.skipped++; if (result.errors.length < 50) result.errors.push({ index: i, error: 'ucc is required' }); continue; }
+      const name       = pick(r, 'name', 'client_name', 'clientName');
+      // NRI rule: any UCC beginning with 'N' is an NRI client — the prefix is authoritative,
+      // so newly-ingested accounts are classified correctly even when the cron omits client_type.
+      const clientType = String(ucc).toUpperCase().startsWith('N')
+        ? 'NRI'
+        : (pick(r, 'client_type', 'clientType', 'type') || 'RI');
+      const openDate   = toISO(pick(r, 'account_open_date', 'open_date', 'regd_date', 'account_open'));
+      const statusRaw  = pick(r, 'status', 'account_status', 'overall_status') || 'Active';
+      const email      = pick(r, 'email');
+      const st         = statusRaw.toLowerCase();
+      const isActive   = st.includes('active') && !st.includes('inactive');   // "inactive" contains "active"
+
+      try {
+        const up = await pool.query(`
+          INSERT INTO clients (ucc, name, client_type, plan, account_open_date, is_active, status, email, created_at, updated_at)
+          VALUES ($1, $2, $3, 'Zero-brokerage', $4::date, $5, $6, $7, NOW(), NOW())
+          ON CONFLICT (ucc) DO UPDATE SET
+            name              = COALESCE(EXCLUDED.name, clients.name),
+            client_type       = EXCLUDED.client_type,
+            account_open_date = COALESCE(EXCLUDED.account_open_date, clients.account_open_date),
+            is_active         = EXCLUDED.is_active,
+            status            = EXCLUDED.status,
+            email             = COALESCE(EXCLUDED.email, clients.email),
+            updated_at        = NOW()
+          RETURNING (xmax = 0) AS inserted
+        `, [ucc, name, clientType, openDate, isActive, statusRaw, email]);
+        if (up.rows[0]?.inserted) result.created++; else result.updated++;
+      } catch (e) {
+        result.skipped++; if (result.errors.length < 50) result.errors.push({ index: i, ucc, error: e.message });
+      }
+    }
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('CLIENT-INGEST ERROR:', err.message);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// POST /api/clients/status — server-to-server STATUS updates (account closures etc.)
+// Companion to /ingest: the in-house cron calls this when a client's status changes
+// (e.g. an account is closed / suspended / reactivated). Same `X-API-Key` auth.
+//
+// Body — a single record, an array, or { clients: [...] }. Field aliases:
+//   ucc     (required)  [uccode, ucc_code, client_code]
+//   status  (required)  [account_status, overall_status]   e.g. Closed / Active / Suspended / Dormant
+//
+// Only UPDATES existing clients (never creates — creation is /ingest). is_active is
+// derived from the status text. When a client is closed, their lead_pool entry is
+// retired ('closed') so they drop out of the Unmapped Pool. Idempotent per ucc.
+// Returns { ok, received, updated, not_found, skipped, closed, errors[] }.
+// ════════════════════════════════════════════════════════════════════════════
+router.post('/status', async (req, res) => {
+  // ── API-key auth (server-to-server) — same key as /ingest ──
+  const provided = req.headers['x-api-key'] || req.headers['x-apikey'] || req.query.api_key;
+  const expected = process.env.TRADING_APP_API_KEY;
+  if (!expected) return res.status(500).json({ message: 'Ingest key not configured (TRADING_APP_API_KEY)' });
+  if (!provided || String(provided) !== String(expected)) {
+    return res.status(401).json({ message: 'Invalid or missing API key' });
+  }
+
+  const body = req.body;
+  const list = Array.isArray(body) ? body
+    : Array.isArray(body?.clients) ? body.clients
+    : (body && typeof body === 'object' && Object.keys(body).length) ? [body]
+    : [];
+  if (!list.length) return res.status(400).json({ message: 'No status records provided' });
+  if (list.length > 5000) return res.status(413).json({ message: 'Batch too large — send ≤ 5000 records per call' });
+
+  const pick = (r, ...keys) => { for (const k of keys) { const v = r?.[k]; if (v != null && String(v).trim() !== '') return String(v).trim(); } return null; };
+
+  const result = { received: list.length, updated: 0, not_found: 0, skipped: 0, closed: 0, errors: [] };
+  try {
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i] || {};
+      const ucc       = pick(r, 'ucc', 'uccode', 'ucc_code', 'client_code');
+      const statusRaw = pick(r, 'status', 'account_status', 'overall_status');
+      if (!ucc)       { result.skipped++; if (result.errors.length < 50) result.errors.push({ index: i, error: 'ucc is required' }); continue; }
+      if (!statusRaw) { result.skipped++; if (result.errors.length < 50) result.errors.push({ index: i, ucc, error: 'status is required' }); continue; }
+
+      const st       = statusRaw.toLowerCase();
+      const isActive = st.includes('active') && !st.includes('inactive');   // "inactive" contains "active"
+      const isClosed = st.startsWith('clos');
+
+      try {
+        // Update only — never create. A UCC the app has never seen is reported as not_found.
+        const up = await pool.query(
+          `UPDATE clients SET status = $2, is_active = $3, updated_at = NOW() WHERE ucc = $1`,
+          [ucc, statusRaw, isActive]);
+        if (up.rowCount === 0) { result.not_found++; continue; }
+        result.updated++;
+
+        // A closed account should leave the Unmapped Pool / lead pipeline so RMs don't work it.
+        if (isClosed) {
+          await pool.query(`UPDATE lead_pool SET status = 'closed' WHERE ucc = $1 AND status = 'unassigned'`, [ucc]).catch(() => {});
+          result.closed++;
+        }
+      } catch (e) {
+        result.skipped++; if (result.errors.length < 50) result.errors.push({ index: i, ucc, error: e.message });
+      }
+    }
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('CLIENT-STATUS ERROR:', err.message);
+    res.status(500).json({ message: 'Server error', error: err.message });
+  }
+});
+
 module.exports = router;

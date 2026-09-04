@@ -675,7 +675,10 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
           if (sk) statusRaw = R[sk];
         }
         const status      = String(statusRaw || '').trim();
-        const clientType  = String(R['Client Type'] || R['Type'] || 'RI').trim();
+        // NRI rule: a UCC beginning with 'N' is NRI — prefix is authoritative over the file column,
+        // so the client master always classifies NRI correctly regardless of the source feed.
+        const clientType  = String(ucc).toUpperCase().startsWith('N') ? 'NRI'
+                          : String(R['Client Type'] || R['Type'] || 'RI').trim();
         const regdDate    = parseDate(R['Regd Date']);
         const lastTrade   = parseDate(String(R['Last TradeAccross Exch'] || '').trim());
         // "Active" vs "Inactive": note that "inactive" CONTAINS "active", so a plain
@@ -1732,15 +1735,21 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       // interest_earned). To re-import corrected data cleanly, clear mtf_interest + mtf_monthly
       // first (manual delete) rather than relying on the upload to prune.
       // avg_mtf_balance is ESTIMATED by inverting the interest formula, because the interest
-      // export carries no principal column: interest = balance × rate% ÷ 100 × days ÷ 365, so
-      //   balance = interest ÷ (rate% ÷ 100 × days ÷ 365),  days = inclusive (to − from + 1).
-      // This is an estimate (chargeable days can differ from the stated window), surfaced in the
-      // UI as "MTF book (estimated)". If a real funding/exposure file becomes available, replace
-      // this derivation with the actual outstanding debit balance.
+      // export carries no principal column: interest = balance × rate% ÷ 100 × days ÷ 365.
+      // A client's month is split into MANY sub-periods (a new line each time the balance or rate
+      // changes), all covering the SAME continuous borrowing window. Inverting each sub-period to
+      // its own full balance and SUMMING them counted the same window once per slice — a client
+      // with 10 balance-changes over 21 days was reported at ~10× their real book (the total book
+      // inflated ~4× overall, e.g. ₹33.7 Cr vs the ~₹8.5 Cr the interest actually supports).
+      // Correct measure = days-weighted AVERAGE outstanding over the window:
+      //   Σ(balance_i × days_i) ÷ Σ(days_i),  where balance_i × days_i = interest_i ÷ (rate ÷ 100 ÷ 365).
+      // This collapses the sliced sub-periods back into one window and is rate-change safe.
+      // Still an estimate (chargeable days can differ from the stated window), surfaced in the UI
+      // as "MTF book (estimated)". A real funding/exposure file would give the exact debit balance.
       await dbClient.query(`
         INSERT INTO mtf_monthly (ucc, month_year, avg_mtf_balance, interest_earned, from_date, to_date, interest_rate)
         SELECT ucc, TO_CHAR(from_date,'YYYY-MM'),
-               SUM(interest / NULLIF((rate/100.0) * ((to_date - from_date + 1)/365.0), 0)),
+               SUM(interest / NULLIF((rate/100.0)/365.0, 0)) / NULLIF(SUM(to_date - from_date + 1), 0),
                SUM(interest), MIN(from_date), MAX(to_date), AVG(rate)
         FROM mtf_interest
         GROUP BY ucc, TO_CHAR(from_date,'YYYY-MM')

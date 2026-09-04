@@ -466,6 +466,81 @@ Rules: Use ONLY the numbers above; do not invent any. This client's activity is 
 }
 
 // ── GET /:ucc — Authenticated (ClientIQ internal) ─────────────
+// ════════════════════════════════════════════════════════════════════════════
+// ENCRYPTED (SSO-style) TRADE-INSIGHTS LINKS  — declared BEFORE the '/:ucc' catch-all
+// so GET /encrypt and GET /sso aren't swallowed by it. Encrypt a client's UCC into an
+// opaque, tamper-proof token (jsucc) appended to the URL — /trade-insights?jsucc=<token>
+// — so the UCC is never exposed in plaintext (same idea as the BuyBack jsucc SSO link).
+// AES-256-GCM, keyed from UCC_ENC_SECRET (falls back to JWT_SECRET, so it works with no
+// new config). The jsucc is both the identifier AND the credential: only the server can
+// mint or verify one, and any tampering fails the GCM auth tag.
+// ════════════════════════════════════════════════════════════════════════════
+const _crypto = require('crypto');
+const _uccKey = _crypto.createHash('sha256')
+  .update(String(process.env.UCC_ENC_SECRET || process.env.JWT_SECRET || 'navia-clientiq-ucc-key'))
+  .digest();                                          // 32-byte AES-256 key
+function encryptUcc(ucc, ttlDays) {
+  const exp = ttlDays > 0 ? Date.now() + ttlDays * 86400000 : 0;   // 0 = never expires
+  const payload = Buffer.from(JSON.stringify({ u: String(ucc), e: exp }), 'utf8');
+  const iv = _crypto.randomBytes(12);
+  const c  = _crypto.createCipheriv('aes-256-gcm', _uccKey, iv);
+  const ct = Buffer.concat([c.update(payload), c.final()]);
+  return Buffer.concat([iv, c.getAuthTag(), ct]).toString('base64url');   // iv(12)+tag(16)+ct
+}
+function decryptUcc(tokenStr) {
+  const raw = Buffer.from(String(tokenStr), 'base64url');
+  if (raw.length < 29) throw new Error('bad token');
+  const iv = raw.subarray(0, 12), tag = raw.subarray(12, 28), ct = raw.subarray(28);
+  const d = _crypto.createDecipheriv('aes-256-gcm', _uccKey, iv);
+  d.setAuthTag(tag);
+  const pt = Buffer.concat([d.update(ct), d.final()]).toString('utf8');
+  const { u, e } = JSON.parse(pt);
+  if (e && Date.now() > e) { const err = new Error('expired'); err.code = 'EXPIRED'; throw err; }
+  return u;
+}
+
+// POST/GET /encrypt — build a jsucc link for a UCC. Auth: X-API-Key / ?api_key (the
+// TRADING_APP_API_KEY) for machine callers, OR a valid ClientIQ login (JWT).
+async function handleEncryptUcc(req, res) {
+  const key = req.headers['x-api-key'] || req.query.api_key || req.body?.api_key;
+  const expected = process.env.TRADING_APP_API_KEY;
+  let ok = !!(expected && key && String(key) === String(expected));
+  if (!ok && req.headers.authorization) {
+    try { require('jsonwebtoken').verify((req.headers.authorization.split(' ')[1] || ''), process.env.JWT_SECRET); ok = true; } catch (e) {}
+  }
+  if (!ok) return res.status(401).json({ message: 'Unauthorized — provide the API key or a valid login.' });
+  const ucc = String(req.query.ucc || req.body?.ucc || '').trim();
+  if (!ucc) return res.status(400).json({ message: 'ucc is required' });
+  const ttlRaw  = req.query.ttl_days ?? req.body?.ttl_days;
+  const ttlDays = (ttlRaw != null && ttlRaw !== '') ? Number(ttlRaw) : 1;   // default 1 day; pass 0 for a permanent link
+  const jsucc = encryptUcc(ucc, ttlDays);
+  const frontendUrl = (process.env.FRONTEND_URL || 'http://localhost:3000').replace(/\/$/, '');
+  res.json({ ok: true, ucc, jsucc, url: `${frontendUrl}/trade-insights?jsucc=${jsucc}`, expires_in_days: ttlDays > 0 ? ttlDays : null });
+}
+router.get('/encrypt', handleEncryptUcc);
+router.post('/encrypt', handleEncryptUcc);
+
+// POST/GET /sso — open a jsucc link: decrypt → return that client's insights. Public, but
+// only a server-signed jsucc decrypts, so the encrypted UCC itself is the access credential.
+async function handleSsoUcc(req, res) {
+  const jsucc = req.query.jsucc || req.body?.jsucc;
+  if (!jsucc) return res.status(400).json({ message: 'jsucc is required' });
+  let ucc;
+  try { ucc = decryptUcc(jsucc); }
+  catch (e) {
+    return res.status(e.code === 'EXPIRED' ? 410 : 401)
+      .json({ message: e.code === 'EXPIRED' ? 'This link has expired — please reopen it from your platform.' : 'Invalid or tampered link.' });
+  }
+  try {
+    const data = await buildInsightsData(ucc, parseInt(req.query.days || req.body?.days) || 90);
+    res.json({ ...data, ucc });
+  } catch (err) {
+    res.status(err.message === 'Client not found' ? 404 : 500).json({ message: err.message });
+  }
+}
+router.get('/sso', handleSsoUcc);
+router.post('/sso', handleSsoUcc);
+
 router.get('/:ucc', auth, async (req, res) => {
   try {
     const data = await buildInsightsData(req.params.ucc, parseInt(req.query.days) || 90);
