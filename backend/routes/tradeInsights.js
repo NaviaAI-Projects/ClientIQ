@@ -499,16 +499,15 @@ function decryptUcc(tokenStr) {
   return u;
 }
 
-// POST/GET /encrypt — build a jsucc link for a UCC. Auth: X-API-Key / ?api_key (the
-// TRADING_APP_API_KEY) for machine callers, OR a valid ClientIQ login (JWT).
+// POST/GET /encrypt — build a jsucc link for a UCC. Just pass the UCC (?ucc=...):
+//   STEP 1  GET /api/trade-insights/encrypt?ucc=<UCC>   → returns the encrypted `jsucc`
+//   STEP 2  open  /trade-insights?jsucc=<value>          → loads that client's insights
+// No API key or login is required to MINT a token — mirroring Navia's Internal encrypt page.
+// SECURITY: because the token grants read access to that client's Trade Insights, restrict
+// this /encrypt route to your internal network at the nginx/proxy layer (allow office/back-
+// office IPs, deny the public), the same way Navia's /Internal/ page is protected. The /sso
+// open-link route stays public — only a server-minted token decrypts, so it can't be forged.
 async function handleEncryptUcc(req, res) {
-  const key = req.headers['x-api-key'] || req.query.api_key || req.body?.api_key;
-  const expected = process.env.TRADING_APP_API_KEY;
-  let ok = !!(expected && key && String(key) === String(expected));
-  if (!ok && req.headers.authorization) {
-    try { require('jsonwebtoken').verify((req.headers.authorization.split(' ')[1] || ''), process.env.JWT_SECRET); ok = true; } catch (e) {}
-  }
-  if (!ok) return res.status(401).json({ message: 'Unauthorized — provide the API key or a valid login.' });
   const ucc = String(req.query.ucc || req.body?.ucc || '').trim();
   if (!ucc) return res.status(400).json({ message: 'ucc is required' });
   const ttlRaw  = req.query.ttl_days ?? req.body?.ttl_days;
