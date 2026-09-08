@@ -22,10 +22,15 @@ const FILE_CONFIGS = {
   ledger:        { label: 'Ledger File',     section: 'Other Files', icon: '🏦', color: '#3B82F6', bg: '#E6F1FB', freq: 'Daily',  step: 4, sample: 'ledger_sample.txt',      keywords: ['ledger','ledgr','basecapital','base_capital','rmslimit','rms_limit','rms','limit','capital'] },
   holdings:      { label: 'Holdings',        section: 'Other Files', icon: '📁', color: '#08905C', bg: '#E6FAF3', freq: 'Daily',  step: 6, sample: 'holdings_sample.xlsx',   keywords: ['holding','dp','dpholding'] },
   mtf:           { label: 'MTF File',        section: 'Other Files', icon: '💰', color: '#854F0B', bg: '#FAEEDA', freq: 'Weekly', step: 7, sample: 'mtf_sample.xlsx',        keywords: ['mtf','margintrade','mtfinterest'] },
+
+  // Exchange market-volume reports → exchange_volume table (Market Share report). One card
+  // takes any of the four: NSE Cash, NSE F&O, BSE Day-Wise Market Summary, MCX day-wise.
+  // The exchange & segments are auto-detected from the file's own columns on the server.
+  exchange_volume: { label: 'Exchange Volume (NSE / BSE / MCX)', section: 'Exchange Volume', icon: '🌐', color: '#1B5E9E', bg: '#E4EFFA', freq: 'Daily', step: 8, sample: null, keywords: ['businessgrowth','daywisemarketsummary','daywisemarket','marketsummary','exchangevolume','exvol','cmsegment','fosegment','deriarchive'] },
 };
 
 // Ordered list of section names, used to group the individual upload cards.
-const SECTION_ORDER = ['Client Master', 'Trade · NSE', 'Trade · BSE', 'Trade · MCX', 'Other Files'];
+const SECTION_ORDER = ['Client Master', 'Trade · NSE', 'Trade · BSE', 'Trade · MCX', 'Exchange Volume', 'Other Files'];
 
 function detectType(filename) {
   const n = (filename || '').toLowerCase().replace(/[\s_\-.]+/g, '');
@@ -183,6 +188,27 @@ const ImportData = () => {
     }
   };
   const handleCardUpload = (fileType, file) => { if (file) doUpload(fileType, file, false); };
+
+  // Multi-file upload for one card (used by Exchange Volume — drop NSE Cash, NSE F&O,
+  // BSE and MCX together and each is sent in turn; the server auto-detects each file's
+  // exchange). Re-uploading the same dates just replaces them, so overwrite is implicit.
+  const doUploadMany = async (fileType, files) => {
+    setUploading(u => ({ ...u, [fileType]: true }));
+    setResults(r => ({ ...r, [fileType]: null }));
+    const per = [];
+    for (const file of files) {
+      try {
+        const data = await uploadFile(file, fileType, true);
+        per.push({ name: file.name, ok: true, detail: data.detail || `${(data.records_processed || 0).toLocaleString()} rows` });
+      } catch (err) {
+        const d = err.response?.data || {};
+        per.push({ name: file.name, ok: false, detail: d.detail || d.message || 'upload failed' });
+      }
+    }
+    setResults(r => ({ ...r, [fileType]: { success: per.every(p => p.ok), multi: per } }));
+    fetchLogs();
+    setUploading(u => ({ ...u, [fileType]: false }));
+  };
 
   const addToQueue = (files) => {
     const newItems = [], unrecognised = [];
@@ -546,13 +572,21 @@ const ImportData = () => {
                 fontSize: '12px', fontWeight: '600', fontFamily: 'var(--font)',
                 width: '100%', boxShadow: slotDisabled ? 'none' : `0 2px 6px ${cfg.color}40`,
               }}>
-                {busy ? '⏳ Uploading...' : locked ? '🔒 Locked' : '⬆ Upload File'}
+                {busy ? '⏳ Uploading...' : locked ? '🔒 Locked' : (key === 'exchange_volume' ? '⬆ Upload File(s)' : '⬆ Upload File')}
                 <input
                   type="file"
                   accept=".xlsx,.xls,.csv,.ods,.txt"
+                  multiple={key === 'exchange_volume'}
                   style={{ display: 'none' }}
                   disabled={slotDisabled}
-                  onChange={e => { if (e.target.files[0]) handleCardUpload(key, e.target.files[0]); e.target.value = ''; }}
+                  onChange={e => {
+                    const files = Array.from(e.target.files || []);
+                    if (files.length) {
+                      if (key === 'exchange_volume') doUploadMany(key, files);
+                      else handleCardUpload(key, files[0]);
+                    }
+                    e.target.value = '';
+                  }}
                 />
               </label>
               {locked && (
@@ -570,7 +604,23 @@ const ImportData = () => {
                 </a>
               )}
 
-              {result && (
+              {key === 'exchange_volume' && !busy && !result && (
+                <div style={{ marginTop: '4px', textAlign: 'center', fontSize: '10.5px', color: 'var(--tx3)' }}>
+                  Select all your files at once — NSE Cash, NSE F&O, BSE &amp; MCX
+                </div>
+              )}
+              {result && result.multi && (
+                <div className={`alert ${result.success ? 'a-s' : 'a-d'}`} style={{ marginTop: '8px', marginBottom: 0, fontSize: '11px' }}>
+                  {result.multi.map((p, i) => (
+                    <div key={i} style={{ marginBottom: i < result.multi.length - 1 ? 4 : 0 }}>
+                      <span style={{ color: p.ok ? '#1f9d57' : '#c8313b' }}>{p.ok ? '✓' : '✗'}</span>{' '}
+                      <strong>{p.name}</strong>
+                      <div style={{ marginTop: 2, opacity: 0.9 }}>{p.detail}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {result && !result.multi && (
                 <div className={`alert ${result.success ? 'a-s' : 'a-d'}`} style={{ marginTop: '8px', marginBottom: 0, fontSize: '11px' }}>
                   {result.success
                     ? `✓ ${result.processed?.toLocaleString()} imported${result.skipped > 0 ? ` · ${result.skipped.toLocaleString()} skipped` : ''}${result.failed > 0 ? ` · ${result.failed} failed` : ''}`

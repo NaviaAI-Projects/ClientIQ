@@ -3588,6 +3588,25 @@ const NAVIA_SEG_SQL = `
   WHERE dt.trade_date::date BETWEEN $1 AND $2
   GROUP BY 1, 2`;
 
+// Same segment split, but grouped by CALENDAR MONTH (not day). Used only to compute the
+// "vs prev month" trend, so it must see FULL months — including the month just before the
+// selected range, which the windowed query above never loads (that's why the earliest
+// in-range month used to show "new"). Kept separate so it can't leak extra months into
+// the displayed panels / daily trend, which stay strictly window-scoped.
+const NAVIA_SEG_MONTHLY_SQL = `
+  SELECT to_char(dt.trade_date,'YYYY-MM') AS ym,
+    CASE WHEN (e->>'pt')='FO' AND UPPER(COALESCE(e->>'ot','')) IN ('CE','PE') THEN 'eqopt'
+         WHEN (e->>'pt')='CO' AND UPPER(COALESCE(e->>'ot','')) IN ('CE','PE') THEN 'commopt'
+         WHEN (e->>'pt')='FO' THEN 'eqfut'
+         WHEN (e->>'pt')='CO' THEN 'commfut'
+         WHEN (e->>'pt')='CM' THEN 'eqcash'
+         ELSE 'other' END AS seg,
+    SUM((e->>'to')::numeric)::float AS val
+  FROM daily_trades dt
+  CROSS JOIN LATERAL jsonb_array_elements(dt.symbols) e
+  WHERE dt.trade_date::date BETWEEN $1 AND $2
+  GROUP BY 1, 2`;
+
 router.get('/market-share', auth, async (req, res) => {
   try {
     await ensureExchangeVolume();
@@ -3659,23 +3678,76 @@ router.get('/market-share', auth, async (req, res) => {
     // ── month-wise segment tables ───────────────────────────────────
     const monthsSet = new Set([...navia.rows.map(r => monthKey(r.d)), ...exch.rows.map(r => monthKey(r.d))]);
     const prevMonthOf = m => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7); };
-    const months = [...monthsSet].sort().map(m => {
+
+    // ── full calendar-month navia totals for the "vs prev month" trend ──
+    // Covers every displayed month PLUS the month before the earliest one, so the delta
+    // always has a real previous month to compare to (no more spurious "new").
+    const navMonFull = {};
+    const monthKeysSorted = [...monthsSet].sort();
+    if (monthKeysSorted.length) {
+      const earliest = monthKeysSorted[0];
+      const latest   = monthKeysSorted[monthKeysSorted.length - 1];
+      const [py, pmn] = prevMonthOf(earliest).split('-').map(Number);
+      const fromFull = `${prevMonthOf(earliest)}-01`;
+      const [ly, lmn] = latest.split('-').map(Number);
+      const toFull   = `${latest}-${String(new Date(Date.UTC(ly, lmn, 0)).getUTCDate()).padStart(2, '0')}`;
+      try {
+        const mres = await pool.query(NAVIA_SEG_MONTHLY_SQL, [fromFull, toFull]);
+        for (const r of mres.rows) navMonFull[r.ym + '|' + r.seg] = r.val;
+      } catch (e) { console.error('MARKET-SHARE prev-month lookup:', e.message); }
+    }
+
+    const months = monthKeysSorted.map(m => {
       const pm = prevMonthOf(m);
       const segs = MKT_SEGS.map(s => {
         const k = m + '|' + s.key, pk = pm + '|' + s.key;
-        const nt = navMon[k] || 0, nm = navMonMatched[k] || 0, et = exMonTot[k] || 0, np = navMon[pk] || 0;
+        const nt = navMon[k] || 0, nm = navMonMatched[k] || 0, et = exMonTot[k] || 0;
         const days = exMonDates[k] ? exMonDates[k].size : 0;
+        // Trend is full-month vs full-month (independent of the selected day-window),
+        // so it's a stable month-over-month figure and defined even when the previous
+        // month falls outside the selected range.
+        const cf = navMonFull[k] || 0, pf = navMonFull[pk] || 0;
         return {
           key: s.key, label: s.label,
           navia_cr: cr(nt), navia_matched_cr: cr(nm), exchange_cr: cr(et),
           share: et > 0 ? +((nm / et) * 100).toFixed(2) : null,
           trading_days: days,
-          navia_delta_pct: deltaPct(nt, np),   // vs previous calendar month
-          navia_dir: dirOf(nt, np),
+          navia_delta_pct: deltaPct(cf, pf),   // vs previous calendar month (full month)
+          navia_dir: dirOf(cf, pf),
         };
       });
       return { month: m, label: monLbl(m), segments: segs };
     });
+
+    // ── segment trend series: DAILY when the range covers a single month
+    // (so a one-month view shows day-by-day, not a single dot), MONTHLY otherwise ──
+    const navSegDay = {}, exSegDay = {};
+    for (const r of navia.rows) (navSegDay[r.d] = navSegDay[r.d] || {})[r.seg] = (navSegDay[r.d][r.seg] || 0) + r.val;
+    for (const r of exch.rows)  (exSegDay[r.d] = exSegDay[r.d] || {})[r.seg] = (exSegDay[r.d][r.seg] || 0) + r.val;
+    const segShare = (nt, et) => et > 0 ? +((nt / et) * 100).toFixed(3) : null;
+    // Daily points when the window spans about a month or less (≤ 31 calendar days) —
+    // same rule the turnover bar chart uses, so "Last 30 days" shows day-by-day even
+    // when it straddles two calendar months. Wider ranges collapse to one point/month.
+    const spanDays = daily.length;   // filled calendar days across the data window
+    const wantDaily = spanDays > 0 ? spanDays <= 31 : monthsSet.size <= 1;
+    let seg_trend, seg_trend_mode;
+    if (wantDaily) {
+      seg_trend_mode = 'daily';
+      const days = [...new Set(exch.rows.map(r => r.d))].sort();   // days that have exchange data
+      seg_trend = days.map(d => {
+        const dt = new Date(d + 'T00:00:00Z');
+        const row = { label: `${dt.getUTCDate()} ${MON[dt.getUTCMonth()]}`, key: d };
+        for (const s of MKT_SEGS) row[s.key] = segShare((navSegDay[d] || {})[s.key] || 0, (exSegDay[d] || {})[s.key] || 0);
+        return row;
+      });
+    } else {
+      seg_trend_mode = 'monthly';
+      seg_trend = months.map(mo => {
+        const row = { label: mo.label, key: mo.month };
+        for (const s of mo.segments) row[s.key] = s.share;
+        return row;
+      });
+    }
 
     // ── cards: overall over the whole range ─────────────────────────
     let sumMatched = 0, sumExch = 0;
@@ -3722,6 +3794,8 @@ router.get('/market-share', auth, async (req, res) => {
       },
       daily,
       months,
+      seg_trend,
+      seg_trend_mode,
     });
   } catch (err) { console.error('MARKET-SHARE ERROR:', err.message); res.status(500).json({ message: 'Server error' }); }
 });

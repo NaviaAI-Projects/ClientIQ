@@ -22,12 +22,24 @@ const MISSettings = () => {
   });
 
   const [feedUrls, setFeedUrls] = useState({
-    nse_eq_options_url:  '',
-    nse_eq_futures_url:  '',
-    mcx_comm_options_url:'',
-    mcx_comm_futures_url:'',
-    nse_eq_cash_url:     ''
+    nse_feed_url: '',   // NSE — cash + derivatives reports (one URL per line)
+    bse_feed_url: '',   // BSE — day-wise derivatives summary
+    mcx_feed_url: ''    // MCX — commodity futures + options report
   });
+  const [feedReport, setFeedReport] = useState(null);   // result of "Test fetch now"
+
+  // Run the exchange-volume auto-fetch now — headless-browser scrape of NSE/BSE/MCX.
+  // Takes ~30–60s (launches Chromium, loads four portals). Returns a per-source report.
+  const testFetch = async () => {
+    setSaving('test'); setFeedReport(null);
+    try {
+      const res = await api.post('/admin-settings/scrape-exchanges');
+      setFeedReport(res.data);
+    } catch (e) {
+      setFeedReport({ error: e.response?.data?.error || e.message || 'Auto-fetch failed' });
+    }
+    setSaving('');
+  };
 
   const [weights, setWeights] = useState({
     options_to_weight:  35,
@@ -56,11 +68,9 @@ const MISSettings = () => {
         dormancy_threshold: s.dormancy_threshold || 2
       });
       setFeedUrls({
-        nse_eq_options_url:   s.nse_eq_options_url   || '',
-        nse_eq_futures_url:   s.nse_eq_futures_url   || '',
-        mcx_comm_options_url: s.mcx_comm_options_url || '',
-        mcx_comm_futures_url: s.mcx_comm_futures_url || '',
-        nse_eq_cash_url:      s.nse_eq_cash_url      || ''
+        nse_feed_url: s.nse_feed_url || '',
+        bse_feed_url: s.bse_feed_url || '',
+        mcx_feed_url: s.mcx_feed_url || ''
       });
       setWeights({
         options_to_weight: parseFloat(s.options_to_weight) || 35,
@@ -197,22 +207,30 @@ const MISSettings = () => {
 
       {/* Exchange Volume Feed URLs */}
       <div style={panel}>
-        <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '4px' }}>🌐 Exchange Volume Feed URLs</div>
+        <div style={{ fontSize: '14px', fontWeight: '600', marginBottom: '4px' }}>🌐 Exchange Volume Auto-Fetch</div>
         <p style={{ fontSize: '12px', color: '#888', marginBottom: '16px' }}>
-          System fetches exchange volumes monthly for market share computation. Data is fetched on the 1st of each month.
+          The system fetches NSE / BSE / MCX turnover <strong>daily</strong> (after market close, ~01:30 IST) using a
+          headless browser that loads each exchange's own report portal — the reliable way past their anti-bot blocks —
+          and writes it to the Market Share data. Options are read as premium turnover. Use “Run auto-fetch now” to
+          trigger it on demand (takes ~30–60s).
+        </p>
+        <p style={{ fontSize: '11px', color: '#F59E0B', marginBottom: '16px', background: '#FFFBEB', border: '1px solid #FDE68A', borderRadius: 6, padding: '8px 10px' }}>
+          Auto-fetch uses the exchanges' built-in portal pages (NSE Business Growth, BSE Day-Wise Summary, MCX
+          Historical Data) — it needs the headless browser installed on the server. If a source can't be read, upload
+          that exchange's file on the Import page instead. The URL fields below are the legacy direct-file feed and are
+          optional.
         </p>
         <div style={{ display: 'grid', gap: '12px', marginBottom: '16px' }}>
           {[
-            ['NSE Equity Options Volume Feed URL',   'nse_eq_options_url'],
-            ['NSE Equity Futures Volume Feed URL',   'nse_eq_futures_url'],
-            ['MCX Commodity Options Volume Feed URL','mcx_comm_options_url'],
-            ['MCX Commodity Futures Volume Feed URL','mcx_comm_futures_url'],
-            ['NSE Equity Cash Volume Feed URL',      'nse_eq_cash_url'],
-          ].map(([label, key]) => (
+            ['NSE Volume Feed URL(s)', 'nse_feed_url', 'NSE Cash + Derivatives — one URL per line'],
+            ['BSE Volume Feed URL(s)', 'bse_feed_url', 'BSE day-wise derivatives summary'],
+            ['MCX Volume Feed URL(s)', 'mcx_feed_url', 'MCX commodity futures + options'],
+          ].map(([label, key, hint]) => (
             <div key={key}>
               <label style={lbl}>{label}</label>
-              <input value={feedUrls[key]} placeholder="https://..."
-                onChange={e => setFeedUrls({ ...feedUrls, [key]: e.target.value })} style={inp} />
+              <textarea value={feedUrls[key]} placeholder={`https://...  (${hint})`} rows={2}
+                onChange={e => setFeedUrls({ ...feedUrls, [key]: e.target.value })}
+                style={{ ...inp, fontFamily: 'inherit', resize: 'vertical' }} />
             </div>
           ))}
         </div>
@@ -220,10 +238,40 @@ const MISSettings = () => {
           {saving === 'feeds' ? 'Saving...' : '💾 Save URLs'}
         </button>
         <button style={{ ...btn('test'), background: 'white', color: '#1B3F7A', border: '1px solid #223872' }}
-          onClick={() => alert('Feed test triggered — check backend logs')}>
-          🔄 Test fetch now
+          disabled={saving === 'test'}
+          onClick={testFetch}>
+          {saving === 'test' ? 'Running… (~30–60s)' : '🔄 Run auto-fetch now'}
         </button>
         {showMsg('feeds')}
+        {feedReport && (
+          <div style={{ marginTop: 12, fontSize: 12, background: '#f8fafc', border: '1px solid #eee', borderRadius: 8, padding: 12 }}>
+            {feedReport.error
+              ? <div style={{ color: '#EF4444' }}>✗ {feedReport.error}</div>
+              : <>
+                  <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                    Fetched {feedReport.total_rows} row(s) · {new Date(feedReport.ran_at).toLocaleString('en-IN')}
+                  </div>
+                  {(feedReport.results || []).map((r, i) => (
+                    <div key={i} style={{ marginBottom: 6, lineHeight: 1.4 }}>
+                      <span style={{ color: r.ok ? '#10B981' : (r.http >= 400 || r.error ? '#EF4444' : '#F59E0B') }}>
+                        {r.ok ? '✓' : (r.http >= 400 || r.error ? '✗' : '⚠')}
+                      </span>{' '}
+                      <strong>{r.source}</strong>
+                      {r.http ? <span style={{ color: '#888' }}> · HTTP {r.http}</span> : null}
+                      {' — '}
+                      {r.ok
+                        ? `parsed ${r.rows_parsed} row(s)${r.kind ? ` (${r.kind})` : ''}`
+                        : (r.error || r.note || 'no data')}
+                      {r.url ? <div style={{ color: '#aaa', fontSize: 11, wordBreak: 'break-all' }}>{r.url}</div> : null}
+                    </div>
+                  ))}
+                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #ddd', color: '#888', fontSize: 11 }}>
+                    Rows shown are what parsed from the feeds and were written to the market-share data.
+                    If a source shows ⚠ or ✗ (blocked / not a data file), use the file-upload importer for that exchange instead.
+                  </div>
+                </>}
+          </div>
+        )}
       </div>
 
       {/* Revenue Model Weights */}

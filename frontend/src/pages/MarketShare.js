@@ -71,7 +71,7 @@ const MarketShare = () => {
   if (loading && !data) return <div className="ph"><h2>Market share analysis</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Market share analysis</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { meta, cards, months = [], daily = [] } = data;
+  const { meta, cards, months = [], daily = [], seg_trend = [], seg_trend_mode } = data;
   const feed = meta && meta.feed_available;
 
   // ── Adaptive granularity for the turnover bar chart ───────────────
@@ -131,12 +131,23 @@ const MarketShare = () => {
     return row;
   });
 
-  // Prototype "market share trend by segment (%)" — share% per segment across months
-  const shareTrend = months.map(mo => {
-    const row = { month: spanLabel(mo.month, mo.label) };
-    SEGS.forEach(s => { row[s.key] = segOf(mo, s.key).share; });
-    return row;
-  });
+  // "Market share trend by segment (%)" — share% per segment.
+  // Backend decides granularity: daily points when the range is within a single
+  // month (seg_trend_mode==='daily'), one point per month across a multi-month range.
+  // seg_trend rows carry a `label` and one share value per segment key. Fall back to
+  // the month-wise mapping only if the backend didn't send seg_trend (older API).
+  const shareTrend = seg_trend.length
+    ? seg_trend.map(pt => {
+        const row = { label: pt.label };
+        SEGS.forEach(s => { row[s.key] = pt[s.key] == null ? null : pt[s.key]; });
+        return row;
+      })
+    : months.map(mo => {
+        const row = { label: spanLabel(mo.month, mo.label) };
+        SEGS.forEach(s => { row[s.key] = segOf(mo, s.key).share; });
+        return row;
+      });
+  const trendIsDaily = seg_trend_mode === 'daily';
 
   return (
     <div>
@@ -238,12 +249,12 @@ const MarketShare = () => {
 
       {/* Prototype panel: Market share trend by segment (%) */}
       <div className="panel">
-        <div className="ptitle">📈 Market share trend by segment (%)<InfoBtn text="Navia's percentage share of exchange turnover per segment, month over month. Fills in as more months of exchange data are loaded." /></div>
+        <div className="ptitle">📈 Market share trend by segment (%){trendIsDaily ? ' — daily' : ''}<InfoBtn text="Navia's percentage share of exchange turnover per segment. Shows one point per trading day when the selected range is within a single month, and one point per month across a wider range." /></div>
         {shareTrend.length ? (
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={shareTrend} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
-              <XAxis dataKey="month" tick={{ fontSize: 10 }} />
+              <XAxis dataKey="label" tick={{ fontSize: 10 }} interval={trendIsDaily ? Math.max(0, Math.floor(shareTrend.length / 15)) : 0} />
               <YAxis tick={{ fontSize: 10 }} tickFormatter={v => v + '%'} />
               <Tooltip formatter={(v, n) => [v == null ? '—' : v + '%', n]} />
               <Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
@@ -255,7 +266,9 @@ const MarketShare = () => {
         ) : (
           <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--tx3)', fontSize: 13 }}>No exchange data yet.</div>
         )}
-        {months.length <= 1 && <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Only one month of exchange data so far — the trend line grows as more months are loaded.</p>}
+        {trendIsDaily
+          ? <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Daily share across the trading days in this month. Widen the date range to a few months to see the month-over-month trend instead.</p>
+          : (months.length <= 1 && <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Only one month of exchange data so far — the trend line grows as more months are loaded.</p>)}
       </div>
 
       {/* Our detailed month-wise segment drill-down */}

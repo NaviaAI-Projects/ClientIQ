@@ -557,6 +557,54 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
   const deferCompute = req.body.defer === 'true' || req.body.defer === true;
   if (!req.file) return res.status(400).json({ message: 'No file uploaded' });
 
+  // ── Exchange Volume files (NSE Cash / NSE F&O / BSE Day-Wise / MCX) ───────────
+  // These do NOT go through the trade pipeline — they populate the exchange_volume
+  // table used by the Market Share report. One card accepts any of the four; the
+  // exchange & segments are auto-detected from the file's own columns by the shared
+  // parser in exchangeFeed.js (same logic the URL feed uses). Options = premium turnover.
+  if (file_type === 'exchange_volume') {
+    const ef = require('../exchangeFeed');
+    try {
+      const buf = fs.readFileSync(req.file.path);
+      const { rows, kind, note } = ef.parseBuffer(buf, req.file.mimetype || '', req.file.originalname);
+      if (!rows.length) {
+        if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+        return res.status(400).json({
+          message: 'Invalid file format — please upload the correct format for this file type.',
+          detail: note || 'Could not recognise this as an NSE Cash, NSE F&O, BSE Day-Wise Summary, or MCX volume report.'
+        });
+      }
+      await ef.ensureTable();
+      let n = 0;
+      for (const [d, seg, val] of rows) {
+        await pool.query(
+          `INSERT INTO exchange_volume (trade_date, segment, traded_value, source) VALUES ($1,$2,$3,'exchange-file')
+           ON CONFLICT (trade_date, segment) DO UPDATE SET traded_value = EXCLUDED.traded_value, source = 'exchange-file', updated_at = now()`,
+          [d, seg, val]);
+        n++;
+      }
+      const dates = rows.map(r => r[0]).sort();
+      const segs  = [...new Set(rows.map(r => r[1]))];
+      await pool.query(`ALTER TABLE import_log ADD COLUMN IF NOT EXISTS trade_date DATE`);
+      await pool.query(`ALTER TABLE import_log ADD COLUMN IF NOT EXISTS records_skipped INT DEFAULT 0`);
+      await pool.query(`
+        INSERT INTO import_log (import_date, file_type, file_name, records_processed, records_failed, records_skipped, status, imported_by, trade_date, created_at)
+        VALUES (NOW() AT TIME ZONE 'Asia/Kolkata','exchange_volume',$1,$2,0,0,'success',$3,$4,NOW() AT TIME ZONE 'Asia/Kolkata')
+      `, [req.file.originalname, n, req.user.id, dates[dates.length - 1]]);
+      try { await audit(req, 'FILE_IMPORT', `Imported ${n} exchange-volume rows (${kind}, ${segs.join(', ')}) from ${req.file.originalname}`, null, 'success', 'import'); } catch (e) {}
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      return res.json({
+        success: true,
+        records_processed: n,
+        detail: `${(kind || '').toUpperCase()} · ${segs.join(', ')} · ${dates[0]} → ${dates[dates.length - 1]} (${n} day-segment rows written)`
+      });
+    } catch (e) {
+      if (fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
+      console.error('EXCHANGE-VOLUME UPLOAD ERROR:', e.message);
+      return res.status(500).json({ message: 'Could not import the exchange volume file', detail: e.message });
+    }
+  }
+
   // ── Format check FIRST — a wrong file in a slot reports "Invalid file format"
   //    before any duplicate/other check (e.g. a Trade file dropped into Client Master). ──
   const fmt = validateFileFormat(file_type, req.file.path, req.file.originalname);

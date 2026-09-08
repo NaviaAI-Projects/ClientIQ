@@ -13,6 +13,33 @@ function adminOnly(req, res, next) {
   next();
 }
 
+// POST /fetch-feeds — run the exchange-volume auto-fetch now, using the saved feed URLs
+// (wired to the "Test fetch now" button on MIS Settings). Returns a per-source report.
+router.post('/fetch-feeds', auth, adminOnly, async (req, res) => {
+  try {
+    const report = await require('../exchangeFeed').fetchAll();
+    res.json({ success: true, ...report });
+  } catch (e) {
+    console.error('FETCH-FEEDS ERROR:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /scrape-exchanges — headless-browser auto-fetch of NSE/BSE/MCX turnover
+// (wired to the "Run auto-fetch now" button on MIS Settings). Launches Chromium,
+// loads each portal, parses the day-wise turnover, writes to exchange_volume.
+// Pass ?diagnose=1 to return the raw payloads WITHOUT writing (first-run mapping tune-up).
+router.post('/scrape-exchanges', auth, adminOnly, async (req, res) => {
+  try {
+    const diagnose = req.query.diagnose === '1' || req.body?.diagnose === true;
+    const report = await require('../exchangeScraper').runScrape({ diagnose });
+    res.json({ success: true, ...report });
+  } catch (e) {
+    console.error('SCRAPE-EXCHANGES ERROR:', e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 function createTransporter(type) {
   const configs = {
     alerts: {

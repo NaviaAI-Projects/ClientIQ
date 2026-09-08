@@ -80,3 +80,20 @@ if (typeof importRouter.runPendingRebuild === 'function') {
     importRouter.runPendingRebuild().catch(e => console.error('rebuild backstop:', e.message));
   }, 120000); // every 2 min; the internal guard makes this a no-op when nothing is queued or a rebuild is already running
 }
+
+// ── Daily exchange-volume auto-fetch (headless browser, ~20:00 UTC = 01:30 IST) ──
+// Runs AFTER the MCX evening session closes so all five segments (NSE cash/F&O,
+// BSE F&O, MCX comm) are published, and scrapes NSE/BSE/MCX into exchange_volume
+// for the Market Share report. Same code the "Run auto-fetch now" button runs.
+// The scraper pulls the recent day-wise series and upserts, so a missed day is
+// backfilled on the next run. Failures are logged and never crash the server.
+const exchangeScraper = require('./exchangeScraper');
+let _lastScrapeRun = null;
+setInterval(() => {
+  const now = new Date();
+  const stamp = now.toISOString().slice(0, 10);
+  if (now.getUTCHours() === 20 && _lastScrapeRun !== stamp) {
+    _lastScrapeRun = stamp;                     // guard: run once per day, not every minute of the hour
+    exchangeScraper.runScrape().catch(e => console.error('exchange-scrape daily:', e.message));
+  }
+}, 60000);
