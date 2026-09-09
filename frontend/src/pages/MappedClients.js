@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import { ChurnBadge } from '../components/ui';
 
 const fmt = v => { const n=parseFloat(v)||0; if(n>=10000000) return '₹'+(n/10000000).toFixed(1)+'Cr'; if(n>=100000) return '₹'+(n/100000).toFixed(1)+'L'; if(n>=1000) return '₹'+(n/1000).toFixed(0)+'K'; return v?'₹'+n:'—'; };
 const tb = t => t?.toLowerCase().includes('nri')?'b-nri':t?.toLowerCase().includes('hv')?'b-hv':'b-ri';
-const sc = s => s>=70?'h':s>=50?'m':'l';
-// Plan values are stored as 'paying-brokerage' / 'zero-brokerage' — match on substring, not
-// an exact 'paying', otherwise every paying client wrongly renders as Zero-brk.
-const isPaying = p => /pay/i.test(p || '');
+// Paying vs zero-brokerage. The backend stores paying clients as plan = 'Brokerage' and the
+// default (unpromoted) plan as 'Zero-brokerage'. So a client is "paying" when the plan is set
+// and is NOT a zero-brokerage plan. (The old /pay/ test missed 'Brokerage' and wrongly showed
+// every paying client as Zero-brk.)
+const isPaying = p => !!p && !/zero/i.test(p);
 
 const MappedClients = () => {
   const [clients, setClients] = useState([]);
@@ -96,7 +98,7 @@ const MappedClients = () => {
                 <td>{c.last_trade_date?new Date(c.last_trade_date).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'2-digit'}):'—'}</td>
                 <td>{fmt(c.mtd_turnover)}</td>
                 <td>{fmt(c.mtd_revenue)}</td>
-                <td><span className={`ais ${sc(c.churn_risk_score)}`}>{Math.round(c.churn_risk_score||0)}</span></td>
+                <td><ChurnBadge score={c.churn_risk_score} /></td>
                 <td>{c.mapped_at?new Date(c.mapped_at).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'2-digit'}):'—'}</td>
                 <td><button className="btn sm bp" onClick={() => callClient(c.ucc, c.name)}>📞 Call</button></td>
               </tr>

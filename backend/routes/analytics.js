@@ -346,6 +346,32 @@ router.get('/concentration', auth, async (req, res) => {
       ORDER BY r.rn
     `, [rng.from, rng.to]);
 
+    // Top 10 clients by BROKERAGE (MTD) — brokerage-based concentration, independent of
+    // options turnover (a high-brokerage client may not be in the top options-TO list).
+    const topBrokerage = await pool.query(`
+      WITH mtd AS (
+        SELECT ucc, SUM(brokerage) AS brokerage FROM (
+          SELECT ucc, COALESCE(brokerage,0) AS brokerage FROM client_monthly_summary cms WHERE ${wholeCond}
+          UNION ALL
+          SELECT ucc, COALESCE(brokerage_earned,0) FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2 AND ${partialCond}
+        ) u GROUP BY ucc
+      ),
+      ranked AS (
+        SELECT ucc, brokerage,
+               ROW_NUMBER() OVER (ORDER BY brokerage DESC NULLS LAST) AS rn,
+               SUM(brokerage) OVER () AS grand
+        FROM mtd
+      )
+      SELECT r.rn, r.ucc, r.brokerage::float, r.grand::float,
+             (SUM(r.brokerage) OVER (ORDER BY r.rn) / NULLIF(r.grand,0) * 100)::float AS cum_pct,
+             c.name, c.client_type, rm.rm_name, c.assigned_rm_id
+      FROM ranked r
+      LEFT JOIN clients c ON c.ucc = r.ucc
+      LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
+      WHERE r.rn <= 10 AND r.brokerage > 0
+      ORDER BY r.rn
+    `, [rng.from, rng.to]);
+
     // Turnover concentration buckets (cumulative %)
     const turnoverBuckets = await pool.query(`
       WITH mtd AS (
@@ -554,6 +580,13 @@ router.get('/concentration', auth, async (req, res) => {
         rank: Number(r.rn), ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type || 'RI',
         opt_to: Number(r.opt_to), total_to: Number(r.total_to), brokerage: Number(r.brokerage),
         pct_of_total: pct(r.opt_to, turnoverTotal), cum_pct: Number(r.cum_pct),
+        rm_name: r.rm_name || '—', unmapped: !r.assigned_rm_id,
+      })),
+      top_brokerage: topBrokerage.rows.map(r => ({
+        rank: Number(r.rn), ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type || 'RI',
+        brokerage: Number(r.brokerage),
+        pct_of_total: pct(r.brokerage, Number(topBrokerage.rows[0]?.grand || 0)),
+        cum_pct: Number(r.cum_pct),
         rm_name: r.rm_name || '—', unmapped: !r.assigned_rm_id,
       })),
       float_top: floatTop.rows.map(r => ({
@@ -1119,17 +1152,23 @@ router.get('/unmapped-pool', auth, async (req, res) => {
       SELECT
         -- Unassigned-pool counts exclude already-mapped clients (stale lead_pool rows), so the
         -- KPI cards match the list, which now filters out clients with an assigned RM.
+        -- UCCs beginning with 'F' are excluded from the lead pool everywhere, so the KPI
+        -- cards below add  AND lp.ucc NOT ILIKE 'F%'  to match the list.
         (SELECT COUNT(*) FROM lead_pool lp WHERE lp.status='unassigned' AND lp.lead_score > 80
+           AND lp.ucc NOT ILIKE 'F%'
            AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.ucc=lp.ucc AND c.assigned_rm_id IS NOT NULL))::int        AS score_gt80,
         (SELECT COUNT(*) FROM lead_pool lp WHERE lp.status='unassigned' AND lp.lead_score >= 60 AND lp.lead_score <= 80
+           AND lp.ucc NOT ILIKE 'F%'
            AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.ucc=lp.ucc AND c.assigned_rm_id IS NOT NULL))::int        AS score_60_80,
         (SELECT COUNT(*) FROM lead_pool lp WHERE lp.status='unassigned' AND lp.lead_score >= 60
+           AND lp.ucc NOT ILIKE 'F%'
            AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.ucc=lp.ucc AND c.assigned_rm_id IS NOT NULL))::int        AS score_gt60,
         (SELECT COUNT(*) FROM lead_pool WHERE status IN ('assigned','pending','opted_in'))::int                      AS in_pipeline,
         (SELECT COALESCE(SUM(capacity),0) FROM rm_master)::int
           - (SELECT COUNT(*) FROM clients WHERE assigned_rm_id IS NOT NULL)::int                                     AS capacity_available,
         COALESCE((SELECT rm_capacity_limit FROM pipeline_settings ORDER BY id LIMIT 1), 100)::int                    AS capacity_limit,
         (SELECT COUNT(*) FROM lead_pool lp WHERE lp.status='unassigned'
+           AND lp.ucc NOT ILIKE 'F%'
            AND NOT EXISTS (SELECT 1 FROM clients c WHERE c.ucc=lp.ucc AND c.assigned_rm_id IS NOT NULL))::int        AS pool_total
     `);
 
@@ -1157,6 +1196,8 @@ router.get('/unmapped-pool', auth, async (req, res) => {
         -- (assigned_rm_id set) must never appear in the Unmapped Pool, even if their lead_pool
         -- status wasn't flipped from 'unassigned'.
         AND c.assigned_rm_id IS NULL
+        -- UCCs beginning with 'F' are excluded from the lead pool (not treated as leads).
+        AND lp.ucc NOT ILIKE 'F%'
         AND ($1::text IS NULL OR lp.ucc ILIKE $1 OR COALESCE(lp.client_name, c.name) ILIKE $1)
       ORDER BY lp.lead_score DESC NULLS LAST
       LIMIT 50
@@ -2800,7 +2841,7 @@ router.get('/daily-mis', auth, async (req, res) => {
         vs: note ? null : vsPct(mtd, p3), note: note || null };   // MTD avg vs Prior-3M avg
     };
     const income = [
-      incLine('Clearing charges (commission)', r => r.comm, null),
+      incLine('Clearing charges', r => r.comm, null),
       incLine('Brokerage', r => r.brok, null),
       incLine('MTF interest (daily)', r => mtfByDate[r.d] || 0, null),
       // Per-day float = that day's total ledger balance × FD rate ÷ 365 (floatByDate).
@@ -2817,7 +2858,7 @@ router.get('/daily-mis', auth, async (req, res) => {
       if (v3 != null) l.prior3m_avg = v3;
       l.vs = vsPct(l.mtd_avg || 0, l.prior3m_avg);   // MTD avg vs Prior-3M avg
     };
-    overrideIncPrior('Clearing charges (commission)', 'commission');
+    overrideIncPrior('Clearing charges', 'commission');
     overrideIncPrior('Brokerage', 'brokerage');
     const realLines = income.filter(l => !l.note);
     const totalToday = realLines.reduce((s, l) => s + (l.today || 0), 0);
@@ -2877,7 +2918,7 @@ router.get('/daily-mis', auth, async (req, res) => {
     // traded date. Uses the same four real streams (clearing, brokerage, MTF interest, float) so
     // the pie recomputes for the selected window instead of being pinned to the anchor day.
     const mixByLine = range
-      ? { 'Clearing charges (commission)': range.totals.commission,
+      ? { 'Clearing charges': range.totals.commission,
           'Brokerage':                     range.totals.brokerage,
           'MTF interest (daily)':          range.totals.mtf_interest,
           'Float income (est.)':           range.totals.float_income }
@@ -2962,7 +3003,11 @@ router.get('/daily-mis', auth, async (req, res) => {
       revenue_mix: revenueMix,
       trend: rows.slice(Math.max(0, anchorIdx - 16), anchorIdx + 1).map(r => ({
         date: dLabel(r.d), options_cr: cr(r.eq_opt + r.comm_opt), clients: r.total_clients,
-        revenue_l: +((r.brok + (mtfByDate[r.d] || 0) + (floatByDate[r.d] != null ? floatByDate[r.d] : dailyFloat)) / 1e5).toFixed(2), is_expiry: r.is_expiry,
+        // Daily revenue = all four streams: clearing (r.comm) + brokerage + MTF + float.
+        // Must match the "Total revenue" row of the income summary (which sums the same four),
+        // otherwise the trend table and the summary disagree for the same day. r.comm was
+        // previously omitted, making the trend read low by exactly the clearing amount.
+        revenue_l: +((r.comm + r.brok + (mtfByDate[r.d] || 0) + (floatByDate[r.d] != null ? floatByDate[r.d] : dailyFloat)) / 1e5).toFixed(2), is_expiry: r.is_expiry,
       })),
     });
   } catch (err) {
@@ -3678,24 +3723,40 @@ router.get('/market-share', auth, async (req, res) => {
     // ── month-wise segment tables ───────────────────────────────────
     const monthsSet = new Set([...navia.rows.map(r => monthKey(r.d)), ...exch.rows.map(r => monthKey(r.d))]);
     const prevMonthOf = m => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 2, 1)).toISOString().slice(0, 7); };
+    const monthMinus = (m, n) => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 1 - n, 1)).toISOString().slice(0, 7); };
 
-    // ── full calendar-month navia totals for the "vs prev month" trend ──
-    // Covers every displayed month PLUS the month before the earliest one, so the delta
-    // always has a real previous month to compare to (no more spurious "new").
-    const navMonFull = {};
+    // ── full calendar-month navia + exchange per segment, for the per-day comparisons ──
+    // Covers every displayed month PLUS the THREE months before the earliest one, so the
+    // "vs prev month" delta and the "prior 3M avg / day" always have real months to read.
+    // navMonFull[ym|seg] = navia ₹ (full month). exMonFull[ym|seg] = { total ₹, days } where
+    // days = distinct exchange-covered trading days that month (the per-day denominator).
+    const navMonFull = {}, exMonFull = {};
     const monthKeysSorted = [...monthsSet].sort();
     if (monthKeysSorted.length) {
       const earliest = monthKeysSorted[0];
       const latest   = monthKeysSorted[monthKeysSorted.length - 1];
-      const [py, pmn] = prevMonthOf(earliest).split('-').map(Number);
-      const fromFull = `${prevMonthOf(earliest)}-01`;
+      const fromFull = `${monthMinus(earliest, 3)}-01`;             // 3 months before the earliest displayed month
       const [ly, lmn] = latest.split('-').map(Number);
       const toFull   = `${latest}-${String(new Date(Date.UTC(ly, lmn, 0)).getUTCDate()).padStart(2, '0')}`;
       try {
         const mres = await pool.query(NAVIA_SEG_MONTHLY_SQL, [fromFull, toFull]);
         for (const r of mres.rows) navMonFull[r.ym + '|' + r.seg] = r.val;
-      } catch (e) { console.error('MARKET-SHARE prev-month lookup:', e.message); }
+        const eres = await pool.query(`
+          SELECT to_char(trade_date,'YYYY-MM') AS ym, segment AS seg,
+                 SUM(traded_value)::float AS val, COUNT(DISTINCT trade_date)::int AS days
+          FROM exchange_volume WHERE trade_date::date BETWEEN $1 AND $2
+          GROUP BY 1, 2
+        `, [fromFull, toFull]);
+        for (const r of eres.rows) exMonFull[r.ym + '|' + r.seg] = { total: r.val, days: r.days };
+      } catch (e) { console.error('MARKET-SHARE full-month lookup:', e.message); }
     }
+
+    // Per-day (₹Cr/day) for a full calendar month & segment. Navia numerator = full-month
+    // navia turnover; denominator = that month's exchange-covered trading days (same basis
+    // as `share`). Returns null when the month has no exchange days.
+    const naviaPerDayFull = (ym, seg) => { const d = exMonFull[ym + '|' + seg]?.days || 0; return d > 0 ? cr(navMonFull[ym + '|' + seg] || 0) / d : null; };
+    const exchPerDayFull  = (ym, seg) => { const e = exMonFull[ym + '|' + seg]; return e && e.days > 0 ? cr(e.total) / e.days : null; };
+    const mean3 = (arr) => { const v = arr.filter(x => x != null); return v.length ? +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(2) : null; };
 
     const months = monthKeysSorted.map(m => {
       const pm = prevMonthOf(m);
@@ -3707,13 +3768,33 @@ router.get('/market-share', auth, async (req, res) => {
         // so it's a stable month-over-month figure and defined even when the previous
         // month falls outside the selected range.
         const cf = navMonFull[k] || 0, pf = navMonFull[pk] || 0;
+
+        // ── Per-day figures (₹Cr/day) ──────────────────────────────────
+        // Current window: total ÷ exchange-covered days in the selected range.
+        const naviaPerDay = days > 0 ? +(cr(nm) / days).toFixed(2) : null;
+        const exchPerDay  = days > 0 ? +(cr(et) / days).toFixed(2) : null;
+        // Previous full month & the mean of the prior 3 full months, per day.
+        const pm1 = prevMonthOf(m), pm2 = monthMinus(m, 2), pm3 = monthMinus(m, 3);
+        const naviaPrevDay = naviaPerDayFull(pm1, s.key);
+        const exchPrevDay  = exchPerDayFull(pm1, s.key);
+        const naviaP3mDay  = mean3([naviaPerDayFull(pm1, s.key), naviaPerDayFull(pm2, s.key), naviaPerDayFull(pm3, s.key)]);
+        const exchP3mDay   = mean3([exchPerDayFull(pm1, s.key),  exchPerDayFull(pm2, s.key),  exchPerDayFull(pm3, s.key)]);
+
         return {
           key: s.key, label: s.label,
           navia_cr: cr(nt), navia_matched_cr: cr(nm), exchange_cr: cr(et),
           share: et > 0 ? +((nm / et) * 100).toFixed(2) : null,
           trading_days: days,
-          navia_delta_pct: deltaPct(cf, pf),   // vs previous calendar month (full month)
+          navia_delta_pct: deltaPct(cf, pf),   // vs previous calendar month (full-month total)
           navia_dir: dirOf(cf, pf),
+          // Per-day averages + per-day month-over-month comparisons (₹Cr/day)
+          navia_per_day: naviaPerDay, exchange_per_day: exchPerDay,
+          navia_prev_per_day: naviaPrevDay, exchange_prev_per_day: exchPrevDay,
+          navia_perday_delta_pct: deltaPct(naviaPerDay, naviaPrevDay),
+          navia_perday_dir: dirOf(naviaPerDay || 0, naviaPrevDay || 0),
+          exchange_perday_delta_pct: deltaPct(exchPerDay, exchPrevDay),
+          exchange_perday_dir: dirOf(exchPerDay || 0, exchPrevDay || 0),
+          navia_p3m_per_day: naviaP3mDay, exchange_p3m_per_day: exchP3mDay,
         };
       });
       return { month: m, label: monLbl(m), segments: segs };

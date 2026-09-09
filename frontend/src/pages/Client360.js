@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import api from '../api';
 import { BarChart, Bar, LineChart, Line, ComposedChart, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { churnIsRed } from '../components/ui';
 
 const FMT = v => {
   if (!v || v === 0) return '₹0';
@@ -276,7 +277,9 @@ const Client360 = () => {
               <div className="cval">{client.lead_score || '—'}</div>
               <div className="csub">AI opportunity score</div>
             </div>
-            <div className="card cd">
+            {/* Churn card colour follows the same ≤4 green / ≥5 red rule as ChurnBadge:
+                the whole card (background + number) is green for low risk, red for high. */}
+            <div className={`card ${churnIsRed(client.churn_risk_score) ? 'cd' : 'cs'}`}>
               <div className="clbl">Churn Risk</div>
               <div className="cval">{client.churn_risk_score || '—'}</div>
               <div className="csub">AI churn probability</div>

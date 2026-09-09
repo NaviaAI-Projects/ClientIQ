@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import { ChurnBadge } from '../components/ui';
 
 const sc = s => s>=70?'h':s>=50?'m':'l';              // lead score is 0–100
-const scChurn = s => s>=7?'h':s>=4?'m':'l';           // churn risk is 0–10
 const isPaying = p => /pay/i.test(p||'');             // plan value is 'paying-brokerage' / 'zero-brokerage'
 const tb = t => t?.toLowerCase().includes('nri')?'b-nri':t?.toLowerCase().includes('hv')?'b-hv':'b-ri';
 
@@ -88,7 +88,7 @@ const AssignedLeads = () => {
                   <td><span className={`badge ${tb(l.client_type)}`}>{l.client_type}</span></td>
                   <td><span className={`badge ${isPaying(l.plan)?'b-pay':'b-zero'}`}>{isPaying(l.plan)?'Paying':'Zero-brk'}</span></td>
                   <td><span className={`ais ${sc(l.lead_score)}`}>{Math.round(l.lead_score||0)}</span></td>
-                  <td><span className={`ais ${scChurn(l.churn_risk_score)}`}>{Math.round(l.churn_risk_score||0)}</span></td>
+                  <td><ChurnBadge score={l.churn_risk_score} /></td>
                   <td>{l.assigned_at?new Date(l.assigned_at).toLocaleDateString('en-IN',{day:'numeric',month:'short'}):'—'}</td>
                   <td><span style={{display:'inline-block',padding:'3px 9px',borderRadius:'6px',fontSize:'11px',fontWeight:600,color:m[1],background:m[2],whiteSpace:'nowrap'}}>{m[0]}</span></td>
                   <td style={{color:isUrgent?'var(--dc)':'inherit',fontWeight:isUrgent?'500':'normal'}}>

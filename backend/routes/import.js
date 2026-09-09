@@ -1789,18 +1789,60 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
       // its own full balance and SUMMING them counted the same window once per slice — a client
       // with 10 balance-changes over 21 days was reported at ~10× their real book (the total book
       // inflated ~4× overall, e.g. ₹33.7 Cr vs the ~₹8.5 Cr the interest actually supports).
-      // Correct measure = days-weighted AVERAGE outstanding over the window:
-      //   Σ(balance_i × days_i) ÷ Σ(days_i),  where balance_i × days_i = interest_i ÷ (rate ÷ 100 ÷ 365).
-      // This collapses the sliced sub-periods back into one window and is rate-change safe.
-      // Still an estimate (chargeable days can differ from the stated window), surfaced in the UI
-      // as "MTF book (estimated)". A real funding/exposure file would give the exact debit balance.
+      // avg_mtf_balance = the AVERAGE DAILY outstanding book for the month, spread over the
+      // WHOLE month (days a client wasn't borrowing count as ₹0):
+      //   Σ(balance_i × days_i) ÷ (days in the month),  where balance_i × days_i = interest_i ÷ (rate ÷ 100 ÷ 365).
+      // Numerator = total balance-days (rate-change safe; collapses the sliced sub-periods).
+      // Denominator = calendar days in the month for a COMPLETED month (e.g. 31 for August), and
+      // days-elapsed-so-far for the CURRENT in-progress month (the latest MTF data date's day-of-month),
+      // so a mid-month figure isn't diluted by days that haven't happened yet.
+      // The corporate MIS "Prior 3M avg" then = the mean of three such monthly averages (÷3).
+      // Still an estimate (surfaced as "MTF book (estimated)"); a real funding/exposure file would be exact.
+      //
+      // MONTH-BOUNDARY SPLIT: the weekly interest export contains periods that straddle month-end
+      // (e.g. 29/08–04/09). Bucketing the whole period by its FROM month filed all 88 clients of
+      // such a week under August and left September showing only the 3 clients whose period happened
+      // to START in September. We now split each period across the calendar months it spans and
+      // pro-rate BOTH interest and balance-days by the number of days that fall in each month, so the
+      // Aug 29–31 portion counts toward August and the Sep 1–4 portion toward September. For a period
+      // that lies wholly within one month the ratio is 1, so this is identical to the old behaviour.
       await dbClient.query(`
+        WITH split AS (
+          SELECT
+            mi.ucc,
+            TO_CHAR(gs.m, 'YYYY-MM')                                       AS month_year,
+            GREATEST(mi.from_date, gs.m::date)                             AS seg_from,
+            LEAST(mi.to_date, (gs.m + INTERVAL '1 month' - INTERVAL '1 day')::date) AS seg_to,
+            (mi.to_date - mi.from_date + 1)::numeric                       AS period_days,
+            mi.interest, mi.rate
+          FROM mtf_interest mi
+          CROSS JOIN LATERAL generate_series(
+            date_trunc('month', mi.from_date),
+            date_trunc('month', mi.to_date),
+            INTERVAL '1 month'
+          ) AS gs(m)
+        ),
+        alloc AS (
+          SELECT
+            ucc, month_year, seg_from, seg_to, interest, rate,
+            (seg_to - seg_from + 1)::numeric AS seg_days,
+            NULLIF(period_days, 0)           AS period_days
+          FROM split
+        )
         INSERT INTO mtf_monthly (ucc, month_year, avg_mtf_balance, interest_earned, from_date, to_date, interest_rate)
-        SELECT ucc, TO_CHAR(from_date,'YYYY-MM'),
-               SUM(interest / NULLIF((rate/100.0)/365.0, 0)) / NULLIF(SUM(to_date - from_date + 1), 0),
-               SUM(interest), MIN(from_date), MAX(to_date), AVG(rate)
-        FROM mtf_interest
-        GROUP BY ucc, TO_CHAR(from_date,'YYYY-MM')
+        SELECT ucc, month_year,
+               -- Σ(balance-days for THIS month's portion) ÷ days-in-month
+               SUM( (interest / NULLIF((rate/100.0)/365.0, 0)) * (seg_days / period_days) )
+                 / NULLIF(
+                     CASE
+                       WHEN month_year = TO_CHAR((SELECT MAX(to_date) FROM mtf_interest),'YYYY-MM')
+                         THEN EXTRACT(DAY FROM (SELECT MAX(to_date) FROM mtf_interest))::numeric              -- current month → days elapsed so far
+                       ELSE EXTRACT(DAY FROM (TO_DATE(month_year,'YYYY-MM') + INTERVAL '1 month' - INTERVAL '1 day'))::numeric  -- completed month → calendar days
+                     END, 0),
+               SUM( interest * (seg_days / period_days) ),        -- month's pro-rated share of interest
+               MIN(seg_from), MAX(seg_to), AVG(rate)              -- in-month window actually covered
+        FROM alloc
+        GROUP BY ucc, month_year
         ON CONFLICT (ucc, month_year) DO UPDATE SET
           avg_mtf_balance = EXCLUDED.avg_mtf_balance,
           interest_earned = EXCLUDED.interest_earned,

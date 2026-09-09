@@ -4,8 +4,9 @@ import api from '../api';
 
 const ContactLog = () => {
   const [search, setSearch]   = useState('');
-  const [form, setForm]       = useState({ type:'Phone call (personal)', outcome:'Connected — interested', datetime:'', duration:'', notes:'', state_update:'— No change —', follow_up:'', follow_up_time:'' });
+  const [form, setForm]       = useState({ type:'Phone call (personal)', outcome:'Connected — interested', datetime:'', duration:'', count:1, notes:'', state_update:'— No change —', follow_up:'', follow_up_time:'' });
   const [history, setHistory] = useState([]);
+  const [counts, setCounts]   = useState(null);   // running per-channel counts for the selected client
   const [saving, setSaving]   = useState(false);
   const [saved, setSaved]     = useState(false);
   const [selectedUcc, setSelectedUcc] = useState('');
@@ -47,7 +48,13 @@ const ContactLog = () => {
   }, [options, selectedUcc]);
 
   const pickClient = (o) => { setSelectedUcc(o.ucc); setSelName(o.name); setSelKind(o.kind); setSearch(''); setOpen(false); };
-  const clearClient = () => { setSelectedUcc(''); setSelName(''); setSelKind(''); setSearch(''); setHistory([]); };
+  const clearClient = () => { setSelectedUcc(''); setSelName(''); setSelKind(''); setSearch(''); setHistory([]); setCounts(null); };
+
+  // Running per-channel interaction counts for the selected client (Calls / WhatsApp / Emails …).
+  const loadCounts = (ucc) => {
+    if (!ucc) return;
+    api.get(`/contact-logs/counts?ucc=${ucc}`).then(r => setCounts(r.data || null)).catch(() => setCounts(null));
+  };
 
   const q = search.trim().toLowerCase();
   const filtered = (!q ? options : options.filter(o => o.ucc.toLowerCase().includes(q) || (o.name || '').toLowerCase().includes(q))).slice(0, 60);
@@ -55,19 +62,23 @@ const ContactLog = () => {
   useEffect(() => {
     if (selectedUcc) {
       api.get(`/contact-logs?ucc=${selectedUcc}&limit=5`).then(r => setHistory(r.data||[])).catch(console.error);
+      loadCounts(selectedUcc);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedUcc]);
 
   const handleSave = async () => {
     if (!selectedUcc) return alert('Please select a client first');
     setSaving(true);
     try {
-      await api.post('/contact-logs', { ucc: selectedUcc, ...form, follow_up_date: form.follow_up || null, follow_up_time: form.follow_up_time || null });
+      const count = Math.max(1, Math.min(50, parseInt(form.count, 10) || 1));
+      await api.post('/contact-logs', { ucc: selectedUcc, ...form, count, follow_up_date: form.follow_up || null, follow_up_time: form.follow_up_time || null });
       setSaved(true);
-      setForm({ type:'Phone call (personal)', outcome:'Connected — interested', datetime:'', duration:'', notes:'', state_update:'— No change —', follow_up:'', follow_up_time:'' });
+      setForm({ type:'Phone call (personal)', outcome:'Connected — interested', datetime:'', duration:'', count:1, notes:'', state_update:'— No change —', follow_up:'', follow_up_time:'' });
       setTimeout(() => setSaved(false), 3000);
-      // Refresh history
+      // Refresh history + running counts
       api.get(`/contact-logs?ucc=${selectedUcc}&limit=5`).then(r => setHistory(r.data||[])).catch(console.error);
+      loadCounts(selectedUcc);
     } catch (e) { alert('Error saving interaction'); }
     finally { setSaving(false); }
   };
@@ -81,6 +92,7 @@ const ContactLog = () => {
       const res = await api.post('/calls/click-to-call', { ucc: selectedUcc });
       alert(res.data?.message || 'Call initiated.');
       api.get(`/contact-logs?ucc=${selectedUcc}&limit=5`).then(r => setHistory(r.data||[])).catch(()=>{});
+      loadCounts(selectedUcc);
     } catch (e) {
       alert(e.response?.data?.message || 'Could not place the call. Check the client mobile and your SmartFlo setup.');
     }
@@ -157,6 +169,13 @@ const ContactLog = () => {
             <div className="fgrp"><label>Date &amp; time</label><input type="datetime-local" value={form.datetime} onChange={e=>setForm({...form,datetime:e.target.value})} /></div>
             <div className="fgrp"><label>Duration (mins)</label><input type="number" placeholder="0" min="0" value={form.duration} onChange={e=>setForm({...form,duration:e.target.value})} /></div>
           </div>
+          <div className="fgrp" style={{marginBottom:'10px'}}>
+            <label>Number of interactions <span style={{fontSize:'11px',color:'var(--tx3)',fontWeight:400}}>(logs this many of the selected type — e.g. 3 WhatsApp messages)</span></label>
+            <input type="number" min="1" max="50" step="1" style={{maxWidth:'120px'}}
+              value={form.count}
+              onChange={e=>setForm({...form,count:e.target.value})}
+              onBlur={e=>{ const n=Math.max(1,Math.min(50,parseInt(e.target.value,10)||1)); setForm(f=>({...f,count:n})); }} />
+          </div>
           <div className="fgrp" style={{marginBottom:'10px'}}><label>Notes</label>
             <textarea placeholder="Client interested in MTF facility. Will send email." value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} />
           </div>
@@ -184,6 +203,24 @@ const ContactLog = () => {
       {(history.length > 0 || selectedUcc) && (
         <div className="panel">
           <div className="ptitle">🕐 Recent interactions — {selName ? `${selName} (${selectedUcc})` : selectedUcc}</div>
+          {counts && (
+            <div style={{display:'flex',flexWrap:'wrap',gap:'8px',marginBottom:'14px'}}>
+              {[
+                { k:'calls',    icon:'📞', label:'Calls',     bg:'var(--ibg)', fg:'var(--ic)' },
+                { k:'whatsapp', icon:'💬', label:'WhatsApp',  bg:'var(--sbg)', fg:'var(--sc)' },
+                { k:'emails',   icon:'✉️', label:'Emails',    bg:'var(--wbg)', fg:'var(--wc)' },
+                { k:'meetings', icon:'🤝', label:'Meetings',  bg:'var(--bg2)', fg:'var(--tx2)' },
+              ].map(c => (
+                <span key={c.k} title={`${c.label}: ${counts[c.k]||0} logged`} style={{display:'inline-flex',alignItems:'center',gap:'6px',padding:'6px 12px',borderRadius:'999px',background:c.bg,color:c.fg,fontSize:'12.5px',fontWeight:600}}>
+                  <span>{c.icon} {c.label}</span>
+                  <span style={{background:'rgba(0,0,0,.08)',borderRadius:'999px',padding:'0 7px',minWidth:'18px',textAlign:'center'}}>{counts[c.k]||0}</span>
+                </span>
+              ))}
+              <span style={{display:'inline-flex',alignItems:'center',gap:'6px',padding:'6px 12px',borderRadius:'999px',background:'var(--tx,#0f1723)',color:'#fff',fontSize:'12.5px',fontWeight:700}}>
+                Total <span style={{background:'rgba(255,255,255,.2)',borderRadius:'999px',padding:'0 7px',minWidth:'18px',textAlign:'center'}}>{counts.total||0}</span>
+              </span>
+            </div>
+          )}
           {history.length === 0 ? (
             <div style={{padding:'20px',textAlign:'center',color:'var(--tx3)'}}>No interactions logged yet</div>
           ) : (

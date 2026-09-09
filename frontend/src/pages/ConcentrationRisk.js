@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  LineChart, Line, BarChart, Bar, PieChart, Pie, Cell,
+  LineChart, Line, BarChart, Bar,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
 import api from '../api';
@@ -15,7 +15,6 @@ const rupee = (n) => {
 const pct1 = (n) => (Number(n) || 0).toFixed(1) + '%';
 const pct2 = (n) => (Number(n) || 0).toFixed(2) + '%';
 const cr = (n) => +((Number(n) || 0) / 1e7).toFixed(2);
-const SEG_COLORS = ['#185fa5', '#9FE1CB', '#AFA9EC', '#FAC775'];
 // #16: margin-status tint from collateral coverage
 const marginStyle = (s) => {
   if (s === 'Healthy')   return { background: '#d8f0e0', color: '#186a3b' };
@@ -42,10 +41,9 @@ const ConcentrationRisk = () => {
   if (loading && !data) return <div className="ph"><h2>Concentration risk</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Concentration risk</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { meta, kpis, totals, rev_buckets, float_buckets, monthly_trend, segment_mix, top_clients, float_top, mtf_top } = data;
+  const { meta, kpis, totals, rev_buckets, float_buckets, monthly_trend, top_clients, top_brokerage, float_top, mtf_top } = data;
 
   const trendData       = monthly_trend.map(m => ({ ...m, target: 35 }));
-  const segPie          = segment_mix.filter(s => s.value > 0);
 
   // #15: table rows — named buckets show cumulative %; "Rest" = REMAINING share beyond the
   // last named bucket (Top 500 for revenue, Top 200 for float), not a redundant 100%; plus a
@@ -231,35 +229,23 @@ const ConcentrationRisk = () => {
           </table></div>
         </div>
         <div className="panel">
-          <div className="ptitle">🥧 Segment &amp; revenue-stream concentration<InfoBtn text="Share of revenue by segment / revenue stream. Options clearing is Navia's primary revenue driver and the main concentration risk." /></div>
-          {segPie.length === 0 ? <div style={{ color: 'var(--tx3)', fontSize: 13, padding: '20px 0' }}>No revenue-stream data yet.</div> : (
-            <ViewToggle
-              chart={
-            <ResponsiveContainer width="100%" height={240}>
-              <PieChart>
-                <Pie data={segPie} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={90} innerRadius={50}
-                     label={(e) => `${e.name}: ${pct1(e.percent * 100)}`} labelLine={false}>
-                  {segPie.map((_, i) => <Cell key={i} fill={SEG_COLORS[i % SEG_COLORS.length]} />)}
-                </Pie>
-                <Tooltip formatter={v => rupee(v)} />
-                <Legend wrapperStyle={{ fontSize: 11 }} />
-              </PieChart>
-            </ResponsiveContainer>
-              }
-              table={
-                <table>
-                  <thead><tr><th>Segment</th><th>Revenue</th></tr></thead>
-                  <tbody>
-                    {segPie.map(r => (
-                      <tr key={r.name}><td>{r.name}</td><td>{rupee(r.value)}</td></tr>
-                    ))}
-                    {segPie.length === 0 && <tr><td colSpan={2} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
-                  </tbody>
-                </table>
-              }
-            />
-          )}
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Revenue dependency by segment. Options clearing is Navia's primary revenue driver and the main concentration risk.</p>
+          <div className="ptitle">📋 Top 10 clients by brokerage<InfoBtn text="Highest brokerage-paying clients (MTD), with each client's share of total brokerage, cumulative %, mapped RM, and an unmapped-account risk flag." /></div>
+          <div className="tw"><table>
+            <thead><tr><th>Rank</th><th>UCC</th><th>Client</th><th>Type</th><th>Brokerage (MTD)</th><th>% of total</th><th>Cum %</th><th>RM</th><th>Risk flag</th></tr></thead>
+            <tbody>
+              {(top_brokerage || []).map(r => (
+                <tr key={r.ucc}>
+                  <td>{r.rank}</td><td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
+                  <td><span className="badge b-ri">{r.client_type}</span></td>
+                  <td>{rupee(r.brokerage)}</td>
+                  <td>{pct2(r.pct_of_total)}</td><td>{pct1(r.cum_pct)}</td>
+                  <td>{r.rm_name}</td>
+                  <td>{r.unmapped ? <span className="badge b-pend">Unmapped</span> : '—'}</td>
+                </tr>
+              ))}
+              {(!top_brokerage || top_brokerage.length === 0) && <tr><td colSpan={9} style={{ color: 'var(--tx3)' }}>No brokerage data yet.</td></tr>}
+            </tbody>
+          </table></div>
         </div>
       </div>
 

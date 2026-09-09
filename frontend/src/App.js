@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
+import ForgotPassword from './pages/ForgotPassword';
 import Layout from './components/Layout';
 
 // RM Pages
@@ -66,7 +67,18 @@ const HomeRedirect = () => {
   if (!user) return <Navigate to="/login" />;
   if (user.role === 'rm' || user.role === 'team_leader') return <Navigate to="/rm-dashboard" />;
   if (user.role === 'supervisor') return <Navigate to="/supervisor-dashboard" />;
-  if (user.role === 'admin') return <Navigate to="/import" />;
+  if (user.role === 'admin') {
+    // Dual admin+supervisor who last used the Supervisor view lands there, so a refresh
+    // keeps the page consistent with the remembered toggle instead of forcing the import page.
+    let dual = false;
+    try {
+      const p = typeof user.permissions === 'string' ? JSON.parse(user.permissions) : user.permissions;
+      dual = !!(p && p.dual_supervisor);
+    } catch (e) {}
+    let vm = null;
+    try { vm = localStorage.getItem('viewMode'); } catch (e) {}
+    return <Navigate to={(dual && vm === 'supervisor') ? '/supervisor-dashboard' : '/import'} />;
+  }
   return <Navigate to="/login" />;
 };
 
@@ -76,6 +88,7 @@ function App() {
       <Router>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/trade-insights" element={<TradeInsightsPublic />} />
           <Route path="/optin/:token" element={<OptinLanding />} /> 
           <Route path="/" element={<PrivateRoute><Layout /></PrivateRoute>}>

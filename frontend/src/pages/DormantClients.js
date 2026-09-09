@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import { ChurnBadge } from '../components/ui';
 
 const tb = t => t?.toLowerCase().includes('nri')?'b-nri':t?.toLowerCase().includes('hv')?'b-hv':'b-ri';
-const scChurn = s => s>=7?'h':s>=4?'m':'l';   // churn risk is 0–10
 const fmt = v => { const n=parseFloat(v)||0; if(n>=100000) return '₹'+(n/100000).toFixed(1)+'L'; if(n>=1000) return '₹'+(n/1000).toFixed(0)+'K'; return v?'₹'+n:'—'; };
 
 const DormantClients = () => {
@@ -42,7 +42,7 @@ const DormantClients = () => {
                   <td>{lastTrade?lastTrade.toLocaleDateString('en-IN',{month:'short',year:'numeric'}):'—'}</td>
                   <td>{monthsDormant}</td>
                   <td>{fmt(c.peak_revenue)}/mo</td>
-                  <td><span className={`ais ${scChurn(c.churn_risk_score)}`}>{Math.round(c.churn_risk_score||0)}</span></td>
+                  <td><ChurnBadge score={c.churn_risk_score} /></td>
                   <td><button className="btn sm" onClick={() => navigate('/contact-log',{state:{ucc:c.ucc, name:c.name}})}>Contact now</button></td>
                 </tr>
               );

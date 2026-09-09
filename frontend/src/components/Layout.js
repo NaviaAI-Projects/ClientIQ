@@ -48,6 +48,8 @@ function isPathAllowed(user, path) {
 const Layout = () => {
   const { user, logout }   = useAuth();
   const [showMenu, setShowMenu] = useState(false);
+  const [showPwdModal, setShowPwdModal] = useState(false);
+  const [viewMode, setViewMode] = useState(() => localStorage.getItem('viewMode') || 'admin');   // dual-access: 'admin' | 'supervisor'
   const navigate = useNavigate();
   const [counts, setCounts] = useState({
     ai_digest: 0, to_call: 0, assigned_leads: 0,
@@ -185,9 +187,26 @@ const Layout = () => {
     ]},
   ];
 
+  // A user can hold admin + supervisor access on one login: role stays 'admin'
+  // (route guards already permit admin on every supervisor page) and the flag
+  // permissions.dual_supervisor = true makes BOTH menus show in the sidebar.
+  const parsePerms = (p) => { if (!p) return null; if (typeof p === 'object') return p; try { return JSON.parse(p); } catch (e) { return null; } };
+  const dualSupervisor = user?.role === 'admin' && parsePerms(user?.permissions)?.dual_supervisor === true;
+
+  // Switch view for dual-access users; remember the choice and jump to that view's home.
+  const switchView = (mode) => {
+    setViewMode(mode);
+    localStorage.setItem('viewMode', mode);
+    navigate(mode === 'supervisor' ? '/supervisor-dashboard' : '/import');
+  };
+
   const getMenu = () => {
     if (user?.role === 'rm' || user?.role === 'team_leader') return rmMenu;
-    if (user?.role === 'admin') return adminMenu;
+    if (user?.role === 'admin') {
+      // Dual-access users toggle between the Admin menu and the Supervisor menu.
+      if (dualSupervisor) return viewMode === 'supervisor' ? supervisorMenu : adminMenu;
+      return adminMenu;
+    }
     if (user?.role === 'supervisor') {
       return supervisorMenu.map(section => ({
         ...section,
@@ -210,6 +229,24 @@ const Layout = () => {
           <h1>Navia ClientIQ</h1>
           <p>Strategic MIS · FY 2026-27</p>
         </div>
+
+        {/* Admin ⇄ Supervisor view toggle (only for dual-access users) */}
+        {dualSupervisor && (
+          <div style={{ display: 'flex', gap: 4, margin: '0 12px 8px', padding: 3,
+                        background: 'rgba(255,255,255,0.08)', borderRadius: 8 }}>
+            {[['admin', 'Admin'], ['supervisor', 'Supervisor']].map(([mode, label]) => (
+              <button key={mode} onClick={() => switchView(mode)} style={{
+                flex: 1, padding: '6px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                fontSize: 12, fontWeight: 600, fontFamily: 'var(--font)',
+                background: viewMode === mode ? '#ED4D37' : 'transparent',
+                color: viewMode === mode ? '#fff' : 'rgba(255,255,255,0.65)',
+                transition: 'background 0.15s',
+              }}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Navigation */}
         <nav style={{ flex: 1, padding: '8px 0' }}>
@@ -255,6 +292,14 @@ const Layout = () => {
                 <div style={{ fontSize: '12px', fontWeight: '600', color: 'var(--tx)' }}>{user?.name}</div>
                 <div style={{ fontSize: '11px', color: 'var(--tx3)', marginTop: '1px' }}>{user?.email || roleLabel}</div>
               </div>
+              <button onClick={() => { setShowMenu(false); setShowPwdModal(true); }} style={{
+                width: '100%', padding: '10px 14px', background: 'none', border: 'none',
+                borderBottom: '1px solid var(--br)', cursor: 'pointer', textAlign: 'left',
+                fontSize: '13px', color: 'var(--tx)', fontFamily: 'var(--font)',
+                display: 'flex', alignItems: 'center', gap: '8px',
+              }}>
+                🔑 Change password
+              </button>
               <button onClick={handleLogout} style={{
                 width: '100%', padding: '10px 14px', background: 'none', border: 'none',
                 cursor: 'pointer', textAlign: 'left', fontSize: '13px', color: 'var(--dc)',
@@ -266,6 +311,8 @@ const Layout = () => {
           )}
         </div>
       </aside>
+
+      {showPwdModal && <ChangePasswordModal onClose={() => setShowPwdModal(false)} />}
 
       {/* ── Topbar ── */}
       <header className="topbar">
@@ -280,6 +327,102 @@ const Layout = () => {
         <Outlet />
       </main>
 
+    </div>
+  );
+};
+
+// ── Change-password modal (any logged-in user) ──────────────────────────────
+const ChangePasswordModal = ({ onClose }) => {
+  const [cur, setCur] = useState('');
+  const [nw, setNw] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [show, setShow] = useState(false);
+  const [msg, setMsg] = useState(null);   // { ok, text }
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setMsg(null);
+    if (nw.length < 8) return setMsg({ ok: false, text: 'New password must be at least 8 characters.' });
+    if (nw !== confirm) return setMsg({ ok: false, text: 'New passwords do not match.' });
+    setSaving(true);
+    try {
+      const res = await api.post('/auth/change-password', { current_password: cur, new_password: nw });
+      setMsg({ ok: true, text: res.data.message || 'Password changed successfully.' });
+      setCur(''); setNw(''); setConfirm('');
+      setTimeout(onClose, 1200);
+    } catch (err) {
+      setMsg({ ok: false, text: err.response?.data?.message || 'Could not change password.' });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const inp = { width: '100%', padding: '10px 12px', border: '1px solid #ddd', borderRadius: '8px', fontSize: '14px', boxSizing: 'border-box', fontFamily: 'var(--font)' };
+  const lbl = { display: 'block', fontSize: '12px', fontWeight: 600, color: '#555', margin: '0 0 6px' };
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000,
+      display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: '#fff', borderRadius: 12, width: '100%', maxWidth: 400,
+        padding: 28, boxShadow: '0 20px 60px rgba(0,0,0,0.3)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+          <div style={{ width: 34, height: 34, borderRadius: 9, background: '#EEF2FB', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 17 }}>🔑</div>
+          <div style={{ fontSize: 17, fontWeight: 700, color: '#223872' }}>Change password</div>
+        </div>
+        <div style={{ fontSize: 12, color: '#888', margin: '8px 0 18px' }}>Choose a new password for your account.</div>
+        <form onSubmit={submit}>
+          <div style={{ marginBottom: 14 }}>
+            <label style={lbl}>Current password</label>
+            <input type={show ? 'text' : 'password'} value={cur} onChange={e => setCur(e.target.value)} required style={inp} />
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={lbl}>New password</label>
+            <input type={show ? 'text' : 'password'} value={nw} onChange={e => setNw(e.target.value)} required style={inp} placeholder="At least 8 characters" />
+          </div>
+          <div style={{ marginBottom: 6 }}>
+            <label style={lbl}>Confirm new password</label>
+            <input type={show ? 'text' : 'password'} value={confirm} onChange={e => setConfirm(e.target.value)} required style={inp} />
+            {confirm.length > 0 && nw !== confirm &&
+              <div style={{ fontSize: 12, color: '#B42318', fontWeight: 600, marginTop: 6 }}>Passwords do not match.</div>}
+            {confirm.length > 0 && nw === confirm && nw.length >= 8 &&
+              <div style={{ fontSize: 12, color: '#187A3E', fontWeight: 600, marginTop: 6 }}>✓ Passwords match.</div>}
+          </div>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, color: '#555', margin: '12px 0 16px', cursor: 'pointer' }}>
+            <input type="checkbox" checked={show} onChange={e => setShow(e.target.checked)}
+              style={{ width: 16, height: 16, flexShrink: 0, margin: 0, accentColor: '#223872', cursor: 'pointer' }} />
+            <span>Show passwords</span>
+          </label>
+
+          {msg && (
+            <div style={{
+              background: msg.ok ? '#E7F7EE' : '#FEE2E2', color: msg.ok ? '#1B7A46' : '#DC2626',
+              padding: '10px 12px', borderRadius: 8, fontSize: 13, marginBottom: 14,
+            }}>{msg.text}</div>
+          )}
+
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button type="button" onClick={onClose} style={{
+              flex: 1, padding: '11px', background: '#fff', color: '#555', border: '1px solid #ddd',
+              borderRadius: 8, fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'var(--font)',
+            }}>Cancel</button>
+            {(() => {
+              const disabled = saving || !cur || !nw || !confirm;
+              return (
+                <button type="submit" disabled={disabled} style={{
+                  flex: 1, padding: '11px', background: disabled ? '#B6C0D0' : '#223872', color: '#fff',
+                  border: 'none', borderRadius: 8, fontSize: 14, fontWeight: 600,
+                  cursor: disabled ? 'not-allowed' : 'pointer', fontFamily: 'var(--font)',
+                }}>{saving ? 'Saving…' : 'Update password'}</button>
+              );
+            })()}
+          </div>
+        </form>
+      </div>
     </div>
   );
 };

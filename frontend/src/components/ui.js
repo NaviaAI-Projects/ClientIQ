@@ -106,6 +106,22 @@ export const ClientLink = ({ ucc, name }) => {
   );
 };
 
+// Churn score badge (0–10 scale). Colour by severity: ≤4 = green (low risk),
+// ≥5 = red (elevated risk). Blank/no score renders a plain "—".
+export const churnIsRed = (score) => Number(score) >= 5;
+export const ChurnBadge = ({ score }) => {
+  if (score == null || score === '' || isNaN(Number(score))) return <span style={{ color: 'var(--tx3)' }}>—</span>;
+  const n = Math.round(Number(score));
+  const red = n >= 5;
+  return (
+    <span style={{
+      display: 'inline-block', minWidth: 22, textAlign: 'center',
+      padding: '2px 8px', borderRadius: 6, fontWeight: 700, fontSize: 12,
+      background: red ? '#FEE2E2' : '#E7F7EC', color: red ? '#C0392B' : '#1B7A46',
+    }}>{n}</span>
+  );
+};
+
 export const DateRange = ({ value, onChange, bounds, active }) => {
   const v = value || { key: 'month' };
   // Local pending dates — the query only fires when the user clicks Apply (no live re-query

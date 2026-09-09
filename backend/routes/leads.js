@@ -519,6 +519,9 @@ async function buildRoundRobinPlan() {
     FROM lead_pool lp
     LEFT JOIN clients c ON c.ucc = lp.ucc
     WHERE lp.status = 'unassigned' AND lp.lead_score >= $1
+      -- UCCs beginning with 'F' are not leads, so exclude them from auto-assign too
+      -- (keeps the round-robin plan consistent with the Unmapped Pool list).
+      AND lp.ucc NOT ILIKE 'F%'
     ORDER BY lp.lead_score DESC NULLS LAST, lp.ucc
   `, [threshold]);
 

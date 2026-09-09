@@ -164,6 +164,90 @@ router.get('/rm', auth, async (req, res) => {
   } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
 });
 
+// ── RM revenue for a CUSTOM date range (Revenue Tracker filter) ───
+// Brokerage is filtered precisely by trade_date (daily_trades). MTF interest is
+// monthly data (mtf_monthly), so it counts any month the range touches.
+router.get('/rm/revenue-range', auth, async (req, res) => {
+  try {
+    const from = String(req.query.from || '').slice(0, 10);
+    const to   = String(req.query.to   || '').slice(0, 10);
+    const isDate = s => /^\d{4}-\d{2}-\d{2}$/.test(s);
+    if (!isDate(from) || !isDate(to)) {
+      return res.status(400).json({ message: 'from and to dates (YYYY-MM-DD) are required.' });
+    }
+    if (from > to) return res.status(400).json({ message: 'From date must be on or before To date.' });
+
+    const userResult = await pool.query('SELECT name FROM users WHERE id = $1 LIMIT 1', [req.user.id]);
+    const userName   = userResult.rows[0]?.name || '';
+    const rmResult   = await pool.query('SELECT id FROM rm_master WHERE LOWER(rm_name) = LOWER($1) LIMIT 1', [userName]);
+    const rmId       = rmResult.rows[0]?.id || null;
+    if (!rmId) return res.json({ from, to, brokerage: 0, mtf: 0, total: 0, revenue_clients: 0, brokerage_share: null, monthly: [], top_clients: [] });
+
+    const fromMonth = from.slice(0, 7);   // YYYY-MM
+    const toMonth   = to.slice(0, 7);
+
+    const [brok, mtf, monthlyBrok, monthlyMtf, top] = await Promise.all([
+      pool.query(`
+        SELECT COALESCE(SUM(dt.brokerage_earned),0)::float AS brokerage,
+               COUNT(DISTINCT dt.ucc) FILTER (WHERE dt.brokerage_earned > 0)::int AS revenue_clients
+        FROM daily_trades dt
+        JOIN clients c ON c.ucc = dt.ucc AND c.assigned_rm_id = $1
+        WHERE dt.trade_date BETWEEN $2::date AND $3::date
+      `, [rmId, from, to]),
+      pool.query(`
+        SELECT COALESCE(SUM(m.interest_earned),0)::float AS mtf
+        FROM mtf_monthly m
+        JOIN clients c ON c.ucc = m.ucc AND c.assigned_rm_id = $1
+        WHERE m.month_year BETWEEN $2 AND $3
+      `, [rmId, fromMonth, toMonth]),
+      pool.query(`
+        SELECT to_char(dt.trade_date,'YYYY-MM') AS ym, COALESCE(SUM(dt.brokerage_earned),0)::float AS brokerage
+        FROM daily_trades dt
+        JOIN clients c ON c.ucc = dt.ucc AND c.assigned_rm_id = $1
+        WHERE dt.trade_date BETWEEN $2::date AND $3::date
+        GROUP BY 1 ORDER BY 1
+      `, [rmId, from, to]),
+      pool.query(`
+        SELECT m.month_year AS ym, COALESCE(SUM(m.interest_earned),0)::float AS mtf
+        FROM mtf_monthly m
+        JOIN clients c ON c.ucc = m.ucc AND c.assigned_rm_id = $1
+        WHERE m.month_year BETWEEN $2 AND $3
+        GROUP BY 1 ORDER BY 1
+      `, [rmId, fromMonth, toMonth]),
+      pool.query(`
+        SELECT dt.ucc, c.name, COALESCE(SUM(dt.brokerage_earned),0)::float AS revenue
+        FROM daily_trades dt
+        JOIN clients c ON c.ucc = dt.ucc AND c.assigned_rm_id = $1
+        WHERE dt.trade_date BETWEEN $2::date AND $3::date
+        GROUP BY dt.ucc, c.name
+        HAVING COALESCE(SUM(dt.brokerage_earned),0) > 0
+        ORDER BY revenue DESC LIMIT 5
+      `, [rmId, from, to]),
+    ]);
+
+    const MONF = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const byYm = {};
+    monthlyBrok.rows.forEach(r => { byYm[r.ym] = { Brokerage: Number(r.brokerage), MTF: 0 }; });
+    monthlyMtf.rows.forEach(r => { byYm[r.ym] = byYm[r.ym] || { Brokerage: 0, MTF: 0 }; byYm[r.ym].MTF = Number(r.mtf); });
+    const monthly = Object.keys(byYm).sort().map(ym => {
+      const [y, mo] = ym.split('-');
+      return { month: `${MONF[parseInt(mo, 10) - 1]} '${y.slice(2)}`, Brokerage: byYm[ym].Brokerage, MTF: byYm[ym].MTF };
+    });
+
+    const brokerage = Number(brok.rows[0]?.brokerage || 0);
+    const mtfTotal  = Number(mtf.rows[0]?.mtf || 0);
+    const total     = brokerage + mtfTotal;
+    res.json({
+      from, to,
+      brokerage, mtf: mtfTotal, total,
+      revenue_clients: Number(brok.rows[0]?.revenue_clients || 0),
+      brokerage_share: total > 0 ? Math.round(brokerage / total * 100) : null,
+      monthly,
+      top_clients: top.rows.map(t => ({ ucc: t.ucc, name: t.name || t.ucc, mtd_revenue: Number(t.revenue) })),
+    });
+  } catch (err) { res.status(500).json({ message: 'Server error', error: err.message }); }
+});
+
 // ── RM monthly performance (My Performance page) ──────────────────
 // Real per-month series for the logged-in RM. Revenue, leads assigned, converted and
 // interactions are computed from the DB. Target / achieved% / clients-EOM have no data

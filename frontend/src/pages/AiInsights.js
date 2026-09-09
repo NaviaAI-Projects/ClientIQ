@@ -1,11 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api';
+import { ChurnBadge } from '../components/ui';
 
 // Lead score is a 0–100 "hotness" scale: high = hot lead → red badge.
 const scoreClass = (s) => (s == null ? 'ais l' : s >= 75 ? 'ais h' : s >= 60 ? 'ais m' : 'ais l');
-// Churn score is a 0–10 risk scale: high = high churn risk → red badge (inverse meaning).
-const churnClass = (s) => (s == null ? 'ais l' : s >= 7 ? 'ais h' : s >= 5 ? 'ais m' : 'ais l');
 
 // Module-level cache — survives navigation within the SPA session, so returning to this page
 // renders instantly from the last payload while a fresh copy loads in the background.
@@ -74,7 +73,7 @@ const AiInsights = () => {
                 <td><span className="lc" onClick={() => openClient(c.ucc)}>{c.name}</span></td>
                 <td>{c.rm_name}</td>
                 <td style={{ fontSize: '12px', color: 'var(--tx2)' }}>{c.signal}</td>
-                <td><span className={churnClass(c.score)}>{c.score}</span></td>
+                <td><ChurnBadge score={c.score} /></td>
               </tr>
             ))}
           </tbody>

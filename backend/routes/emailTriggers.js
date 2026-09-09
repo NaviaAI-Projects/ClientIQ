@@ -12,13 +12,46 @@ function createTransporter(type = 'alerts') {
       host: 'smtp.zatpatmail.com', port: 587, secure: false,
       auth: { user: 'emailapikey', pass: 'PHtE6r1YS+Hq2Wcs9RMF7fKxEc/wPIksq+IzKAZHuYpLDvRXFk0Br9F/wzO/rxcoBvEQE/+fnoNgtLuf4L3Xc27vMG5FX2qyqK3sx/VYSPOZsbq6x00fuVkZcUzUUY7od9Nj3CHVstbaNA==' },
       from: 'updates@navia.co.in'
+    },
+    // Login OTP / security emails — sent from aialerts@navia.co.in via the same
+    // zatpatmail (Zeptomail) send token, which is authorised for the navia.co.in domain.
+    otp: {
+      host: 'smtp.zatpatmail.com', port: 587, secure: false,
+      auth: { user: 'emailapikey', pass: 'PHtE6r0MS+rrg28uoUUC4fLrEpL3Mtws/+tgelQUs9lBC6BRTk1W+dB6wWXkokgpXfIWEqTPz949s7if4uqHd2+8MzpNCGqyqK3sx/VYSPOZsbq6x00fuVsZfkXdUY7mddVo3CHRuNvfNA==' },
+      from: 'aialerts@navia.co.in'
     }
   };
-  const c = configs[type] || configs.alerts;
-  return {
-    transporter: nodemailer.createTransport({ host: c.host, port: c.port, secure: c.secure, auth: c.auth }),
-    from: c.from
-  };
+  const key = configs[type] ? type : 'alerts';
+  const c = configs[key];
+  // Reuse ONE pooled transporter per type. A pool keeps SMTP connections warm, so
+  // after the first send the DNS+TCP+TLS+AUTH handshake is skipped and subsequent
+  // emails go out fast. Timeouts keep a blocked host from hanging the caller.
+  if (!_transporters[key]) {
+    _transporters[key] = nodemailer.createTransport({
+      host: c.host, port: c.port, secure: c.secure, auth: c.auth,
+      pool: true,               // keep connections open and reuse them
+      maxConnections: 3,
+      maxMessages: 100,
+      connectionTimeout: 10000, // 10s to establish the TCP connection
+      greetingTimeout:   10000, // 10s to receive the server greeting
+      socketTimeout:     20000  // 20s of socket inactivity
+    });
+  }
+  return { transporter: _transporters[key], from: c.from };
+}
+
+// Cache of pooled transporters, keyed by config type ('alerts' | 'updates' | 'otp').
+const _transporters = {};
+
+// Warm the OTP connection at startup so the very first login email is fast too.
+// Never throws — if SMTP is unreachable we just log it and carry on.
+function warmOtpTransport() {
+  try {
+    const { transporter } = createTransporter('otp');
+    transporter.verify()
+      .then(() => console.log('OTP SMTP transport ready'))
+      .catch((e) => console.log('OTP SMTP warm-up failed (will retry on first send):', e.message));
+  } catch (e) { /* ignore */ }
 }
 
 // Replace {variable} placeholders with actual values
@@ -204,7 +237,11 @@ async function checkAndSendLeadExpiryWarnings() {
   } catch (err) { console.error('checkAndSendLeadExpiryWarnings error:', err.message); }
 }
 
+// Warm the OTP SMTP connection now (non-blocking) so the first login email is fast.
+warmOtpTransport();
+
 module.exports = {
+  sendEmail, warmOtpTransport,
   triggerOptinClient, triggerOptinRM, triggerSupervisorApproval,
   triggerMappingConfirmed, triggerChurnAlert, triggerLeadExpiry,
   triggerDailyDigest, checkAndSendChurnAlerts, checkAndSendLeadExpiryWarnings

@@ -212,7 +212,8 @@ const DailyMIS = () => {
             ))}
           </tbody>
         </table></div>
-        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>Float income estimated: total client ledger balance × configured FD rate ÷ 365. Configure rate in Admin → MIS Settings.</p>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>ℹ️ Float income estimated: total client ledger balance × configured FD rate ÷ 365. Configure rate in Admin → MIS Settings.</p>
+        <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 4 }}>ℹ️ MTF interest data is uploaded weekly, so recent days may show ₹0 until that week's file is loaded.</p>
       </div>
 
       <div className="panel">

@@ -94,12 +94,13 @@ const Users = () => {
   const [rmData, setRmData]             = useState({});
   const [loading, setLoading]           = useState(true);
   const [message, setMessage]           = useState('');
-  const [form, setForm]                 = useState({ name: '', email: '', password: '', role: 'rm', supervisor_sub_role: 'rm-supervisor', phone: '' });
+  const [form, setForm]                 = useState({ name: '', email: '', password: '', role: 'rm', supervisor_sub_role: 'rm-supervisor', phone: '', dual_supervisor: false });
   const [saving, setSaving]             = useState(false);
   const [modal, setModal]               = useState(null);
   const [editTemplate, setEditTemplate] = useState('rm-supervisor');
   const [editPerms, setEditPerms]       = useState({});
   const [modalSaving, setModalSaving]   = useState(false);
+  const [showPwd, setShowPwd]           = useState(false);
 
   useEffect(() => { fetchAll(); }, []);
 
@@ -123,7 +124,7 @@ const Users = () => {
     try {
       await api.post('/users', form);
       setMessage('success');
-      setForm({ name: '', email: '', password: '', role: 'rm', supervisor_sub_role: 'rm-supervisor', phone: '' });
+      setForm({ name: '', email: '', password: '', role: 'rm', supervisor_sub_role: 'rm-supervisor', phone: '', dual_supervisor: false });
       fetchAll();
     } catch (err) { setMessage(err.response?.data?.message || 'Error creating user'); }
     finally { setSaving(false); }
@@ -136,6 +137,17 @@ const Users = () => {
     } catch { alert('Failed to update'); }
   };
 
+  const handleDelete = async (user) => {
+    // Two-step confirmation — deletion is permanent.
+    if (!window.confirm(`Permanently delete "${user.name}" (${user.email})?\n\nThis cannot be undone. To keep the record but block login, use Deactivate instead.`)) return;
+    try {
+      await api.delete(`/users/${user.id}`);
+      fetchAll();
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to delete user.');
+    }
+  };
+
   const openModal = (user) => {
     const tmpl = user.supervisor_sub_role || 'rm-supervisor';
     setEditTemplate(tmpl);
@@ -145,7 +157,9 @@ const Users = () => {
     } else {
       setEditPerms({ ...(TEMPLATES[tmpl]?.perms || TEMPLATES['rm-supervisor'].perms) });
     }
-    setModal({ ...user });
+    let perms = user.permissions;
+    if (typeof perms === 'string') { try { perms = JSON.parse(perms); } catch (e) { perms = null; } }
+    setModal({ ...user, dual_supervisor: !!(perms && perms.dual_supervisor) });
   };
 
   const applyTemplate = (tmpl) => {
@@ -156,12 +170,16 @@ const Users = () => {
 
   const saveModal = async () => {
     setModalSaving(true);
+    // Admin: permissions only carries the dual_supervisor flag. Supervisor: the perm matrix.
+    const permsToSave = modal.role === 'admin'
+      ? (modal.dual_supervisor ? { dual_supervisor: true } : null)
+      : editPerms;
     try {
       await api.put(`/users/${modal.id}`, {
         name: modal.name, email: modal.email,
         role: modal.role, supervisor_sub_role: editTemplate,
         is_active: modal.is_active,
-        permissions: editPerms,
+        permissions: permsToSave,
         agent_number: modal.agent_number || null,
         phone: modal.phone || null
       });
@@ -237,9 +255,12 @@ const Users = () => {
 
       {/* ADD USER PANEL */}
       <div style={{ background: 'white', borderRadius: '12px', padding: '20px 24px', border: '1px solid #eee', marginBottom: '16px', boxShadow: '0 1px 4px rgba(0,0,0,0.04)' }}>
-        <div style={{ fontSize: '14px', fontWeight: '600', color: '#111', marginBottom: '16px' }}>➕ Add User</div>
+        <div style={{ marginBottom: '18px' }}>
+          <div style={{ fontSize: '15px', fontWeight: '700', color: '#111' }}>➕ Add User</div>
+          <div style={{ fontSize: '12px', color: '#8a94a6', marginTop: '2px' }}>Create a login and assign a role. Admins can optionally also get Supervisor access.</div>
+        </div>
         <form onSubmit={handleSubmit}>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(155px, 1fr))', gap: '12px', marginBottom: '14px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))', gap: '14px', marginBottom: '16px' }}>
             <div>
               <label style={lbl}>Full Name</label>
               <input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
@@ -276,9 +297,16 @@ const Users = () => {
             </div>
             <div>
               <label style={lbl}>Password</label>
-              <input type="password" value={form.password}
-                onChange={e => setForm({ ...form, password: e.target.value })}
-                placeholder="Min 6 chars" required style={inp} />
+              <div style={{ position: 'relative' }}>
+                <input type={showPwd ? 'text' : 'password'} value={form.password}
+                  onChange={e => setForm({ ...form, password: e.target.value })}
+                  placeholder="Min 6 chars" required style={{ ...inp, paddingRight: '56px' }} />
+                <button type="button" onClick={() => setShowPwd(s => !s)} tabIndex={-1}
+                  style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)',
+                    background: 'none', border: 'none', cursor: 'pointer', fontSize: '11px', fontWeight: 600, color: '#1B3F7A' }}>
+                  {showPwd ? '🙈 Hide' : '👁 Show'}
+                </button>
+              </div>
             </div>
             <div>
               <label style={lbl}>Mobile (click-to-call)</label>
@@ -287,9 +315,27 @@ const Users = () => {
                 placeholder="e.g. 9962017043" style={inp} />
             </div>
           </div>
+
+          {/* Admin can also be given Supervisor access (dual view toggle in the app) */}
+          {form.role === 'admin' && (
+            <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', margin: '0 0 18px',
+                            padding: '12px 14px', background: '#F3F6FC', border: '1px solid #D6E0F0',
+                            borderRadius: '8px', cursor: 'pointer', maxWidth: '560px' }}>
+              <input type="checkbox" checked={!!form.dual_supervisor}
+                onChange={e => setForm({ ...form, dual_supervisor: e.target.checked })}
+                style={{ width: '16px', height: '16px', marginTop: '1px', cursor: 'pointer', accentColor: '#1B3F7A', flexShrink: 0 }} />
+              <span style={{ lineHeight: 1.45 }}>
+                <span style={{ fontSize: '13px', fontWeight: 600, color: '#1B3F7A' }}>Also grant Supervisor access</span>
+                <span style={{ display: 'block', fontSize: '12px', color: '#667085', marginTop: '2px' }}>
+                  The user can switch between the Admin and Supervisor views using a toggle inside the app.
+                </span>
+              </span>
+            </label>
+          )}
+
           <button type="submit" disabled={saving}
-            style={{ padding: '9px 20px', background: saving ? '#94a3b8' : '#1B3F7A', color: 'white', border: 'none', borderRadius: '7px', cursor: saving ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: '600' }}>
-            {saving ? 'Creating...' : '+ Add user'}
+            style={{ padding: '10px 22px', background: saving ? '#94a3b8' : '#1B3F7A', color: 'white', border: 'none', borderRadius: '7px', cursor: saving ? 'not-allowed' : 'pointer', fontSize: '13px', fontWeight: '600' }}>
+            {saving ? 'Creating…' : '+ Add user'}
           </button>
         </form>
       </div>
@@ -349,8 +395,13 @@ const Users = () => {
                         style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '5px', cursor: 'pointer', border: '1px solid',
                           borderColor: user.is_active ? '#f1a1a1' : '#a1d1a1',
                           background: user.is_active ? '#fff5f5' : '#f5fff5',
-                          color: user.is_active ? '#c0392b' : '#27ae60', fontWeight: '500' }}>
+                          color: user.is_active ? '#c0392b' : '#27ae60', fontWeight: '500', marginRight: '6px' }}>
                         {user.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      <button onClick={() => handleDelete(user)} title="Permanently delete this user"
+                        style={{ padding: '5px 12px', fontSize: '12px', borderRadius: '5px', cursor: 'pointer',
+                          border: '1px solid #E11D48', background: '#E11D48', color: 'white', fontWeight: '600' }}>
+                        Delete
                       </button>
                     </td>
                   </tr>
@@ -404,6 +455,23 @@ const Users = () => {
                 </>
               )}
             </div>
+
+            {/* Admin: option to also grant Supervisor access (dual view) */}
+            {modal.role === 'admin' && (
+              <label style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', margin: '4px 0 18px',
+                              padding: '12px 14px', background: '#F3F6FC', border: '1px solid #D6E0F0',
+                              borderRadius: '8px', cursor: 'pointer' }}>
+                <input type="checkbox" checked={!!modal.dual_supervisor}
+                  onChange={e => setModal({ ...modal, dual_supervisor: e.target.checked })}
+                  style={{ width: '16px', height: '16px', marginTop: '1px', cursor: 'pointer', accentColor: '#1B3F7A', flexShrink: 0 }} />
+                <span style={{ lineHeight: 1.45 }}>
+                  <span style={{ fontSize: '13px', fontWeight: 600, color: '#1B3F7A' }}>Also grant Supervisor access</span>
+                  <span style={{ display: 'block', fontSize: '12px', color: '#667085', marginTop: '2px' }}>
+                    The user can switch between the Admin and Supervisor views using a toggle inside the app.
+                  </span>
+                </span>
+              </label>
+            )}
 
             {/* Supervisor: template + permission matrix */}
             {modal.role === 'supervisor' && (

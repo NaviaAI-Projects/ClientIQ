@@ -5,8 +5,19 @@ const AuthContext = createContext();
 
 const BASE_URL = process.env.REACT_APP_API_URL || '/api';
 
+// Safely read the stored user — a corrupt value must not white-screen the whole app.
+const readStoredUser = () => {
+  try {
+    const raw = localStorage.getItem('user');
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    localStorage.removeItem('user');
+    return null;
+  }
+};
+
 export const AuthProvider = ({ children }) => {
-  const [user, setUser]   = useState(JSON.parse(localStorage.getItem('user')) || null);
+  const [user, setUser]   = useState(readStoredUser);
   const [token, setToken] = useState(localStorage.getItem('token') || null);
   const [ready, setReady] = useState(false);
 

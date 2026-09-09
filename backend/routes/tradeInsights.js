@@ -359,25 +359,44 @@ async function buildInsightsData(ucc, days = 90) {
   const misTrades = Number(A.mis_trades) || 0;
   const pnlApplicable = misTrades > 0;
 
-  // ── Calendar (anchored to the latest trade month so it maps to real trade days,
-  //    not the current empty month) ──
-  const lastTradeDate = dayRows.length ? new Date(dayRows[dayRows.length - 1].date + 'T00:00:00Z') : new Date();
-  const year = lastTradeDate.getUTCFullYear(), month = lastTradeDate.getUTCMonth();
-  const firstDay = new Date(Date.UTC(year, month, 1)).getUTCDay();
-  const daysInMo = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+  // ── Calendars for every month covered by the window (the client can page across
+  //    the ~3 months of 90-day data). Anchored to real trade days, oldest→newest;
+  //    the default view is the latest trade month. ──
+  const pnlByDate = {};    dayRows.forEach(d => { pnlByDate[d.date] = d.pnl; });
   const tradesByDate = {}; dayRows.forEach(d => { tradesByDate[d.date] = d.trades; });
-  const offset = firstDay === 0 ? 6 : firstDay - 1;
-  const pnlByDate = {}; dayRows.forEach(d => { pnlByDate[d.date] = d.pnl; });
-  const calDays = [];
-  for (let i = 0; i < offset; i++) calDays.push({ date: '', type: 'empty', label: '' });
-  for (let d = 1; d <= daysInMo; d++) {
-    const ds = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    const p = pnlByDate[ds];
-    const traded = p !== undefined;
-    calDays.push({ date: d, type: p === undefined ? 'flat' : p > 0 ? 'profit' : p < 0 ? 'loss' : 'flat',
-      traded, trades: tradesByDate[ds] || 0,
-      label: traded ? (p > 0 ? '+' : '') + r2(p).toLocaleString('en-IN', { maximumFractionDigits: 2 }) : 'No trade' });
+
+  const buildMonthGrid = (y, m) => {
+    const firstDay  = new Date(Date.UTC(y, m, 1)).getUTCDay();
+    const daysInMo  = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+    const offset    = firstDay === 0 ? 6 : firstDay - 1;   // Mon-first grid
+    const days = [];
+    for (let i = 0; i < offset; i++) days.push({ date: '', type: 'empty', label: '' });
+    for (let d = 1; d <= daysInMo; d++) {
+      const ds = `${y}-${String(m + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+      const p = pnlByDate[ds];
+      const traded = p !== undefined;
+      days.push({ date: d, type: p === undefined ? 'flat' : p > 0 ? 'profit' : p < 0 ? 'loss' : 'flat',
+        traded, trades: tradesByDate[ds] || 0,
+        label: traded ? (p > 0 ? '+' : '') + r2(p).toLocaleString('en-IN', { maximumFractionDigits: 2 }) : 'No trade' });
+    }
+    return { year: y, month: m + 1,
+      month_label: new Date(Date.UTC(y, m, 1)).toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' }),
+      days };
+  };
+
+  const lastTradeDate  = dayRows.length ? new Date(dayRows[dayRows.length - 1].date + 'T00:00:00Z') : new Date();
+  const firstTradeDate = dayRows.length ? new Date(dayRows[0].date + 'T00:00:00Z') : lastTradeDate;
+  const calendars = [];
+  let cy = firstTradeDate.getUTCFullYear(), cm = firstTradeDate.getUTCMonth();
+  const ly = lastTradeDate.getUTCFullYear(), lm = lastTradeDate.getUTCMonth();
+  let calGuard = 0;
+  while ((cy < ly || (cy === ly && cm <= lm)) && calGuard++ < 24) {
+    calendars.push(buildMonthGrid(cy, cm));
+    cm++; if (cm > 11) { cm = 0; cy++; }
   }
+  if (!calendars.length) calendars.push(buildMonthGrid(lastTradeDate.getUTCFullYear(), lastTradeDate.getUTCMonth()));
+  const latestCal = calendars[calendars.length - 1];
+  const calDays = latestCal.days;
 
   // ── Scorecard — derived from real win rate / profit factor ──
   const scorecard = [
@@ -459,7 +478,8 @@ Rules: Use ONLY the numbers above; do not invent any. This client's activity is 
       mom: monthlyPnl.map(m => ({ month: m.month, net_pnl: m.gross_profit + m.gross_loss, win_rate: winRate })),
       scorecard,
     },
-    calendar: { days: calDays, month_label: lastTradeDate.toLocaleString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' }) },
+    calendar: { days: calDays, month_label: latestCal.month_label },   // latest month (back-compat)
+    calendars,   // every month in the 90-day window, oldest→newest, for the calendar filter
     pnl_applicable: pnlApplicable,   // false = CNC-only client → P&L panels shown as "Not applicable"
     ai_insights: aiInsights,
   };

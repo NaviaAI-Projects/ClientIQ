@@ -275,6 +275,7 @@ const TradeInsights = ({ ucc, clientName, token, jsucc }) => {
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(null);
   const [days,    setDays]    = useState(90);
+  const [calIdx,  setCalIdx]  = useState(null);   // selected calendar month; null = latest
 
   const fetchData = useCallback(async () => {
     if (!ucc && !jsucc) return;
@@ -328,6 +329,12 @@ const TradeInsights = ({ ucc, clientName, token, jsucc }) => {
   );
 
   const { summary, options_stats, patterns, best_worst, calendar, ai_insights } = data;
+
+  // Calendar month navigation across the 90-day window. `calendars` (newest last) comes from
+  // the backend; fall back to the single `calendar` for older payloads. null index = latest month.
+  const calList = (data.calendars && data.calendars.length) ? data.calendars : (calendar ? [calendar] : []);
+  const calEff  = calList.length ? (calIdx == null ? calList.length - 1 : Math.max(0, Math.min(calIdx, calList.length - 1))) : 0;
+  const activeCal = calList[calEff] || calendar || { days: [], month_label: '' };
 
   // P&L is only meaningful for intraday (MIS) trading. A CNC-only (delivery) client has no
   // real intraday P&L, so those panels render "Not applicable" and only trade-activity
@@ -560,13 +567,29 @@ const TradeInsights = ({ ucc, clientName, token, jsucc }) => {
           </div>
 
           <div className="ti-2col">
-            <Panel title={`${pnlNA ? 'Trade calendar' : 'Daily P&L calendar'} — ${calendar?.month_label || new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' })}`} info="Each calendar day coloured by that day's realized P&L (green = profit, red = loss, grey = no trade)." sub={pnlNA ? 'Blue = traded day · Grey = no trade' : 'Green = profit day · Red = loss day'}>
-              <CalHeatmap days={calendar?.days || []} tradeMode={pnlNA} />
+            <Panel title={`${pnlNA ? 'Trade calendar' : 'Daily P&L calendar'}`} info="Each calendar day coloured by that day's realized P&L (green = profit, red = loss, grey = no trade). Use the arrows to move across the months in your 90-day window." sub={pnlNA ? 'Blue = traded day · Grey = no trade' : 'Green = profit day · Red = loss day'}>
+              {/* Month navigator across the 90-day window */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px', gap: '8px' }}>
+                <button onClick={() => setCalIdx(Math.max(0, calEff - 1))} disabled={calEff <= 0}
+                  aria-label="Previous month"
+                  style={{ width: '30px', height: '30px', borderRadius: '8px', border: '1px solid var(--br)', background: 'var(--bg)', color: calEff <= 0 ? 'var(--tx3)' : 'var(--tx)', cursor: calEff <= 0 ? 'default' : 'pointer', fontSize: '15px', fontFamily: 'inherit', opacity: calEff <= 0 ? 0.5 : 1 }}>‹</button>
+                <div style={{ fontSize: '13px', fontWeight: 700, color: 'var(--tx)', fontFamily: "'Sora', sans-serif" }}>
+                  {activeCal.month_label || ''}
+                  {calList.length > 1 && <span style={{ fontSize: '10px', color: 'var(--tx3)', fontWeight: 500, marginLeft: '7px' }}>{calEff + 1}/{calList.length}</span>}
+                </div>
+                <button onClick={() => setCalIdx(Math.min(calList.length - 1, calEff + 1))} disabled={calEff >= calList.length - 1}
+                  aria-label="Next month"
+                  style={{ width: '30px', height: '30px', borderRadius: '8px', border: '1px solid var(--br)', background: 'var(--bg)', color: calEff >= calList.length - 1 ? 'var(--tx3)' : 'var(--tx)', cursor: calEff >= calList.length - 1 ? 'default' : 'pointer', fontSize: '15px', fontFamily: 'inherit', opacity: calEff >= calList.length - 1 ? 0.5 : 1 }}>›</button>
+              </div>
+              <CalHeatmap days={activeCal.days || []} tradeMode={pnlNA} />
+              <p style={{ fontSize: '11px', color: 'var(--tx3)', marginTop: '10px', fontFamily: 'monospace' }}>
+                ℹ️ Showing your last 90 trading days only{calList.length > 1 ? ` (${calList.length} months)` : ''}.
+              </p>
             </Panel>
 
             <Panel title="Trading streak" info="Every trading day as a square — colour marks profit, loss or no trade, showing streaks." sub="Each square = one trading day">
               <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '12px' }}>
-                {(calendar?.days || []).filter(d => d.type !== 'empty').map((d, i) => (
+                {(activeCal.days || []).filter(d => d.type !== 'empty').map((d, i) => (
                   <div key={i} title={pnlNA ? (d.traded ? `${d.trades} trades` : 'No trade') : d.label} style={{
                     width: '15px', height: '15px', borderRadius: '4px',
                     background: pnlNA

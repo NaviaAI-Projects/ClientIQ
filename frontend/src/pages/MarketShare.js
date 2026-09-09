@@ -4,7 +4,7 @@ import {
   ResponsiveContainer, LabelList,
 } from 'recharts';
 import api from '../api';
-import { InfoBtn, DateRange, rangeParams } from '../components/ui';
+import { InfoBtn, DateRange, rangeParams, ViewToggle } from '../components/ui';
 
 // canonical segment order + short labels + colours (shared by table + charts)
 const SEGS = [
@@ -32,23 +32,50 @@ const Trend = ({ dir, delta }) => {
 const segOf = (mo, key) => (mo.segments || []).find(s => s.key === key) || {};
 const perDay = (val, days) => (days > 0 && val != null ? val / days : null);
 
+const crDay = (v, d = 2) => (v == null ? '—' : '₹' + Number(v).toLocaleString('en-IN', { maximumFractionDigits: d }) + 'Cr');
+// % change of a current per-day value vs a baseline per-day value
+const pctChg = (cur, base) => (base != null && base > 0 && cur != null) ? +(((cur - base) / base) * 100).toFixed(1) : null;
+const dirNum = (cur, base) => (cur == null || base == null) ? 'flat' : cur > base ? 'up' : cur < base ? 'down' : 'flat';
+
+// Per-day segment detail: our & exchange turnover per trading day (₹Cr/day), each with a
+// month-over-month change and a change vs the prior-3-month average — both on a per-day basis.
 const DetailTable = ({ segments }) => (
   <div className="tw"><table>
     <thead><tr>
-      <th>Segment</th><th>Our volume</th><th>vs prev month</th>
-      <th>Exchange volume</th><th>Navia share</th><th>Trading days</th>
+      <th rowSpan={2} style={{ verticalAlign: 'bottom' }}>Segment</th>
+      <th rowSpan={2} style={{ verticalAlign: 'bottom' }}>Trading days</th>
+      <th colSpan={3} style={{ textAlign: 'center', borderLeft: '1px solid var(--br2,#e2e8f0)' }}>Our volume (₹Cr/day)</th>
+      <th colSpan={3} style={{ textAlign: 'center', borderLeft: '1px solid var(--br2,#e2e8f0)' }}>Exchange volume (₹Cr/day)</th>
+      <th rowSpan={2} style={{ verticalAlign: 'bottom', borderLeft: '1px solid var(--br2,#e2e8f0)' }}>Navia share</th>
+    </tr>
+    <tr>
+      <th style={{ borderLeft: '1px solid var(--br2,#e2e8f0)', fontSize: 10 }}>Per day</th>
+      <th style={{ fontSize: 10 }}>vs prev mo</th>
+      <th style={{ fontSize: 10 }}>vs 3M avg</th>
+      <th style={{ borderLeft: '1px solid var(--br2,#e2e8f0)', fontSize: 10 }}>Per day</th>
+      <th style={{ fontSize: 10 }}>vs prev mo</th>
+      <th style={{ fontSize: 10 }}>vs 3M avg</th>
     </tr></thead>
     <tbody>
-      {segments.map(s => (
-        <tr key={s.key}>
-          <td>{s.label}</td>
-          <td>{cr(s.navia_cr)}</td>
-          <td><Trend dir={s.navia_dir} delta={s.navia_delta_pct} /></td>
-          <td>{s.exchange_cr > 0 ? cr(s.exchange_cr) : '—'}</td>
-          <td style={{ fontWeight: 700, color: s.share != null ? 'var(--tx1)' : 'var(--tx3)' }}>{pct(s.share)}</td>
-          <td>{s.trading_days || '—'}</td>
-        </tr>
-      ))}
+      {segments.map(s => {
+        // Navia share = per-day Navia ÷ per-day exchange (identical to total ÷ total, but
+        // derived from the per-day figures shown so the row is internally consistent).
+        const share = (s.navia_per_day != null && s.exchange_per_day > 0)
+          ? +((s.navia_per_day / s.exchange_per_day) * 100).toFixed(2) : s.share;
+        return (
+          <tr key={s.key}>
+            <td>{s.label}</td>
+            <td>{s.trading_days || '—'}</td>
+            <td style={{ borderLeft: '1px solid var(--br2,#eef2f7)' }}>{crDay(s.navia_per_day)}</td>
+            <td><Trend dir={s.navia_perday_dir} delta={s.navia_perday_delta_pct} /></td>
+            <td><Trend dir={dirNum(s.navia_per_day, s.navia_p3m_per_day)} delta={pctChg(s.navia_per_day, s.navia_p3m_per_day)} /></td>
+            <td style={{ borderLeft: '1px solid var(--br2,#eef2f7)' }}>{crDay(s.exchange_per_day, 0)}</td>
+            <td><Trend dir={s.exchange_perday_dir} delta={s.exchange_perday_delta_pct} /></td>
+            <td><Trend dir={dirNum(s.exchange_per_day, s.exchange_p3m_per_day)} delta={pctChg(s.exchange_per_day, s.exchange_p3m_per_day)} /></td>
+            <td style={{ fontWeight: 700, color: share != null ? 'var(--tx1)' : 'var(--tx3)', borderLeft: '1px solid var(--br2,#eef2f7)' }}>{pct(share)}</td>
+          </tr>
+        );
+      })}
     </tbody>
   </table></div>
 );
@@ -180,6 +207,8 @@ const MarketShare = () => {
       <div className="panel">
         <div className="ptitle">📊 {isMonthly ? 'Monthly' : 'Daily'} turnover — Navia vs Exchange (₹Cr)<InfoBtn text="Total turnover across all segments. Ranges longer than ~6 weeks roll up to one bar per month; a month or less shows daily bars. Navia and exchange share one axis, so our volume appears small against the exchange-wide total — the true scale of our share. Hover a bar for exact values." /></div>
         {chartData.length ? (
+          <ViewToggle
+            chart={
           <ResponsiveContainer width="100%" height={340}>
             <BarChart data={chartData} margin={{ top: 20, right: 12, bottom: 8, left: 20 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
@@ -196,6 +225,23 @@ const MarketShare = () => {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+            }
+            table={
+              <table>
+                <thead><tr><th>{isMonthly ? 'Month' : 'Day'}</th><th>Navia (₹Cr)</th><th>Exchange (₹Cr)</th><th>Share</th></tr></thead>
+                <tbody>
+                  {chartData.map((r, i) => (
+                    <tr key={i}>
+                      <td>{r.label}</td>
+                      <td>{cr(r.navia_cr)}</td>
+                      <td>{r.exchange_cr > 0 ? cr(r.exchange_cr) : '—'}</td>
+                      <td style={{ fontWeight: 700 }}>{r.exchange_cr > 0 ? pct((r.navia_cr / r.exchange_cr) * 100) : '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            }
+          />
         ) : (
           <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--tx3)', fontSize: 13 }}>No turnover in this range.</div>
         )}
@@ -251,6 +297,8 @@ const MarketShare = () => {
       <div className="panel">
         <div className="ptitle">📈 Market share trend by segment (%){trendIsDaily ? ' — daily' : ''}<InfoBtn text="Navia's percentage share of exchange turnover per segment. Shows one point per trading day when the selected range is within a single month, and one point per month across a wider range." /></div>
         {shareTrend.length ? (
+          <ViewToggle
+            chart={
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={shareTrend} margin={{ top: 8, right: 12, bottom: 8, left: 8 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
@@ -263,6 +311,18 @@ const MarketShare = () => {
               ))}
             </LineChart>
           </ResponsiveContainer>
+            }
+            table={
+              <table>
+                <thead><tr><th>{trendIsDaily ? 'Day' : 'Month'}</th>{SEGS.map(s => <th key={s.key}>{s.short}</th>)}</tr></thead>
+                <tbody>
+                  {shareTrend.map((r, i) => (
+                    <tr key={i}><td>{r.label}</td>{SEGS.map(s => <td key={s.key}>{r[s.key] == null ? '—' : r[s.key] + '%'}</td>)}</tr>
+                  ))}
+                </tbody>
+              </table>
+            }
+          />
         ) : (
           <div style={{ height: 120, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--tx3)', fontSize: 13 }}>No exchange data yet.</div>
         )}
