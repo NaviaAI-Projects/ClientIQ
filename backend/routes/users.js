@@ -94,47 +94,91 @@ router.put('/:id', auth, adminOnly, async (req, res) => {
   }
 });
 
-// DELETE — permanently remove a user account.
+// DELETE — permanently remove a user account, KEEPING their logs.
 // Guards: an admin cannot delete their own account, and the last remaining active
-// admin cannot be deleted (that would lock everyone out). If the account is still
-// referenced by other records (foreign keys), we surface a clear message telling
-// the admin to deactivate it instead of leaving a confusing 500.
+// admin cannot be deleted (that would lock everyone out).
+//
+// The old behaviour hit a foreign-key violation (interaction logs, audit trail, etc.
+// still reference the user) and told the admin to deactivate instead. Instead we now
+// DETACH the log rows — for every table.column that references users(id) and is
+// nullable, set it NULL so the rows survive without the account — then delete the
+// user. A NOT NULL reference can't be detached without destroying the row, so if any
+// such rows exist we stop and report them rather than delete data silently.
 router.delete('/:id', auth, adminOnly, async (req, res) => {
   const id = parseInt(req.params.id, 10);
-  try {
-    if (!Number.isInteger(id)) return res.status(400).json({ message: 'Invalid user id.' });
-    if (String(req.user.id) === String(id)) {
-      return res.status(400).json({ message: 'You cannot delete your own account.' });
-    }
+  if (!Number.isInteger(id)) return res.status(400).json({ message: 'Invalid user id.' });
+  if (String(req.user.id) === String(id)) {
+    return res.status(400).json({ message: 'You cannot delete your own account.' });
+  }
 
-    const target = await pool.query('SELECT id, name, role FROM users WHERE id = $1', [id]);
+  const qIdent = (s) => '"' + String(s).replace(/"/g, '""') + '"';   // safe-quote a catalog identifier
+  const client = await pool.connect();
+  try {
+    const target = await client.query('SELECT id, name, role FROM users WHERE id = $1', [id]);
     if (target.rows.length === 0) return res.status(404).json({ message: 'User not found.' });
     const user = target.rows[0];
 
     // Don't allow removing the last active admin.
     if (user.role === 'admin') {
-      const admins = await pool.query(
-        `SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin' AND is_active = true AND id <> $1`,
-        [id]
-      );
+      const admins = await client.query(
+        `SELECT COUNT(*)::int AS n FROM users WHERE role = 'admin' AND is_active = true AND id <> $1`, [id]);
       if ((admins.rows[0]?.n || 0) === 0) {
         return res.status(400).json({ message: 'Cannot delete the last active admin. Create another admin first.' });
       }
     }
 
-    await pool.query('DELETE FROM users WHERE id = $1', [id]);
+    await client.query('BEGIN');
 
-    res.json({ success: true, message: `User ${user.name} deleted.` });
-    await audit(req, 'USER_DELETED', `User ${user.name} (id ${id}, role ${user.role}) deleted`, null, 'success', 'users');
+    // Every table.column that has a foreign key to users(id), with its nullability.
+    const refs = await client.query(`
+      SELECT kcu.table_name AS child_table, kcu.column_name AS child_column, col.is_nullable
+      FROM information_schema.referential_constraints rc
+      JOIN information_schema.key_column_usage kcu
+        ON kcu.constraint_name = rc.constraint_name AND kcu.constraint_schema = rc.constraint_schema
+      JOIN information_schema.constraint_column_usage ccu
+        ON ccu.constraint_name = rc.constraint_name AND ccu.constraint_schema = rc.constraint_schema
+      JOIN information_schema.columns col
+        ON col.table_schema = kcu.table_schema AND col.table_name = kcu.table_name AND col.column_name = kcu.column_name
+      WHERE ccu.table_name = 'users' AND ccu.column_name = 'id'
+    `);
+
+    const blocking = [];
+    for (const r of refs.rows) {
+      if (r.is_nullable === 'YES') {
+        // Keep the log rows; just detach them from the deleted account.
+        await client.query(
+          `UPDATE ${qIdent(r.child_table)} SET ${qIdent(r.child_column)} = NULL WHERE ${qIdent(r.child_column)} = $1`, [id]);
+      } else {
+        const c = await client.query(
+          `SELECT COUNT(*)::int AS n FROM ${qIdent(r.child_table)} WHERE ${qIdent(r.child_column)} = $1`, [id]);
+        if ((c.rows[0]?.n || 0) > 0) blocking.push(`${r.child_table}.${r.child_column} (${c.rows[0].n} rows)`);
+      }
+    }
+
+    if (blocking.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({
+        message: `This account is required by ${blocking.join(', ')} and can't be removed without deleting those records. Deactivate it instead.`
+      });
+    }
+
+    await client.query('DELETE FROM users WHERE id = $1', [id]);
+    await client.query('COMMIT');
+
+    try { await audit(req, 'USER_DELETED', `User ${user.name} (id ${id}, role ${user.role}) deleted; linked logs kept and detached`, null, 'success', 'users'); } catch (_) {}
+    res.json({ success: true, message: `User ${user.name} deleted. Their logs were kept and detached from the account.` });
   } catch (err) {
-    // 23503 = foreign_key_violation — the user is still referenced elsewhere.
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    // 23503 = foreign_key_violation — a reference we couldn't detach (should be rare now).
     if (err.code === '23503') {
       return res.status(409).json({
-        message: 'This account has linked records and cannot be permanently deleted. Please deactivate it instead.'
+        message: 'This account has linked records that could not be detached. Please deactivate it instead.'
       });
     }
     console.log('USER-DELETE ERROR:', err.message);
     res.status(500).json({ message: 'Server error', error: err.message });
+  } finally {
+    client.release();
   }
 });
 

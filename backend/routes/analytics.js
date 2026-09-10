@@ -3758,6 +3758,15 @@ router.get('/market-share', auth, async (req, res) => {
     const exchPerDayFull  = (ym, seg) => { const e = exMonFull[ym + '|' + seg]; return e && e.days > 0 ? cr(e.total) / e.days : null; };
     const mean3 = (arr) => { const v = arr.filter(x => x != null); return v.length ? +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(2) : null; };
 
+    // ── Previous-day volume per segment ────────────────────────────────
+    // "Prev day" = the LATEST trading day in the range (yesterday's actual volume).
+    // The new columns compare the window's PER-DAY AVERAGE against that single day.
+    const tradingDates = [...new Set(exch.rows.map(r => r.d))].sort();
+    const dLast = tradingDates.length ? tradingDates[tradingDates.length - 1] : null;
+    const navByDaySeg = {}, exByDaySeg = {};
+    for (const r of navia.rows) ((navByDaySeg[r.d] ||= {})[r.seg] = (navByDaySeg[r.d][r.seg] || 0) + r.val);
+    for (const r of exch.rows)  ((exByDaySeg[r.d]  ||= {})[r.seg] = (exByDaySeg[r.d][r.seg]  || 0) + r.val);
+
     const months = monthKeysSorted.map(m => {
       const pm = prevMonthOf(m);
       const segs = MKT_SEGS.map(s => {
@@ -3780,6 +3789,10 @@ router.get('/market-share', auth, async (req, res) => {
         const naviaP3mDay  = mean3([naviaPerDayFull(pm1, s.key), naviaPerDayFull(pm2, s.key), naviaPerDayFull(pm3, s.key)]);
         const exchP3mDay   = mean3([exchPerDayFull(pm1, s.key),  exchPerDayFull(pm2, s.key),  exchPerDayFull(pm3, s.key)]);
 
+        // Previous (latest) day's volume, and the per-day-average vs that day.
+        const naviaPrevDayVol = dLast ? +cr(navByDaySeg[dLast]?.[s.key] || 0).toFixed(2) : null;
+        const exchPrevDayVol  = dLast ? +cr(exByDaySeg[dLast]?.[s.key]  || 0).toFixed(2) : null;
+
         return {
           key: s.key, label: s.label,
           navia_cr: cr(nt), navia_matched_cr: cr(nm), exchange_cr: cr(et),
@@ -3795,6 +3808,12 @@ router.get('/market-share', auth, async (req, res) => {
           exchange_perday_delta_pct: deltaPct(exchPerDay, exchPrevDay),
           exchange_perday_dir: dirOf(exchPerDay || 0, exchPrevDay || 0),
           navia_p3m_per_day: naviaP3mDay, exchange_p3m_per_day: exchP3mDay,
+          // Previous-day volume + per-day-average-vs-previous-day comparison
+          navia_prevday_cr: naviaPrevDayVol, exchange_prevday_cr: exchPrevDayVol,
+          navia_vs_prevday_pct: (naviaPrevDayVol ? deltaPct(naviaPerDay, naviaPrevDayVol) : null),
+          navia_vs_prevday_dir: dirOf(naviaPerDay || 0, naviaPrevDayVol || 0),
+          exchange_vs_prevday_pct: (exchPrevDayVol ? deltaPct(exchPerDay, exchPrevDayVol) : null),
+          exchange_vs_prevday_dir: dirOf(exchPerDay || 0, exchPrevDayVol || 0),
         };
       });
       return { month: m, label: monLbl(m), segments: segs };
@@ -3861,6 +3880,8 @@ router.get('/market-share', auth, async (req, res) => {
         feed_available: feedAvailable,
         reason: feedAvailable ? null : 'No exchange turnover figures entered for this range yet — add them to the exchange_volume table (Admin can insert manually or via the feed).',
         as_of: asOfMkt.rows[0]?.a || null,
+        // Latest trading day in the range — label for the "vs prev day" columns.
+        prev_day: dLast || null,
         range: rangeMeta(rng),
       },
       cards: {

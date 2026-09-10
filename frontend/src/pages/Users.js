@@ -259,7 +259,7 @@ const Users = () => {
           <div style={{ fontSize: '15px', fontWeight: '700', color: '#111' }}>➕ Add User</div>
           <div style={{ fontSize: '12px', color: '#8a94a6', marginTop: '2px' }}>Create a login and assign a role. Admins can optionally also get Supervisor access.</div>
         </div>
-        <form onSubmit={handleSubmit}>
+        <form onSubmit={handleSubmit} autoComplete="off">
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))', gap: '14px', marginBottom: '16px' }}>
             <div>
               <label style={lbl}>Full Name</label>
@@ -269,7 +269,8 @@ const Users = () => {
             <div>
               <label style={lbl}>Role Level</label>
               <select value={form.role}
-                onChange={e => setForm({ ...form, role: e.target.value, supervisor_sub_role: 'rm-supervisor' })}
+                onChange={e => setForm({ ...form, role: e.target.value, supervisor_sub_role: 'rm-supervisor',
+                  phone: e.target.value === 'rm' ? form.phone : '' })}
                 style={inp}>
                 <option value="rm">RM</option>
                 <option value="team_leader">Team Leader</option>
@@ -291,7 +292,10 @@ const Users = () => {
             )}
             <div>
               <label style={lbl}>Email</label>
-              <input type="email" value={form.email}
+              {/* Non-standard name + autoComplete off so Chrome doesn't auto-fill the
+                  logged-in admin's saved login into the NEW-user email field. */}
+              <input type="email" value={form.email} name="clientiq_new_user_email"
+                autoComplete="off"
                 onChange={e => setForm({ ...form, email: e.target.value })}
                 placeholder="user@navia.in" required style={inp} />
             </div>
@@ -299,6 +303,7 @@ const Users = () => {
               <label style={lbl}>Password</label>
               <div style={{ position: 'relative' }}>
                 <input type={showPwd ? 'text' : 'password'} value={form.password}
+                  name="clientiq_new_user_password" autoComplete="new-password"
                   onChange={e => setForm({ ...form, password: e.target.value })}
                   placeholder="Min 6 chars" required style={{ ...inp, paddingRight: '56px' }} />
                 <button type="button" onClick={() => setShowPwd(s => !s)} tabIndex={-1}
@@ -308,12 +313,15 @@ const Users = () => {
                 </button>
               </div>
             </div>
-            <div>
-              <label style={lbl}>Mobile (click-to-call)</label>
-              <input type="tel" value={form.phone}
-                onChange={e => setForm({ ...form, phone: e.target.value })}
-                placeholder="e.g. 9962017043" style={inp} />
-            </div>
+            {/* Mobile is only used for RM click-to-call, so it's shown only for the RM role. */}
+            {form.role === 'rm' && (
+              <div>
+                <label style={lbl}>Mobile (click-to-call)</label>
+                <input type="tel" value={form.phone}
+                  onChange={e => setForm({ ...form, phone: e.target.value })}
+                  placeholder="e.g. 9962017043" style={inp} />
+              </div>
+            )}
           </div>
 
           {/* Admin can also be given Supervisor access (dual view toggle in the app) */}

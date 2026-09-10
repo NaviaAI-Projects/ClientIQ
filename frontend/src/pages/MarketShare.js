@@ -39,20 +39,26 @@ const dirNum = (cur, base) => (cur == null || base == null) ? 'flat' : cur > bas
 
 // Per-day segment detail: our & exchange turnover per trading day (₹Cr/day), each with a
 // month-over-month change and a change vs the prior-3-month average — both on a per-day basis.
-const DetailTable = ({ segments }) => (
+const DetailTable = ({ segments, prevDay }) => {
+  // Short label for the previous-day column header, e.g. "9 Sep".
+  const pdLabel = prevDay ? (() => { const d = new Date(prevDay + 'T00:00:00Z');
+    return `${d.getUTCDate()} ${['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getUTCMonth()]}`; })() : '';
+  return (
   <div className="tw"><table>
     <thead><tr>
       <th rowSpan={2} style={{ verticalAlign: 'bottom' }}>Segment</th>
       <th rowSpan={2} style={{ verticalAlign: 'bottom' }}>Trading days</th>
-      <th colSpan={3} style={{ textAlign: 'center', borderLeft: '1px solid var(--br2,#e2e8f0)' }}>Our volume (₹Cr/day)</th>
-      <th colSpan={3} style={{ textAlign: 'center', borderLeft: '1px solid var(--br2,#e2e8f0)' }}>Exchange volume (₹Cr/day)</th>
+      <th colSpan={4} style={{ textAlign: 'center', borderLeft: '1px solid var(--br2,#e2e8f0)' }}>Our volume (₹Cr/day)</th>
+      <th colSpan={4} style={{ textAlign: 'center', borderLeft: '1px solid var(--br2,#e2e8f0)' }}>Exchange volume (₹Cr/day)</th>
       <th rowSpan={2} style={{ verticalAlign: 'bottom', borderLeft: '1px solid var(--br2,#e2e8f0)' }}>Navia share</th>
     </tr>
     <tr>
       <th style={{ borderLeft: '1px solid var(--br2,#e2e8f0)', fontSize: 10 }}>Per day</th>
+      <th style={{ fontSize: 10 }}>Prev day{pdLabel ? ` (${pdLabel})` : ''}</th>
       <th style={{ fontSize: 10 }}>vs prev mo</th>
       <th style={{ fontSize: 10 }}>vs 3M avg</th>
       <th style={{ borderLeft: '1px solid var(--br2,#e2e8f0)', fontSize: 10 }}>Per day</th>
+      <th style={{ fontSize: 10 }}>Prev day{pdLabel ? ` (${pdLabel})` : ''}</th>
       <th style={{ fontSize: 10 }}>vs prev mo</th>
       <th style={{ fontSize: 10 }}>vs 3M avg</th>
     </tr></thead>
@@ -67,9 +73,11 @@ const DetailTable = ({ segments }) => (
             <td>{s.label}</td>
             <td>{s.trading_days || '—'}</td>
             <td style={{ borderLeft: '1px solid var(--br2,#eef2f7)' }}>{crDay(s.navia_per_day)}</td>
+            <td><Trend dir={s.navia_vs_prevday_dir} delta={s.navia_vs_prevday_pct} /></td>
             <td><Trend dir={s.navia_perday_dir} delta={s.navia_perday_delta_pct} /></td>
             <td><Trend dir={dirNum(s.navia_per_day, s.navia_p3m_per_day)} delta={pctChg(s.navia_per_day, s.navia_p3m_per_day)} /></td>
             <td style={{ borderLeft: '1px solid var(--br2,#eef2f7)' }}>{crDay(s.exchange_per_day, 0)}</td>
+            <td><Trend dir={s.exchange_vs_prevday_dir} delta={s.exchange_vs_prevday_pct} /></td>
             <td><Trend dir={s.exchange_perday_dir} delta={s.exchange_perday_delta_pct} /></td>
             <td><Trend dir={dirNum(s.exchange_per_day, s.exchange_p3m_per_day)} delta={pctChg(s.exchange_per_day, s.exchange_p3m_per_day)} /></td>
             <td style={{ fontWeight: 700, color: share != null ? 'var(--tx1)' : 'var(--tx3)', borderLeft: '1px solid var(--br2,#eef2f7)' }}>{pct(share)}</td>
@@ -78,7 +86,8 @@ const DetailTable = ({ segments }) => (
       })}
     </tbody>
   </table></div>
-);
+  );
+};
 
 const MarketShare = () => {
   const [data, setData] = useState(null);
@@ -335,7 +344,7 @@ const MarketShare = () => {
       {months.map(mo => (
         <div className="panel" key={mo.month}>
           <div className="ptitle">📋 Segment-wise detail — {spanLabel(mo.month, mo.label)}<InfoBtn text="Full per-segment detail for the selected dates in this month: our total turnover, trend vs the previous month, exchange turnover, share and trading days. Options (Eq & Comm) are premium turnover." /></div>
-          <DetailTable segments={mo.segments} />
+          <DetailTable segments={mo.segments} prevDay={data?.meta?.prev_day} />
         </div>
       ))}
       {months.length === 0 && (
