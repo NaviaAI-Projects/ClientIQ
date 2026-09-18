@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+  ComposedChart, BarChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from 'recharts';
 import api from '../api';
 import { InfoBtn, ViewToggle, DateRange, rangeParams } from '../components/ui';
@@ -87,13 +87,20 @@ const RevenueFloat = () => {
   }));
 
   // Chart — Monthly revenue by stream (₹L)
-  const chartData = streamMonthly.map(m => ({
-    month: mLabel(m.month),
-    'Options clearing':  +L(m.options_clearing).toFixed(2),
-    'Equity brokerage':  +L(m.equity_brokerage).toFixed(2),
-    'Float income (est.)': +L(m.float_income).toFixed(2),
-    'MTF interest':      +L(m.mtf_interest).toFixed(2),
-  }));
+  const chartData = streamMonthly.map(m => {
+    const oc = +L(m.options_clearing).toFixed(2);
+    const eb = +L(m.equity_brokerage).toFixed(2);
+    const fi = +L(m.float_income).toFixed(2);
+    const mi = +L(m.mtf_interest).toFixed(2);
+    return {
+      month: mLabel(m.month),
+      'Options clearing': oc,
+      'Equity brokerage': eb,
+      'Float income (est.)': fi,
+      'MTF interest': mi,
+      'Total': +(oc + eb + fi + mi).toFixed(2),   // shown as a line on the chart + a column in the table
+    };
+  });
 
   // Income-stream comparison table — last 3 months as avg/day
   const shown = streamMonthly.slice(-3).reverse(); // latest first
@@ -131,6 +138,27 @@ const RevenueFloat = () => {
 
   const snapMonth = float_book.ledger_date ? String(float_book.ledger_date).slice(0, 7) : null;
   const cols = shown.map(m => mShort(m.month)); // e.g. ['Jul','Jun','May']
+
+  // Float / MTF book prior columns. Each widget shows: latest month, up to two prior
+  // months, and a 3-month average. Priors + avg3 come from the backend; a missing prior
+  // renders as '—' (dash cell) so the table never fabricates a month it has no data for.
+  const fbPrior = float_book.prior || [];
+  const fbAvg3  = float_book.avg3 || null;
+  const mtfPrior = mtf_book.prior || [];
+  const mtfAvg3  = mtf_book.avg3 || null;
+  // renderers: given a formatter fn, emit the 4 value columns (latest, prior1, prior2, 3M avg)
+  const fbCols = (latest, fmt) => [
+    <td key="l">{fmt(latest)}</td>,
+    fbPrior[0] ? <td key="p1">{fmt(fbPrior[0])}</td> : <td key="p1">—</td>,
+    fbPrior[1] ? <td key="p2">{fmt(fbPrior[1])}</td> : <td key="p2">—</td>,
+    fbAvg3 ? <td key="a3">{fmt(fbAvg3)}</td> : <td key="a3">—</td>,
+  ];
+  const mtfCols = (latest, fmt) => [
+    <td key="l">{fmt(latest)}</td>,
+    mtfPrior[0] ? <td key="p1">{fmt(mtfPrior[0])}</td> : <td key="p1">—</td>,
+    mtfPrior[1] ? <td key="p2">{fmt(mtfPrior[1])}</td> : <td key="p2">—</td>,
+    mtfAvg3 ? <td key="a3">{fmt(mtfAvg3)}</td> : <td key="a3">—</td>,
+  ];
 
   return (
     <div>
@@ -179,7 +207,7 @@ const RevenueFloat = () => {
         <ViewToggle
           chart={
         <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={chartData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+          <ComposedChart data={chartData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
             <XAxis dataKey="month" tick={{ fontSize: 9 }} />
             <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v + 'L'} />
@@ -189,12 +217,14 @@ const RevenueFloat = () => {
             <Bar dataKey="Equity brokerage"    stackId="s" fill="#9FE1CB" />
             <Bar dataKey="Float income (est.)" stackId="s" fill="#AFA9EC" />
             <Bar dataKey="MTF interest"        stackId="s" fill="#FAC775" radius={[4, 4, 0, 0]} />
-          </BarChart>
+            {/* Total = sum of all four streams, drawn as a line over the stack. */}
+            <Line dataKey="Total" stroke="#1f2a44" strokeWidth={2} dot={{ r: 2 }} />
+          </ComposedChart>
         </ResponsiveContainer>
           }
           table={
         <table>
-          <thead><tr><th>Month</th><th>Options clearing</th><th>Equity brokerage</th><th>Float income (est.)</th><th>MTF interest</th></tr></thead>
+          <thead><tr><th>Month</th><th>Options clearing</th><th>Equity brokerage</th><th>Float income (est.)</th><th>MTF interest</th><th>Total</th></tr></thead>
           <tbody>
             {chartData.map(m => (
               <tr key={m.month}>
@@ -203,9 +233,10 @@ const RevenueFloat = () => {
                 <td>{'₹' + m['Equity brokerage'] + 'L'}</td>
                 <td>{'₹' + m['Float income (est.)'] + 'L'}</td>
                 <td>{'₹' + m['MTF interest'] + 'L'}</td>
+                <td><strong>{'₹' + m['Total'] + 'L'}</strong></td>
               </tr>
             ))}
-            {chartData.length === 0 && <tr><td colSpan={5} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
+            {chartData.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
           </tbody>
         </table>
           }
@@ -256,13 +287,13 @@ const RevenueFloat = () => {
         <div className="panel">
           <div className="ptitle">🏦 Float book analysis<InfoBtn text="Total client ledger balance and its estimated daily float income (balance × FD rate ÷ 365), plus balance concentration and idle-float opportunities." /></div>
           <div className="tw"><table>
-            <thead><tr><th>Metric</th><th>{mShort(snapMonth)} avg</th><th>—</th><th>—</th><th>3M avg</th></tr></thead>
+            <thead><tr><th>Metric</th><th>{mShort(snapMonth)}</th><th>{fbPrior[0] ? mShort(fbPrior[0].month) : '—'}</th><th>{fbPrior[1] ? mShort(fbPrior[1].month) : '—'}</th><th>3M avg</th></tr></thead>
             <tbody>
-              <tr><td>Total ledger balance (₹Cr)</td><td>{(float_book.total_ledger_balance / 1e7).toFixed(1)}</td><td>—</td><td>—</td><td>—</td></tr>
-              <tr><td>Est. daily float income (₹)</td><td>{Math.round(float_book.daily_income).toLocaleString('en-IN')}</td><td>—</td><td>—</td><td>—</td></tr>
-              <tr><td>Clients with balance &gt;₹5L</td><td>{float_book.clients_above_5l.toLocaleString('en-IN')}</td><td>—</td><td>—</td><td>—</td></tr>
-              <tr><td>Avg balance per active client (₹)</td><td>{inr(float_book.avg_balance)}</td><td>—</td><td>—</td><td>—</td></tr>
-              <tr><td>Top 10 clients — % of float</td><td>{float_book.top10_pct.toFixed(1)}%</td><td>—</td><td>—</td><td>—</td></tr>
+              <tr><td>Total ledger balance (₹Cr)</td>{fbCols(float_book, v => (v.total_ledger_balance / 1e7).toFixed(1))}</tr>
+              <tr><td>Est. daily float income (₹)</td>{fbCols(float_book, v => Math.round(v.daily_income).toLocaleString('en-IN'))}</tr>
+              <tr><td>Clients with balance &gt;₹5L</td>{fbCols(float_book, v => Math.round(v.clients_above_5l).toLocaleString('en-IN'))}</tr>
+              <tr><td>Avg balance per active client (₹)</td>{fbCols(float_book, v => inr(v.avg_balance))}</tr>
+              <tr><td>Top 10 clients — % of float</td>{fbCols(float_book, v => v.top10_pct.toFixed(1) + '%')}</tr>
             </tbody>
           </table></div>
           <div className="slbl">Float opportunity — idle balance clients</div>
@@ -274,12 +305,12 @@ const RevenueFloat = () => {
         <div className="panel">
           <div className="ptitle">💰 MTF book analysis<InfoBtn text="Net MTF funding book, daily interest income, client count and average funding per client, plus the MTF cross-sell pipeline." /></div>
           <div className="tw"><table>
-            <thead><tr><th>Metric</th><th>{mtf_book.month || '—'}</th><th>—</th><th>—</th><th>3M avg</th></tr></thead>
+            <thead><tr><th>Metric</th><th>{mtf_book.month ? mShort(mtf_book.month) : '—'}</th><th>{mtfPrior[0] ? mShort(mtfPrior[0].month) : '—'}</th><th>{mtfPrior[1] ? mShort(mtfPrior[1].month) : '—'}</th><th>3M avg</th></tr></thead>
             <tbody>
-              <tr><td>Net MTF funding — est. (₹Cr)</td><td>{(mtf_book.balance / 1e7).toFixed(2)}</td><td>—</td><td>—</td><td>—</td></tr>
-              <tr><td>MTF interest income (₹/day)</td><td>{Math.round(mtf_book.interest / 30).toLocaleString('en-IN')}</td><td>—</td><td>—</td><td>—</td></tr>
-              <tr><td>MTF clients</td><td>{mtf_book.clients.toLocaleString('en-IN')}</td><td>—</td><td>—</td><td>—</td></tr>
-              <tr><td>Avg MTF per client (₹L)</td><td>{(mtf_book.avg_per_client / 1e5).toFixed(2)}</td><td>—</td><td>—</td><td>—</td></tr>
+              <tr><td>Net MTF funding — est. (₹Cr)</td>{mtfCols(mtf_book, v => (v.balance / 1e7).toFixed(2))}</tr>
+              <tr><td>MTF interest income (₹/day)</td>{mtfCols(mtf_book, v => Math.round(v.interest / 30).toLocaleString('en-IN'))}</tr>
+              <tr><td>MTF clients</td>{mtfCols(mtf_book, v => Math.round(v.clients).toLocaleString('en-IN'))}</tr>
+              <tr><td>Avg MTF per client (₹L)</td>{mtfCols(mtf_book, v => (v.avg_per_client / 1e5).toFixed(2))}</tr>
             </tbody>
           </table></div>
           <div className="slbl">MTF cross-sell pipeline</div>

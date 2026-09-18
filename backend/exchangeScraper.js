@@ -191,27 +191,103 @@ async function scrapeNSE(page, segKind /* 'cm' | 'fo' */) {
   };
 }
 
-// ── BSE: Day Wise Market Summary. Set the date range, Submit, read the table. ─
-async function scrapeBSE(page, fromISO, toISOd) {
-  await gotoSafe(page, 'https://www.bseindia.com/markets/derivatives/derireports/deriarchivesum');
-  // The summary table loads async after the default date range is applied.
+// Target months to back-fill (current + previous 2), each as {label, from, to} ISO dates.
+// Matches nseTargets() so BSE covers the same window NSE and MCX do — the previous month's
+// BSE turnover is exactly what was missing before (it collapsed under the old PK).
+function monthWindows() {
+  const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const now = new Date();
+  const y = now.getUTCFullYear(), m = now.getUTCMonth();
+  const out = [];
+  for (let k = 0; k < 3; k++) {
+    const d = new Date(Date.UTC(y, m - k, 1));
+    const yy = d.getUTCFullYear(), mo = d.getUTCMonth();
+    const last = new Date(Date.UTC(yy, mo + 1, 0)).getUTCDate();
+    out.push({
+      label: `${MON[mo]}-${yy}`,
+      from: `${yy}-${String(mo + 1).padStart(2, '0')}-01`,
+      to:   `${yy}-${String(mo + 1).padStart(2, '0')}-${String(last).padStart(2, '0')}`,
+    });
+  }
+  return out;
+}
+
+// Read the currently-rendered BSE summary table → [ [date,'eqfut',₹], [date,'eqopt',₹] … ].
+// Columns: Date | Contracts | Futures Turnover(Cr) | Options Notional(Cr) | Options Premium(Cr) | …
+async function readBseTable(page) {
   await page.waitForSelector('table tr td', { timeout: 20000 }).catch(() => {});
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(2000);
   const table = await page.evaluate(() => {
     const rows = [...document.querySelectorAll('table tr')].map(tr => [...tr.querySelectorAll('th,td')].map(td => td.innerText.trim()));
     return rows.filter(r => r.length >= 4);
   });
-  const bodyText = await page.evaluate(() => (document.body ? document.body.innerText.slice(0, 600) : ''));
-  // Expected columns: Date | Contracts | Futures Turnover(Cr) | Options Notional(Cr) | Options Premium(Cr) | OI | OI Value
   const rows = [];
   for (const r of table) {
     const d = toISO(r[0]); if (!d) continue;
-    const fut = num(r[2]);           // Futures Turnover ₹Cr
-    const optPrem = num(r[4]);       // Options Premium Turnover ₹Cr
-    if (fut > 0) rows.push([d, 'eqfut', Math.round(fut * CR)]);
+    const fut = num(r[2]);        // Futures Turnover ₹Cr
+    const optPrem = num(r[4]);    // Options Premium Turnover ₹Cr
+    if (fut > 0)     rows.push([d, 'eqfut', Math.round(fut * CR)]);
     if (optPrem > 0) rows.push([d, 'eqopt', Math.round(optPrem * CR)]);
   }
-  return { rows, diag: { sample_rows: table.slice(0, 5), bodyText }, note: rows.length ? null : 'BSE table not parsed — confirm column order from diag.sample_rows' };
+  return { rows, sample: table.slice(0, 5) };
+}
+
+// ── BSE: Day-Wise Derivatives Archive. Load the report page (for Akamai cookies), then call
+// its OWN dated JSON API per month — same technique as NSE/MCX, so BSE history pulls reliably.
+//   GET api.bseindia.com/BseIndiaAPI/api/Mkt_Deri_ArchiveSum_SearchProduct_beta/w
+//       ?product_type=ALL&dttime=DD/MM/YYYY&dttimeTo=DD/MM/YYYY
+//   → { table: [ { dt_tm:"01 Sep 2026", turnover: futures ₹Cr, PremTurnover: options premium ₹Cr } ] }
+// eqfut = turnover, eqopt = PremTurnover. Falls back to the rendered table only if the API is empty.
+async function scrapeBSE(page) {
+  const REF = 'https://www.bseindia.com/markets/derivatives/derireports/deriarchivesum';
+  await gotoSafe(page, REF);
+  await page.waitForTimeout(2500);                  // establish Akamai cookies for api.bseindia.com
+  // An in-page fetch() to the api.* subdomain is blocked by CORS ("Failed to fetch"). Instead we
+  // NAVIGATE the browser straight to the API URL (a top-level navigation is not subject to CORS)
+  // with the report page as Referer, then read the JSON off the response body. This is how a JSON
+  // endpoint behind Akamai is scraped reliably from a real browser.
+  try { await page.setExtraHTTPHeaders({ Referer: REF }); } catch (e) {}
+  const acc = {};                                   // 'date|seg' -> [date,seg,val]
+  const attempts = [];
+  const absorb = (rows) => rows.forEach(r => { acc[r[0] + '|' + r[1]] = r; });
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const ddmmyyyy = iso => { const [y, m, d] = iso.split('-'); return `${d}/${m}/${y}`; };
+
+  for (const w of monthWindows()) {
+    const to = w.to > todayISO ? todayISO : w.to;   // don't request future dates for the current month
+    const url = 'https://api.bseindia.com/BseIndiaAPI/api/Mkt_Deri_ArchiveSum_SearchProduct_beta/w'
+      + `?product_type=ALL&dttime=${ddmmyyyy(w.from)}&dttimeTo=${ddmmyyyy(to)}`;
+    try {
+      await gotoSafe(page, url);                    // top-level navigation → JSON document, no CORS
+      await page.waitForTimeout(600);
+      const txt = await page.evaluate(() => (document.body ? document.body.innerText : ''));
+      let j = null; try { j = JSON.parse(txt); } catch (e) { j = null; }
+      const recs = Array.isArray(j?.table) ? j.table : (Array.isArray(j?.Table) ? j.Table : []);
+      const rows = [];
+      for (const rec of recs) {
+        const d = toISO(rec.dt_tm); if (!d) continue;
+        const fut = num(rec.turnover);        // Futures Turnover ₹Cr
+        const opt = num(rec.PremTurnover);    // Options Premium Turnover ₹Cr
+        if (fut > 0) rows.push([d, 'eqfut', Math.round(fut * CR)]);
+        if (opt > 0) rows.push([d, 'eqopt', Math.round(opt * CR)]);
+      }
+      absorb(rows);
+      attempts.push({ range: w.label, api_rows: recs.length, parsed: rows.length, text_len: txt ? txt.length : 0 });
+    } catch (e) { attempts.push({ range: w.label, error: e.message }); }
+  }
+
+  // Fallback: if navigation yielded nothing, go back to the report page and read the default table.
+  if (!Object.keys(acc).length) {
+    try { await gotoSafe(page, REF); const t0 = await readBseTable(page); absorb(t0.rows); attempts.push({ range: 'default-table-fallback', rows: t0.rows.length }); }
+    catch (e) { attempts.push({ range: 'default-table-fallback', error: e.message }); }
+  }
+
+  const rows = Object.values(acc);
+  return {
+    rows,
+    diag: { attempts },
+    note: rows.length ? null : 'BSE API returned no rows — see diag.attempts; use the manual Exchange-Volume upload as a fallback.',
+  };
 }
 
 // ── MCX: load the Historical Data page (to clear Akamai + get cookies), then call its
@@ -258,17 +334,61 @@ async function ensureTable() {
   await pool.query(`CREATE TABLE IF NOT EXISTS exchange_volume (
     trade_date DATE NOT NULL, segment VARCHAR(12) NOT NULL, traded_value NUMERIC NOT NULL,
     source VARCHAR(16) DEFAULT 'manual', updated_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (trade_date, segment))`);
+    PRIMARY KEY (trade_date, segment, source))`);
   await pool.query(`ALTER TABLE exchange_volume ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'manual'`);
+  // Migrate an old (trade_date, segment) PK to (trade_date, segment, source). Clears the
+  // ambiguous legacy rows so NSE/BSE/MCX can be re-captured per source without double counting.
+  await pool.query(`
+    DO $$
+    DECLARE has_src_pk boolean;
+    BEGIN
+      SELECT EXISTS (
+        SELECT 1 FROM pg_index i
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = 'exchange_volume'::regclass AND i.indisprimary AND a.attname = 'source'
+      ) INTO has_src_pk;
+      IF NOT has_src_pk THEN
+        DELETE FROM exchange_volume;
+        ALTER TABLE exchange_volume DROP CONSTRAINT IF EXISTS exchange_volume_pkey;
+        ALTER TABLE exchange_volume ADD PRIMARY KEY (trade_date, segment, source);
+      END IF;
+    END $$;
+  `);
+  // Drop any leftover 2-column UNIQUE constraint/index on (trade_date, segment) (e.g.
+  // exchange_volume_date_seg_uq) — it would still block a second exchange per (date,segment).
+  await pool.query(`
+    DO $$
+    DECLARE c record;
+    BEGIN
+      FOR c IN
+        SELECT con.conname FROM pg_constraint con
+        WHERE con.conrelid = 'exchange_volume'::regclass AND con.contype = 'u'
+          AND (SELECT array_agg(a.attname ORDER BY a.attname)
+               FROM pg_attribute a WHERE a.attrelid = con.conrelid AND a.attnum = ANY(con.conkey))
+              = ARRAY['segment','trade_date']::name[]
+      LOOP EXECUTE format('ALTER TABLE exchange_volume DROP CONSTRAINT %I', c.conname); END LOOP;
+      FOR c IN
+        SELECT i.relname AS conname
+        FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid
+        WHERE x.indrelid = 'exchange_volume'::regclass AND x.indisunique AND NOT x.indisprimary
+          AND (SELECT array_agg(a.attname ORDER BY a.attname)
+               FROM pg_attribute a WHERE a.attrelid = x.indrelid AND a.attnum = ANY(x.indkey))
+              = ARRAY['segment','trade_date']::name[]
+      LOOP EXECUTE format('DROP INDEX IF EXISTS %I', c.conname); END LOOP;
+    END $$;
+  `);
 }
+// Rows are [date, segment, value, source]. Each EXCHANGE (source) keeps its own row per
+// (date, segment), so NSE eqopt and BSE eqopt coexist and a failed run for one exchange
+// cannot clobber another's rows. The market total is summed on read.
 async function upsert(rows) {
   let n = 0;
-  for (const [d, seg, val] of rows) {
+  for (const [d, seg, val, source] of rows) {
     if (!d || !(val > 0)) continue;
     await pool.query(
-      `INSERT INTO exchange_volume (trade_date, segment, traded_value, source) VALUES ($1,$2,$3,'scrape')
-       ON CONFLICT (trade_date, segment) DO UPDATE SET traded_value = EXCLUDED.traded_value, source = 'scrape', updated_at = now()`,
-      [d, seg, val]);
+      `INSERT INTO exchange_volume (trade_date, segment, traded_value, source) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (trade_date, segment, source) DO UPDATE SET traded_value = EXCLUDED.traded_value, updated_at = now()`,
+      [d, seg, val, source]);
     n++;
   }
   return n;
@@ -281,22 +401,24 @@ async function runScrape(opts = {}) {
   const diagnose = !!opts.diagnose;
   await ensureTable();
   const results = [];
-  const acc = {};
-  const add = (d, seg, v) => { (acc[d] = acc[d] || {})[seg] = (acc[d][seg] || 0) + v; };
+  const flat = [];                                   // [date, segment, value, SOURCE] — one row per exchange
 
   const browser = await launch();
   try {
+    // `src` is the EXCHANGE label stored on each row (NSE Cash + NSE F&O both store 'NSE';
+    // segment already separates cash/fut/opt, so they never collide). Each source's rows are
+    // upserted independently, so BSE now sums WITH NSE on read instead of overwriting it.
     const jobs = [
-      { source: 'NSE Cash', run: p => scrapeNSE(p, 'cm') },
-      { source: 'NSE F&O',  run: p => scrapeNSE(p, 'fo') },
-      { source: 'BSE',      run: p => scrapeBSE(p) },
-      { source: 'MCX',      run: p => scrapeMCX(p) },
+      { source: 'NSE Cash', src: 'NSE', run: p => scrapeNSE(p, 'cm') },
+      { source: 'NSE F&O',  src: 'NSE', run: p => scrapeNSE(p, 'fo') },
+      { source: 'BSE',      src: 'BSE', run: p => scrapeBSE(p) },
+      { source: 'MCX',      src: 'MCX', run: p => scrapeMCX(p) },
     ];
     for (const job of jobs) {
       const page = await newPage(browser);
       try {
         const { rows, diag, note } = await job.run(page);
-        if (!diagnose) rows.forEach(([d, seg, v]) => add(d, seg, v));
+        if (!diagnose) rows.forEach(([d, seg, v]) => flat.push([d, seg, Math.round(v * 100) / 100, job.src]));
         results.push({ source: job.source, ok: rows.length > 0, rows_parsed: rows.length, note, diag });
       } catch (e) {
         results.push({ source: job.source, ok: false, error: e.message });
@@ -309,11 +431,7 @@ async function runScrape(opts = {}) {
   }
 
   let total = 0;
-  if (!diagnose) {
-    const flat = [];
-    for (const d of Object.keys(acc)) for (const [seg, v] of Object.entries(acc[d])) if (v > 0) flat.push([d, seg, Math.round(v * 100) / 100]);
-    total = flat.length ? await upsert(flat) : 0;
-  }
+  if (!diagnose) total = flat.length ? await upsert(flat) : 0;
   const ran_at = new Date().toISOString();
   console.log(`[exchange-scrape] ${diagnose ? 'DIAGNOSE ' : ''}@ ${ran_at}: wrote ${total} rows —`, JSON.stringify(results, null, diagnose ? 2 : 0));
   return { ran_at, total_rows: total, diagnose, results };

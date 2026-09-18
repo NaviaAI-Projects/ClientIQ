@@ -82,7 +82,7 @@ const RevenueRamp = () => {
         <div className="panel">
           <div className="ptitle">📊 Avg revenue at M6 — options vs non-options activated clients<InfoBtn text="Compares average month-6 revenue per client between those who activated options trading and those who did not. Needs 6+ months of post-opening history." /></div>
           <Pending />
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Needs 6+ post-opening months; only ~4 months of trade history loaded today.</p>
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Needs 6+ post-opening months; only a few months of trade history loaded so far. Fills automatically as more monthly files load.</p>
         </div>
       </div>
 

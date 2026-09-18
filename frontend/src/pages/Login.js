@@ -27,6 +27,19 @@ const maskEmail = (email) => {
 
 const fmtTime = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 
+// Ask the browser's password manager to remember a WORKING credential. This login is a
+// 2-step AJAX/OTP flow with no page navigation, so Chrome's automatic "save password?"
+// heuristic frequently never fires — meaning nothing is saved and nothing autofills next
+// time. Storing the credential explicitly after a verified login makes both the save and
+// the next-visit autofill reliable. No-op on browsers that don't support it.
+async function rememberCredential(id, password) {
+  try {
+    if (id && password && window.PasswordCredential && navigator.credentials && navigator.credentials.store) {
+      await navigator.credentials.store(new window.PasswordCredential({ id, password, name: id }));
+    }
+  } catch (e) { /* unsupported / blocked by the browser — harmless */ }
+}
+
 const Login = () => {
   const [step, setStep] = useState('credentials');   // 'credentials' | 'otp'
   const [email, setEmail] = useState('');
@@ -127,6 +140,9 @@ const Login = () => {
     try {
       const res = await api.post('/auth/verify-otp', { email: email.trim().toLowerCase(), otp: code });
       login(res.data.user, res.data.token);
+      // Credentials are now proven correct — have the browser remember them so they
+      // autofill next time (the AJAX/OTP flow doesn't trigger Chrome's auto-save).
+      await rememberCredential(email.trim().toLowerCase(), password);
       navigate(routeFor(res.data.user));
     } catch (err) {
       setError(err.response?.data?.message || 'Verification failed. Please try again.');
@@ -135,7 +151,7 @@ const Login = () => {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [email, loading, login, navigate]);
+  }, [email, password, loading, login, navigate]);
 
   const handleVerify = (e) => {
     if (e) e.preventDefault();
@@ -213,7 +229,7 @@ const Login = () => {
             <div style={{ marginBottom: '20px' }}>
               <label style={labelStyle}>Email Address</label>
               <input
-                type="email" value={email} onChange={(e) => setEmail(e.target.value)}
+                type="email" name="username" id="username" value={email} onChange={(e) => setEmail(e.target.value)}
                 placeholder="your@email.com" required autoFocus autoComplete="username"
                 style={inputStyle}
                 onFocus={(e) => (e.target.style.borderColor = BRAND)}
@@ -225,7 +241,7 @@ const Login = () => {
               <label style={labelStyle}>Password</label>
               <div style={{ position: 'relative' }}>
                 <input
-                  type={showPwd ? 'text' : 'password'} value={password}
+                  type={showPwd ? 'text' : 'password'} name="password" id="current-password" value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   placeholder="Enter your password" required autoComplete="current-password"
                   style={{ ...inputStyle, paddingRight: '70px' }}

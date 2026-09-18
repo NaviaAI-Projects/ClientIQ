@@ -170,17 +170,60 @@ async function ensureTable() {
   await pool.query(`CREATE TABLE IF NOT EXISTS exchange_volume (
     trade_date DATE NOT NULL, segment VARCHAR(12) NOT NULL, traded_value NUMERIC NOT NULL,
     source VARCHAR(16) DEFAULT 'manual', updated_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (trade_date, segment))`);
+    PRIMARY KEY (trade_date, segment, source))`);
   await pool.query(`ALTER TABLE exchange_volume ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'manual'`);
+  await pool.query(`
+    DO $$
+    DECLARE has_src_pk boolean;
+    BEGIN
+      SELECT EXISTS (
+        SELECT 1 FROM pg_index i
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = 'exchange_volume'::regclass AND i.indisprimary AND a.attname = 'source'
+      ) INTO has_src_pk;
+      IF NOT has_src_pk THEN
+        DELETE FROM exchange_volume;
+        ALTER TABLE exchange_volume DROP CONSTRAINT IF EXISTS exchange_volume_pkey;
+        ALTER TABLE exchange_volume ADD PRIMARY KEY (trade_date, segment, source);
+      END IF;
+    END $$;
+  `);
+  // Drop any leftover 2-column UNIQUE constraint/index on (trade_date, segment) (e.g.
+  // exchange_volume_date_seg_uq) — it would still block a second exchange per (date,segment).
+  await pool.query(`
+    DO $$
+    DECLARE c record;
+    BEGIN
+      FOR c IN
+        SELECT con.conname FROM pg_constraint con
+        WHERE con.conrelid = 'exchange_volume'::regclass AND con.contype = 'u'
+          AND (SELECT array_agg(a.attname ORDER BY a.attname)
+               FROM pg_attribute a WHERE a.attrelid = con.conrelid AND a.attnum = ANY(con.conkey))
+              = ARRAY['segment','trade_date']::name[]
+      LOOP EXECUTE format('ALTER TABLE exchange_volume DROP CONSTRAINT %I', c.conname); END LOOP;
+      FOR c IN
+        SELECT i.relname AS conname
+        FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid
+        WHERE x.indrelid = 'exchange_volume'::regclass AND x.indisunique AND NOT x.indisprimary
+          AND (SELECT array_agg(a.attname ORDER BY a.attname)
+               FROM pg_attribute a WHERE a.attrelid = x.indrelid AND a.attnum = ANY(x.indkey))
+              = ARRAY['segment','trade_date']::name[]
+      LOOP EXECUTE format('DROP INDEX IF EXISTS %I', c.conname); END LOOP;
+    END $$;
+  `);
 }
 
+// Rows are [date, segment, value, source]. Per-exchange source keeps NSE/BSE/MCX in
+// separate rows so segments fed by two exchanges (eqfut/eqopt from NSE + BSE) are summed
+// on read rather than one overwriting the other.
 async function upsert(rows) {
   let n = 0;
-  for (const [d, seg, val] of rows) {
+  for (const [d, seg, val, source] of rows) {
+    if (!(val > 0)) continue;
     await pool.query(
-      `INSERT INTO exchange_volume (trade_date, segment, traded_value, source) VALUES ($1,$2,$3,'feed')
-       ON CONFLICT (trade_date, segment) DO UPDATE SET traded_value = EXCLUDED.traded_value, source = 'feed', updated_at = now()`,
-      [d, seg, val]);
+      `INSERT INTO exchange_volume (trade_date, segment, traded_value, source) VALUES ($1,$2,$3,$4)
+       ON CONFLICT (trade_date, segment, source) DO UPDATE SET traded_value = EXCLUDED.traded_value, updated_at = now()`,
+      [d, seg, val, source || 'feed']);
     n++;
   }
   return n;
@@ -197,15 +240,15 @@ const FEEDS = [
   ['mcx_feed_url', 'MCX', ['commfut', 'commopt']],
 ];
 
-// Fetch every configured URL, parse, SUM across sources per (date,segment), then
-// upsert once — and return a per-source report.
+// Fetch every configured URL, parse, and upsert PER EXCHANGE (one row per date/segment/source)
+// so NSE and BSE both persist for the segments they share — summed on read, not overwritten.
 async function fetchAll() {
   await ensureTable();
   const s = await pool.query(`SELECT key, value FROM settings WHERE key = ANY($1)`, [FEEDS.map(f => f[0])]);
   const cfg = {}; s.rows.forEach(r => { cfg[r.key] = r.value; });
 
-  const acc = {};                                   // date -> segment -> ₹ (summed across exchanges)
-  const addAcc = (d, seg, v) => { (acc[d] = acc[d] || {})[seg] = (acc[d][seg] || 0) + v; };
+  const acc = {};                                   // source -> date -> segment -> ₹ (summed within one exchange)
+  const addAcc = (src, d, seg, v) => { ((acc[src] = acc[src] || {})[d] = acc[src][d] || {})[seg] = (acc[src][d][seg] || 0) + v; };
 
   const results = [];
   for (const [key, label, allowed] of FEEDS) {
@@ -224,7 +267,7 @@ async function fetchAll() {
         }
         const { rows, kind, note } = parseBuffer(buffer, contentType, url);
         const kept = rows.filter(r => allowed.includes(r[1]));   // only segments this exchange may feed
-        kept.forEach(([d, seg, v]) => addAcc(d, seg, v));
+        kept.forEach(([d, seg, v]) => addAcc(label, d, seg, v));
         results.push({ source: label, url, ok: kept.length > 0, http: status, kind, rows_parsed: kept.length, note });
       } catch (e) {
         results.push({ source: label, url, ok: false, error: e.message });
@@ -232,9 +275,11 @@ async function fetchAll() {
     }
   }
 
-  // Flatten the summed accumulator and write once (one row per date/segment = the market total).
+  // Flatten to per-source rows [date, segment, ₹, source].
   const rows = [];
-  for (const d of Object.keys(acc)) for (const [seg, v] of Object.entries(acc[d])) if (v > 0) rows.push([d, seg, Math.round(v * 100) / 100]);
+  for (const src of Object.keys(acc))
+    for (const d of Object.keys(acc[src]))
+      for (const [seg, v] of Object.entries(acc[src][d])) if (v > 0) rows.push([d, seg, Math.round(v * 100) / 100, src]);
   const totalRows = rows.length ? await upsert(rows) : 0;
 
   const ran_at = new Date().toISOString();

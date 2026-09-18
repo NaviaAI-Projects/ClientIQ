@@ -30,6 +30,7 @@ const OptionsAnalytics = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
   const [range, setRange]     = useState({ key: 'month' });
+  const [topSeg, setTopSeg]   = useState('All');   // Top options clients: All / Equity / Commodity
 
   useEffect(() => {
     if (range.key === 'custom' && !(range.from && range.to)) return;
@@ -43,9 +44,17 @@ const OptionsAnalytics = () => {
   if (loading && !data) return <div className="ph"><h2>Options analytics</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Options analytics</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { meta, kpis, daily, monthly, expiry_analysis, top_clients } = data;
+  const { meta, kpis, daily, monthly, expiry_analysis, top_clients,
+          top_clients_all, top_clients_eq = [], top_clients_comm = [] } = data;
   const lm = meta.latest_month || '';
   const pm = meta.prior_month || '';
+  // Top options clients — filter by segment (default All). Falls back to `top_clients`
+  // if an older backend didn't send the segment lists.
+  const topRows = topSeg === 'Equity' ? top_clients_eq
+    : topSeg === 'Commodity' ? top_clients_comm
+    : (top_clients_all || top_clients);
+  const topTo = (r) => topSeg === 'Equity' ? r.eq_opt_to : topSeg === 'Commodity' ? r.comm_opt_to : (r.all_opt_to != null ? r.all_opt_to : r.eq_opt_to);
+  const topToLabel = topSeg === 'Equity' ? 'Eq Opt TO' : topSeg === 'Commodity' ? 'Comm Opt TO' : 'Options TO';
 
   return (
     <div>
@@ -142,18 +151,21 @@ const OptionsAnalytics = () => {
           />
         </div>
         <div className="panel">
-          <div className="ptitle">📈 Month-on-month options volume trend (₹Cr avg/day)<InfoBtn text="Average daily premium turnover per month (month total ÷ trading days), in ₹ crore, for Equity options (blue) and Commodity options (orange)." /></div>
+          <div className="ptitle">📈 Month-on-month options volume trend (₹Cr avg/day)<InfoBtn text="Average daily premium turnover per month (month total ÷ trading days), in ₹ crore, for Equity options (blue, left axis) and Commodity options (orange, right axis). Commodity uses its own axis so its much smaller scale stays readable." /></div>
           <ViewToggle
             chart={
               <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={monthly} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
                   <XAxis dataKey="month" tick={{ fontSize: 10 }} />
-                  <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v + 'Cr'} />
+                  {/* Equity options on the left axis; commodity options on its own right axis
+                      (commodity is a fraction of equity, so a shared axis flattens it). */}
+                  <YAxis yAxisId="left" tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v + 'Cr'} />
+                  <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v + 'Cr'} />
                   <Tooltip formatter={v => '₹' + v + 'Cr'} />
                   <Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
-                  <Line dataKey="eq_opt_to_cr" stroke="#185fa5" strokeWidth={2} name="Eq Opt avg/day (₹Cr)" />
-                  <Line dataKey="comm_opt_to_cr" stroke="#e0803a" strokeWidth={2} name="Comm Opt avg/day (₹Cr)" />
+                  <Line yAxisId="left" dataKey="eq_opt_to_cr" stroke="#185fa5" strokeWidth={2} name="Eq Opt avg/day (₹Cr) — L" />
+                  <Line yAxisId="right" dataKey="comm_opt_to_cr" stroke="#e0803a" strokeWidth={2} name="Comm Opt avg/day (₹Cr) — R" />
                 </LineChart>
               </ResponsiveContainer>
             }
@@ -220,20 +232,28 @@ const OptionsAnalytics = () => {
           </table></div>
         </div>
         <div className="panel">
-          <div className="ptitle">⭐ Top 10 options clients by premium TO (MTD)<InfoBtn text="Highest equity-options premium turnover this month (sum of traded_value per client, current month). Lots = number of contracts (traded quantity ÷ board lot). Unmapped high-TO clients are flagged as priority leads." /></div>
+          <div className="ptitle" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            ⭐ Top 10 options clients by premium TO (MTD)<InfoBtn text="Highest options premium turnover this month (sum of traded_value per client, current month). Filter All / Equity / Commodity to rank by that segment's premium TO. Lots = number of contracts (traded quantity ÷ board lot). Unmapped high-TO clients are flagged as priority leads." />
+            <select value={topSeg} onChange={e => setTopSeg(e.target.value)}
+              style={{ marginLeft: 'auto', padding: '3px 6px', border: '1px solid var(--br)', borderRadius: 6, fontSize: 11 }}>
+              <option value="All">All options</option>
+              <option value="Equity">Equity options</option>
+              <option value="Commodity">Commodity options</option>
+            </select>
+          </div>
           <div className="tw"><table>
-            <thead><tr><th>UCC</th><th>Client</th><th>Type</th><th>Eq Opt TO</th><th>Lots</th><th>RM</th></tr></thead>
+            <thead><tr><th>UCC</th><th>Client</th><th>Type</th><th>{topToLabel}</th><th>Lots</th><th>RM</th></tr></thead>
             <tbody>
-              {top_clients.map(r => (
+              {topRows.map(r => (
                 <tr key={r.ucc}>
                   <td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
                   <td><span className="badge b-ri">{r.client_type}</span></td>
-                  <td>{rupee(r.eq_opt_to)}</td>
+                  <td>{rupee(topTo(r))}</td>
                   <td>{Math.round(r.lots).toLocaleString('en-IN')}</td>
                   <td>{r.rm_name}</td>
                 </tr>
               ))}
-              {top_clients.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tx3)' }}>No options data.</td></tr>}
+              {topRows.length === 0 && <tr><td colSpan={6} style={{ color: 'var(--tx3)' }}>No {topSeg === 'Equity' ? 'equity-' : topSeg === 'Commodity' ? 'commodity-' : ''}options data.</td></tr>}
             </tbody>
           </table></div>
           <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 8 }}>Unmapped high-TO clients flagged as priority leads in AI scoring. "Lots" = number of contracts (traded quantity ÷ board lot).</p>

@@ -575,12 +575,19 @@ router.post('/upload', auth, upload.single('file'), async (req, res) => {
         });
       }
       await ef.ensureTable();
+      // Tag the row with the EXCHANGE it came from (derived from the detected report kind) so
+      // NSE and BSE uploads for the same segment/date coexist and are summed on read — not
+      // overwritten. eqfut/eqopt are fed by BOTH NSE and BSE, so a generic label would collide.
+      const src = kind === 'bse_deriv' ? 'BSE'
+                : kind === 'mcx'        ? 'MCX'
+                : (kind === 'nse_cm' || kind === 'nse_fo') ? 'NSE'
+                : 'manual';
       let n = 0;
       for (const [d, seg, val] of rows) {
         await pool.query(
-          `INSERT INTO exchange_volume (trade_date, segment, traded_value, source) VALUES ($1,$2,$3,'exchange-file')
-           ON CONFLICT (trade_date, segment) DO UPDATE SET traded_value = EXCLUDED.traded_value, source = 'exchange-file', updated_at = now()`,
-          [d, seg, val]);
+          `INSERT INTO exchange_volume (trade_date, segment, traded_value, source) VALUES ($1,$2,$3,$4)
+           ON CONFLICT (trade_date, segment, source) DO UPDATE SET traded_value = EXCLUDED.traded_value, updated_at = now()`,
+          [d, seg, val, src]);
         n++;
       }
       const dates = rows.map(r => r[0]).sort();

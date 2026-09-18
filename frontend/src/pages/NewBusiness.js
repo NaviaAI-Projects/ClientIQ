@@ -35,7 +35,7 @@ const NewBusiness = () => {
   if (loading && !data) return <div className="ph"><h2>New business report</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>New business report</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { meta, featured, acquisition, segments, new_client_segments, total_clients = 0, acq_seg = {} } = data;
+  const { meta, featured, acquisition, segments, new_client_segments, new_client_seg_3m = {}, total_clients = 0, acq_seg = {} } = data;
   const fm = meta.featured_month || '';
   const pm = meta.prior_month || '';
   const acctMoM = featured && featured.prior_new_accounts
@@ -53,11 +53,13 @@ const NewBusiness = () => {
     SEGS.forEach(s => { row[s] = segMap[s]?.[m]?.clients || 0; });
     return row;
   });
-  // Chart: avg daily volume — Eq Options vs Commodity F&O
+  // Chart: avg daily volume — Eq Options vs Commodity Options.
+  // Options-only on BOTH sides so the two series are like-for-like (equity already
+  // showed options only; commodity previously combined futures + options).
   const volTrend = segMonths.map(m => ({
     month: m,
     'Eq Options': segMap['Equity Options']?.[m]?.vol || 0,
-    'Commodity F&O': (segMap['Commodity Futures']?.[m]?.vol || 0) + (segMap['Commodity Options']?.[m]?.vol || 0),
+    'Commodity Options': segMap['Commodity Options']?.[m]?.vol || 0,
   }));
   // Acquisition charts (last 12). turnover_cr = new-client cohort turnover in ₹Cr (2dp).
   const acq12 = acquisition.slice(-12).map(r => ({ ...r, turnover_cr: +(((r.turnover || 0) / 1e7)).toFixed(2) }));
@@ -173,7 +175,7 @@ const NewBusiness = () => {
           />
         </div>
         <div className="panel">
-          <div className="ptitle">📈 Avg daily volume by key segment (₹Cr/day)<InfoBtn text="Average daily traded volume (₹Cr per day) per month, comparing Equity Options against combined Commodity Futures &amp; Options." /></div>
+          <div className="ptitle">📈 Avg daily volume by key segment (₹Cr/day)<InfoBtn text="Average daily traded volume (₹Cr per day) per month, comparing Equity Options against Commodity Options (options-only on both sides)." /></div>
           <ViewToggle
             chart={
           <ResponsiveContainer width="100%" height={220}>
@@ -183,16 +185,16 @@ const NewBusiness = () => {
               <YAxis tick={{ fontSize: 10 }} tickFormatter={v => '₹' + v + 'Cr'} />
               <Tooltip formatter={v => '₹' + Number(v).toFixed(2) + 'Cr'} /><Legend wrapperStyle={{ fontSize: 11 }} iconSize={10} />
               <Line dataKey="Eq Options" stroke="#185fa5" strokeWidth={2} />
-              <Line dataKey="Commodity F&O" stroke="#e0803a" strokeWidth={2} />
+              <Line dataKey="Commodity Options" stroke="#e0803a" strokeWidth={2} />
             </LineChart>
           </ResponsiveContainer>
             }
             table={
               <table>
-                <thead><tr><th>Month</th><th>Eq Options (₹Cr/day)</th><th>Commodity F&amp;O (₹Cr/day)</th></tr></thead>
+                <thead><tr><th>Month</th><th>Eq Options (₹Cr/day)</th><th>Commodity Options (₹Cr/day)</th></tr></thead>
                 <tbody>
                   {volTrend.map(r => (
-                    <tr key={r.month}><td>{r.month}</td><td>₹{Number(r['Eq Options']).toFixed(2)}Cr</td><td>₹{Number(r['Commodity F&O']).toFixed(2)}Cr</td></tr>
+                    <tr key={r.month}><td>{r.month}</td><td>₹{Number(r['Eq Options']).toFixed(2)}Cr</td><td>₹{Number(r['Commodity Options']).toFixed(2)}Cr</td></tr>
                   ))}
                   {volTrend.length === 0 && <tr><td colSpan={3} style={{ color: 'var(--tx3)' }}>No data.</td></tr>}
                 </tbody>
@@ -341,12 +343,14 @@ const NewBusiness = () => {
           <tbody>
             {SEGS.map(s => {
               const row = new_client_segments.find(r => r.segment === s);
+              const chg = new_client_seg_3m[s] || {};
               return (
                 <tr key={s}>
                   <td>{s}</td>
                   <td>{row ? row.clients.toLocaleString('en-IN') : 0}</td>
                   <td>{Number(row ? row.vol_cr_day : 0).toFixed(2)}</td>
-                  <td>—</td><td>—</td>
+                  <td style={{ color: colorOf(chg.chg_clients) }}>{spct(chg.chg_clients)}</td>
+                  <td style={{ color: colorOf(chg.chg_vol) }}>{spct(chg.chg_vol)}</td>
                 </tr>
               );
             })}

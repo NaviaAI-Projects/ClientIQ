@@ -311,6 +311,16 @@ router.post('/ingest', async (req, res) => {
     return res.status(401).json({ message: 'Invalid or missing API key' });
   }
 
+  // ── Write mode ──
+  // Default ("merge"): only overwrite a field when a non-empty value is supplied
+  //   (COALESCE-keep-existing). This is what legacy callers (e.g. the trading app)
+  //   rely on when they POST partial records.
+  // "replace" (opt-in via ?mode=replace or header X-Ingest-Mode: replace): store
+  //   EXACTLY the values supplied — a blank value is written as blank (NULL), no
+  //   defaults are invented, and existing values are NOT preserved. The ClientIQ
+  //   sync cron uses this so ClientIQ faithfully mirrors the CMOTS row.
+  const verbatim = String(req.query.mode || req.headers['x-ingest-mode'] || '').toLowerCase() === 'replace';
+
   // ── Normalise the body into an array of records ──
   const body = req.body;
   const list = Array.isArray(body) ? body
@@ -333,39 +343,72 @@ router.post('/ingest', async (req, res) => {
 
   const result = { received: list.length, created: 0, updated: 0, skipped: 0, errors: [] };
   try {
-    // Ensure the optional email column exists (idempotent), so the upsert can set it.
+    // Ensure the optional email + mobile columns exist (idempotent), so the upsert can set them.
+    // (mobile already exists — click-to-call reads/caches it — but keep this safe on fresh DBs.)
     await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS email TEXT`).catch(() => {});
+    await pool.query(`ALTER TABLE clients ADD COLUMN IF NOT EXISTS mobile TEXT`).catch(() => {});
 
     for (let i = 0; i < list.length; i++) {
       const r = list[i] || {};
       const ucc  = pick(r, 'ucc', 'uccode', 'ucc_code', 'client_code');
       if (!ucc) { result.skipped++; if (result.errors.length < 50) result.errors.push({ index: i, error: 'ucc is required' }); continue; }
       const name       = pick(r, 'name', 'client_name', 'clientName');
-      // NRI rule: any UCC beginning with 'N' is an NRI client — the prefix is authoritative,
-      // so newly-ingested accounts are classified correctly even when the cron omits client_type.
+      // NRI rule: any UCC beginning with 'N' is an NRI client — the prefix is authoritative.
+      // For non-N UCCs we take client_type exactly as supplied; in replace mode a blank stays
+      // blank (NULL), in merge mode it falls back to 'RI' for legacy callers.
       const clientType = String(ucc).toUpperCase().startsWith('N')
         ? 'NRI'
-        : (pick(r, 'client_type', 'clientType', 'type') || 'RI');
+        : (pick(r, 'client_type', 'clientType', 'type') || (verbatim ? null : 'RI'));
       const openDate   = toISO(pick(r, 'account_open_date', 'open_date', 'regd_date', 'account_open'));
-      const statusRaw  = pick(r, 'status', 'account_status', 'overall_status') || 'Active';
+      const statusRaw  = pick(r, 'status', 'account_status', 'overall_status');   // null ⇒ blank/unknown
       const email      = pick(r, 'email');
-      const st         = statusRaw.toLowerCase();
-      const isActive   = st.includes('active') && !st.includes('inactive');   // "inactive" contains "active"
+      const mobile     = pick(r, 'mobile', 'mobile_no', 'mobileno', 'phone', 'MobileNumber');
+      const st         = (statusRaw || '').toLowerCase();
+      // Prefer an explicit is_active from the caller (the sync cron sends one, derived
+      // from the authoritative CMOTS status code — reliable even for labels like
+      // "Activated"/"Deactivated" that a substring test gets wrong). Otherwise derive:
+      // any "activ" = active, unless it's "deactiv"/"inactiv". NULL when no status.
+      const iaRaw      = r.is_active;
+      const iaProvided = (typeof iaRaw === 'boolean') ? iaRaw : (iaRaw === 'true' ? true : iaRaw === 'false' ? false : null);
+      const isActive   = iaProvided != null ? iaProvided
+        : (statusRaw == null ? null : (/activ/.test(st) && !/deactiv|inactiv/.test(st)));
 
       try {
-        const up = await pool.query(`
-          INSERT INTO clients (ucc, name, client_type, plan, account_open_date, is_active, status, email, created_at, updated_at)
-          VALUES ($1, $2, $3, 'Zero-brokerage', $4::date, $5, $6, $7, NOW(), NOW())
+        // Two write shapes, chosen by `verbatim`:
+        //  • replace  → store exactly what was sent (blanks written as NULL; existing
+        //               values NOT preserved; account_open_date & plan left untouched
+        //               because the sync feed doesn't carry them).
+        //  • merge    → COALESCE-keep-existing + sensible defaults (legacy behaviour).
+        const sql = verbatim ? `
+          INSERT INTO clients (ucc, name, client_type, plan, is_active, status, email, mobile, created_at, updated_at)
+          VALUES ($1, $2, $3, 'Zero-brokerage', $4, $5, $6, $7, NOW(), NOW())
+          ON CONFLICT (ucc) DO UPDATE SET
+            name        = EXCLUDED.name,
+            client_type = EXCLUDED.client_type,
+            is_active   = EXCLUDED.is_active,
+            status      = EXCLUDED.status,
+            email       = EXCLUDED.email,
+            mobile      = EXCLUDED.mobile,
+            updated_at  = NOW()
+          RETURNING (xmax = 0) AS inserted
+        ` : `
+          INSERT INTO clients (ucc, name, client_type, plan, account_open_date, is_active, status, email, mobile, created_at, updated_at)
+          VALUES ($1, $2, $3, 'Zero-brokerage', $4::date, COALESCE($5, TRUE), COALESCE($6, 'Active'), $7, $8, NOW(), NOW())
           ON CONFLICT (ucc) DO UPDATE SET
             name              = COALESCE(EXCLUDED.name, clients.name),
             client_type       = EXCLUDED.client_type,
             account_open_date = COALESCE(EXCLUDED.account_open_date, clients.account_open_date),
-            is_active         = EXCLUDED.is_active,
-            status            = EXCLUDED.status,
+            is_active         = CASE WHEN $6 IS NULL THEN clients.is_active ELSE $5 END,
+            status            = COALESCE($6, clients.status),
             email             = COALESCE(EXCLUDED.email, clients.email),
+            mobile            = COALESCE(EXCLUDED.mobile, clients.mobile),
             updated_at        = NOW()
           RETURNING (xmax = 0) AS inserted
-        `, [ucc, name, clientType, openDate, isActive, statusRaw, email]);
+        `;
+        const params = verbatim
+          ? [ucc, name, clientType, isActive, statusRaw, email, mobile]          // $1..$7 (no open date in the feed)
+          : [ucc, name, clientType, openDate, isActive, statusRaw, email, mobile]; // $1..$8
+        const up = await pool.query(sql, params);
         if (up.rows[0]?.inserted) result.created++; else result.updated++;
       } catch (e) {
         result.skipped++; if (result.errors.length < 50) result.errors.push({ index: i, ucc, error: e.message });
@@ -421,7 +464,11 @@ router.post('/status', async (req, res) => {
       if (!statusRaw) { result.skipped++; if (result.errors.length < 50) result.errors.push({ index: i, ucc, error: 'status is required' }); continue; }
 
       const st       = statusRaw.toLowerCase();
-      const isActive = st.includes('active') && !st.includes('inactive');   // "inactive" contains "active"
+      // Prefer explicit is_active from the caller (cron sends one from the CMOTS code);
+      // else derive: any "activ" = active unless "deactiv"/"inactiv".
+      const iaRaw      = r.is_active;
+      const iaProvided = (typeof iaRaw === 'boolean') ? iaRaw : (iaRaw === 'true' ? true : iaRaw === 'false' ? false : null);
+      const isActive = iaProvided != null ? iaProvided : (/activ/.test(st) && !/deactiv|inactiv/.test(st));
       const isClosed = st.startsWith('clos');
 
       try {

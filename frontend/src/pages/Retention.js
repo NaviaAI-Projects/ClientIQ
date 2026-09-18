@@ -143,9 +143,9 @@ const Retention = () => {
       </div>
 
       <div className="panel">
-        <div className="ptitle">📋 Monthly active client trend — by segment<InfoBtn text="Distinct active clients each month split by segment (Eq Options, Eq Cash, Comm F&O, Eq Futures), with total unique, month-over-month change, new activations and churned counts." /></div>
+        <div className="ptitle">📋 Monthly active client trend — by segment<InfoBtn text="Distinct active clients each month split by segment (Eq Options, Eq Cash, Comm F&O, Eq Futures), with total unique, month-over-month change, new activations and churned counts. Churned = clients who were active the PREVIOUS month but did NOT trade this month (i.e. lapsed activity that month) — it is not account closure. Shown only where the prior month is observed." /></div>
         <div className="tw"><table>
-          <thead><tr><th>Month</th><th>Eq Options</th><th>Eq Cash</th><th>Comm F&amp;O</th><th>Eq Futures</th><th>Total unique</th><th>MoM change</th><th>New activations</th><th>Churned</th></tr></thead>
+          <thead><tr><th>Month</th><th>Eq Options</th><th>Eq Cash</th><th>Comm F&amp;O</th><th>Eq Futures</th><th>Total unique</th><th>MoM change</th><th>New activations</th><th title="Clients active the previous month who did not trade this month (lapsed activity, not account closure).">Churned (vs prev mo)</th></tr></thead>
           <tbody>
             {segment_trend.map(r => (
               <tr key={r.month}>

@@ -98,6 +98,29 @@ router.get('/revenue-float', auth, async (req, res) => {
       WHERE month_year = (SELECT m FROM latest)
     `);
 
+    // Per-month Float book snapshot (as of each month's LAST ledger day) so the Float
+    // book widget can show prior months + a 3M average, not just the latest snapshot.
+    const monthlyFloatSnap = await pool.query(`
+      WITH lastday AS (
+        SELECT to_char(ledger_date,'YYYY-MM') AS m, MAX(ledger_date) AS d
+        FROM daily_ledger GROUP BY 1
+      ),
+      snap AS (
+        SELECT l.m, dl.opening_balance,
+               ROW_NUMBER() OVER (PARTITION BY l.m ORDER BY dl.opening_balance DESC) AS rnk
+        FROM lastday l JOIN daily_ledger dl ON dl.ledger_date = l.d
+        WHERE dl.opening_balance > 0
+      )
+      SELECT m,
+             SUM(opening_balance)::float                               AS total_bal,
+             COUNT(*)::int                                             AS ledger_clients,
+             COUNT(*) FILTER (WHERE opening_balance > 500000)::int     AS clients_above_5l,
+             AVG(opening_balance)::float                               AS avg_balance,
+             SUM(opening_balance) FILTER (WHERE rnk <= 10)::float      AS top10_bal
+      FROM snap GROUP BY m
+    `);
+    const fbByMonth = {}; monthlyFloatSnap.rows.forEach(r => { fbByMonth[r.m] = r; });
+
     const latestTradeDate = await pool.query(`SELECT MAX(trade_date) d FROM daily_trades`);
 
     // ── Footnote figures (computed from real data) ──
@@ -183,6 +206,54 @@ router.get('/revenue-float', auth, async (req, res) => {
     const ytdMtf        = monthly.reduce((s, m) => s + m.mtf_interest, 0);
     const ytdFloat      = monthly.reduce((s, m) => s + (m.float_income_day ? m.float_income_day * m.float_days : 0), 0);
 
+    // ── Float book: prior months + 3M average for the widget's previously-blank columns.
+    // Per-month snapshot (fbByMonth) is as of each month's last ledger day.
+    const avgOf = (arr, f) => arr.length ? arr.reduce((s, x) => s + f(x), 0) / arr.length : 0;
+    const fbMonthObj = (m) => {
+      const r = fbByMonth[m]; if (!r) return null;
+      const total = Number(r.total_bal || 0);
+      return {
+        month: m,
+        total_ledger_balance: total,
+        daily_income: total * (fdRate / 100) / 365,
+        clients_above_5l: Number(r.clients_above_5l || 0),
+        avg_balance: Number(r.avg_balance || 0),
+        top10_pct: total > 0 ? (Number(r.top10_bal || 0) / total) * 100 : 0,
+      };
+    };
+    const fbMonthsAsc = Object.keys(fbByMonth).sort();
+    const fbPrior = fbMonthsAsc.slice(-3, -1).reverse().map(fbMonthObj).filter(Boolean); // [prior1, prior2]
+    const fbAvg3Src = fbMonthsAsc.slice(-3).map(fbMonthObj).filter(Boolean);
+    const fbAvg3 = fbAvg3Src.length ? {
+      total_ledger_balance: avgOf(fbAvg3Src, r => r.total_ledger_balance),
+      daily_income:         avgOf(fbAvg3Src, r => r.daily_income),
+      clients_above_5l:     avgOf(fbAvg3Src, r => r.clients_above_5l),
+      avg_balance:          avgOf(fbAvg3Src, r => r.avg_balance),
+      top10_pct:            avgOf(fbAvg3Src, r => r.top10_pct),
+    } : null;
+
+    // ── MTF book: prior months + 3M average (mtf_monthly has full monthly history).
+    const mtfMonthObj = (m) => {
+      const r = mtfByMonth[m]; if (!r) return null;
+      const bal = Number(r.mtf_balance || 0), cl = Number(r.mtf_clients || 0);
+      return {
+        month: m,
+        balance: bal,
+        interest: Number(r.mtf_interest || 0),
+        clients: cl,
+        avg_per_client: cl > 0 ? bal / cl : 0,
+      };
+    };
+    const mtfMonthsAsc = Object.keys(mtfByMonth).sort();
+    const mtfPrior = mtfMonthsAsc.slice(-3, -1).reverse().map(mtfMonthObj).filter(Boolean);
+    const mtfAvg3Src = mtfMonthsAsc.slice(-3).map(mtfMonthObj).filter(Boolean);
+    const mtfAvg3 = mtfAvg3Src.length ? {
+      balance:        avgOf(mtfAvg3Src, r => r.balance),
+      interest:       avgOf(mtfAvg3Src, r => r.interest),
+      clients:        avgOf(mtfAvg3Src, r => r.clients),
+      avg_per_client: avgOf(mtfAvg3Src, r => r.avg_per_client),
+    } : null;
+
     res.json({
       meta: {
         latest_trade_date: latestTradeDate.rows[0]?.d || null,
@@ -211,6 +282,8 @@ router.get('/revenue-float', auth, async (req, res) => {
         avg_balance: Number(fb.avg_balance || 0),
         daily_income: dailyFloatIncome,
         top10_pct: fbTotal > 0 ? (top10Balance / fbTotal) * 100 : 0,
+        prior: fbPrior,   // [prior-month, month-before] each with the same metric keys
+        avg3: fbAvg3,     // 3-month average (last 3 snapshot months), or null
       },
       mtf_book: {
         month: mtfLatest.rows[0]?.month || null,
@@ -220,6 +293,8 @@ router.get('/revenue-float', auth, async (req, res) => {
         avg_per_client: Number(mtfLatest.rows[0]?.clients || 0) > 0
           ? Number(mtfLatest.rows[0]?.balance || 0) / Number(mtfLatest.rows[0]?.clients || 0)
           : 0,
+        prior: mtfPrior,  // [prior-month, month-before] each with the same metric keys
+        avg3: mtfAvg3,    // 3-month average, or null
       },
       footnotes: {
         idle_float_clients: Number(idleFloat.rows[0]?.n || 0),
@@ -646,19 +721,37 @@ router.get('/options', auth, async (req, res) => {
       FROM trades WHERE ${COMM} AND trade_date::date BETWEEN $1 AND $2
       GROUP BY trade_date ORDER BY trade_date
     `, [rng.from, rng.to]);
+    // Top options clients, current month — split so the UI can filter
+    // All options / Equity options / Commodity options (default All). Each client's
+    // equity- and commodity-options premium TO is summed; rows in the top 10 of ALL,
+    // Equity or Commodity are returned. lots = number of contracts.
     const topClients = await pool.query(`
-      WITH eqopt AS (
-        -- lots = number of contracts, stored per trade (trade_qty is now also lots).
-        SELECT ucc, traded_value, COALESCE(lots, 0) AS lots FROM trades
-        WHERE ${EQ} AND trade_date >= date_trunc('month', (SELECT MAX(trade_date) FROM trades))
+      WITH opt AS (
+        SELECT ucc,
+               CASE WHEN ${EQ}   THEN traded_value ELSE 0 END AS eq_val,
+               CASE WHEN ${COMM} THEN traded_value ELSE 0 END AS comm_val,
+               COALESCE(lots, 0) AS lots
+        FROM trades
+        WHERE (${EQ} OR ${COMM}) AND trade_date >= date_trunc('month', (SELECT MAX(trade_date) FROM trades))
+      ),
+      agg AS (
+        SELECT ucc, SUM(eq_val)::float AS eq_opt_to, SUM(comm_val)::float AS comm_opt_to,
+               SUM(eq_val + comm_val)::float AS all_opt_to, SUM(lots)::float AS lots
+        FROM opt GROUP BY ucc
+      ),
+      ranked AS (
+        SELECT *, ROW_NUMBER() OVER (ORDER BY all_opt_to DESC)  AS rn_all,
+                  ROW_NUMBER() OVER (ORDER BY eq_opt_to DESC)   AS rn_eq,
+                  ROW_NUMBER() OVER (ORDER BY comm_opt_to DESC) AS rn_comm
+        FROM agg
       )
-      SELECT e.ucc, SUM(e.traded_value)::float AS eq_opt_to, SUM(e.lots)::float AS lots,
-             c.name, c.client_type, rm.rm_name
-      FROM eqopt e
-      LEFT JOIN clients c ON c.ucc = e.ucc
+      SELECT r.ucc, r.eq_opt_to, r.comm_opt_to, r.all_opt_to, r.lots,
+             r.rn_all, r.rn_eq, r.rn_comm, c.name, c.client_type, rm.rm_name
+      FROM ranked r
+      LEFT JOIN clients c ON c.ucc = r.ucc
       LEFT JOIN rm_master rm ON c.assigned_rm_id = rm.id
-      GROUP BY e.ucc, c.name, c.client_type, rm.rm_name
-      ORDER BY eq_opt_to DESC LIMIT 10
+      WHERE r.rn_all <= 10 OR (r.eq_opt_to > 0 AND r.rn_eq <= 10) OR (r.comm_opt_to > 0 AND r.rn_comm <= 10)
+      ORDER BY r.all_opt_to DESC
     `);
 
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -822,10 +915,23 @@ router.get('/options', auth, async (req, res) => {
       })),
       monthly,
       expiry_analysis,
-      top_clients: topClients.rows.map(r => ({
-        ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type || 'RI',
-        eq_opt_to: Number(r.eq_opt_to), lots: Number(r.lots), rm_name: r.rm_name || '—',
-      })),
+      top_clients: (() => {
+        const rows = topClients.rows.map(r => ({
+          ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type || 'RI',
+          eq_opt_to: Number(r.eq_opt_to), comm_opt_to: Number(r.comm_opt_to),
+          all_opt_to: Number(r.all_opt_to), lots: Number(r.lots), rm_name: r.rm_name || '—',
+        }));
+        const top = (key) => rows.filter(x => x[key] > 0).sort((a, b) => b[key] - a[key]).slice(0, 10);
+        // `top_clients` stays the default (All options) for backward compatibility;
+        // the segment lists drive the Equity / Commodity filter.
+        return top('all_opt_to');
+      })(),
+      top_clients_all:  topClients.rows.map(r => ({ ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type || 'RI', eq_opt_to: Number(r.eq_opt_to), comm_opt_to: Number(r.comm_opt_to), all_opt_to: Number(r.all_opt_to), lots: Number(r.lots), rm_name: r.rm_name || '—' }))
+                          .filter(x => x.all_opt_to > 0).sort((a, b) => b.all_opt_to - a.all_opt_to).slice(0, 10),
+      top_clients_eq:   topClients.rows.map(r => ({ ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type || 'RI', eq_opt_to: Number(r.eq_opt_to), comm_opt_to: Number(r.comm_opt_to), all_opt_to: Number(r.all_opt_to), lots: Number(r.lots), rm_name: r.rm_name || '—' }))
+                          .filter(x => x.eq_opt_to > 0).sort((a, b) => b.eq_opt_to - a.eq_opt_to).slice(0, 10),
+      top_clients_comm: topClients.rows.map(r => ({ ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type || 'RI', eq_opt_to: Number(r.eq_opt_to), comm_opt_to: Number(r.comm_opt_to), all_opt_to: Number(r.all_opt_to), lots: Number(r.lots), rm_name: r.rm_name || '—' }))
+                          .filter(x => x.comm_opt_to > 0).sort((a, b) => b.comm_opt_to - a.comm_opt_to).slice(0, 10),
     });
   } catch (err) {
     console.error('OPTIONS ERROR:', err.message);
@@ -935,6 +1041,16 @@ router.get('/new-business', auth, async (req, res) => {
     `);
     const acqSeg = {};
     acqSegQ.rows.forEach(r => { (acqSeg[r.mon] ||= {})[r.segment] = { trading: Number(r.trading), turnover: Number(r.turnover) }; });
+    // Per opening-month trading-day count (MAX trade_days across the cohort's rows) — same basis the
+    // featured new-client volume uses, so a per-cohort vol_cr_day can be compared like-for-like for
+    // the segment-distribution "3M avg change" columns.
+    const openDaysQ = await pool.query(`
+      WITH newc AS (SELECT ucc, to_char(account_open_date,'YYYY-MM') AS omon FROM clients WHERE account_open_date IS NOT NULL)
+      SELECT n.omon AS mon, MAX(cms.trade_days)::int AS days
+      FROM client_monthly_summary cms JOIN newc n ON n.ucc = cms.ucc
+      GROUP BY n.omon
+    `);
+    const openDays = {}; openDaysQ.rows.forEach(r => { openDays[r.mon] = Number(r.days); });
     // Total client count — matches the Company Dashboard's total (COUNT(*) clients).
     const totClients = (await pool.query(`SELECT COUNT(*)::int AS n FROM clients`)).rows[0].n;
 
@@ -979,8 +1095,38 @@ router.get('/new-business', auth, async (req, res) => {
       }));
     }
 
+    // "3M avg change" per segment for the featured opening cohort — % change in new-client count
+    // and in new-client avg daily volume across the 3-month window ending at the featured month
+    // (earliest → latest), mirroring the all-clients table's change3m convention. Populates once
+    // at least two of the last three opening cohorts have trade history; null (→ "—") otherwise.
+    const newClientSeg3m = {};
+    if (featured) {
+      const addMonthsNb = (ym, k) => {
+        const [y, m] = ym.split('-').map(Number);
+        const idx = (y * 12 + (m - 1)) + k;
+        return `${Math.floor(idx / 12)}-${String((idx % 12) + 1).padStart(2, '0')}`;
+      };
+      const SEG_NAMES = ['Equity Cash', 'Equity Options', 'Equity Futures', 'Commodity Options', 'Commodity Futures'];
+      const window3 = [addMonthsNb(featured.key, -2), addMonthsNb(featured.key, -1), featured.key]
+        .filter(m => acqSeg[m]);                                   // consecutive cohorts with data
+      const cliOf = (m, s) => acqSeg[m]?.[s]?.trading || 0;
+      const volOf = (m, s) => (acqSeg[m]?.[s]?.turnover && openDays[m])
+        ? acqSeg[m][s].turnover / openDays[m] / 1e7 : 0;
+      for (const s of SEG_NAMES) {
+        if (window3.length < 2) { newClientSeg3m[s] = { chg_clients: null, chg_vol: null }; continue; }
+        const first = window3[0], last = window3[window3.length - 1];
+        const fc = cliOf(first, s), lc = cliOf(last, s);
+        const fv = volOf(first, s), lv = volOf(last, s);
+        newClientSeg3m[s] = {
+          chg_clients: fc > 0 ? +(((lc - fc) / fc) * 100).toFixed(1) : null,
+          chg_vol:     fv > 0 ? +(((lv - fv) / fv) * 100).toFixed(1) : null,
+        };
+      }
+    }
+
     res.json({
       new_client_segments: newClientSeg,
+      new_client_seg_3m: newClientSeg3m,
       total_clients: totClients,
       acq_seg: acqSeg,
       meta: {
@@ -1047,8 +1193,12 @@ router.get('/inactive', auth, async (req, res) => {
       WITH h AS (${HOLD}),
       b AS (
         SELECT
+          -- Bands are the client's inactivity duration = (as-of date − last trade).
+          -- The first band captures 0–90 days since last trade, so it is labelled
+          -- "Up to 90 days" (not "30–90"): an account that traded, say, 10 days before
+          -- the window still belongs here — it must not read as "30–90 days inactive".
           CASE WHEN c.last_trade_date IS NULL                        THEN 'Never traded'
-               WHEN c.last_trade_date >= $2::date - 90               THEN '30–90 days'
+               WHEN c.last_trade_date >= $2::date - 90               THEN 'Up to 90 days'
                WHEN c.last_trade_date >= $2::date - 180              THEN '90–180 days'
                WHEN c.last_trade_date >= $2::date - 365              THEN '180–365 days'
                ELSE '365+ days' END AS band,
@@ -1106,7 +1256,7 @@ router.get('/inactive', auth, async (req, res) => {
     `, P);
 
     const s = summary.rows[0] || {};
-    const bandOrder = ['30–90 days', '90–180 days', '180–365 days', '365+ days', 'Never traded'];
+    const bandOrder = ['Up to 90 days', '90–180 days', '180–365 days', '365+ days', 'Never traded'];
     const bandMap = {}; bands.rows.forEach(r => { bandMap[r.band] = r; });
     const vd = valueDist.rows[0] || {};
 
@@ -2513,17 +2663,28 @@ router.get('/client-analytics', auth, async (req, res) => {
       FROM mtf_monthly m
       WHERE m.month_year = (SELECT MAX(month_year) FROM mtf_monthly) GROUP BY ctype
     `);
-    const mtfByType = {}; mtfUsers.rows.forEach(r => { mtfByType[r.client_type] = Number(r.n); });
+    const mtfByType = {}; mtfUsers.rows.forEach(r => { mtfByType[r.ctype] = Number(r.n); });   // query aliases the column `ctype`, not client_type
 
     // High-value watch: top option traders overall AND per client-type (RI / NRI) so the UI can
     // filter All / RI / NRI. Float is taken as of the SELECTED end date (latest ledger on/before it),
     // not the newest ledger overall.
+    // Top option traders overall AND per client-type (RI / NRI) AND per option segment
+    // (Equity options vs Commodity options) so the UI can filter All / RI / NRI /
+    // Equity / Commodity. eq_opt = all options premium − commodity options; comm_opt =
+    // commodity options premium (comm_opt_to). Float is as of the SELECTED end date.
     const hv = await pool.query(`
       WITH mtd AS (
-        SELECT ucc, SUM(opt_to) AS opt_to, SUM(brok) AS brok FROM (
-          SELECT ucc, COALESCE(opt_prem_to,0) AS opt_to, COALESCE(brokerage,0) AS brok FROM client_monthly_summary cms WHERE ${wholeCond}
+        SELECT ucc, SUM(opt_to) AS opt_to, SUM(brok) AS brok,
+               SUM(eq_opt) AS eq_opt, SUM(comm_opt) AS comm_opt FROM (
+          SELECT ucc, COALESCE(opt_prem_to,0) AS opt_to, COALESCE(brokerage,0) AS brok,
+                 GREATEST(COALESCE(opt_prem_to,0) - COALESCE(comm_opt_to,0), 0) AS eq_opt,
+                 COALESCE(comm_opt_to,0) AS comm_opt
+          FROM client_monthly_summary cms WHERE ${wholeCond}
           UNION ALL
-          SELECT ucc, COALESCE(options_premium_turnover,0), COALESCE(brokerage_earned,0) FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2 AND ${partialCond}
+          SELECT ucc, COALESCE(options_premium_turnover,0), COALESCE(brokerage_earned,0),
+                 GREATEST(COALESCE(options_premium_turnover,0) - COALESCE(comm_opt_to,0), 0),
+                 COALESCE(comm_opt_to,0)
+          FROM daily_trades WHERE trade_date::date BETWEEN $1 AND $2 AND ${partialCond}
         ) u GROUP BY ucc
       ),
       led AS (SELECT ucc, opening_balance FROM daily_ledger
@@ -2532,6 +2693,7 @@ router.get('/client-analytics', auth, async (req, res) => {
       base AS (
         SELECT m.ucc, c.name, CASE WHEN UPPER(m.ucc) LIKE 'N%' THEN 'NRI' ELSE 'RI' END AS client_type,
                m.opt_to::float AS opt_to, COALESCE(m.brok,0)::float AS brok,
+               m.eq_opt::float AS eq_opt, m.comm_opt::float AS comm_opt,
                COALESCE(led.opening_balance,0)::float AS float_bal, COALESCE(mtf.interest,0)::float AS mtf,
                rm.rm_name, c.last_trade_date
         FROM mtd m
@@ -2543,10 +2705,14 @@ router.get('/client-analytics', auth, async (req, res) => {
       ),
       ranked AS (
         SELECT *, ROW_NUMBER() OVER (ORDER BY opt_to DESC) AS rn_all,
-                  ROW_NUMBER() OVER (PARTITION BY client_type ORDER BY opt_to DESC) AS rn_type
+                  ROW_NUMBER() OVER (PARTITION BY client_type ORDER BY opt_to DESC) AS rn_type,
+                  ROW_NUMBER() OVER (ORDER BY eq_opt DESC)  AS rn_eq,
+                  ROW_NUMBER() OVER (ORDER BY comm_opt DESC) AS rn_comm
         FROM base
       )
-      SELECT * FROM ranked WHERE rn_all <= 10 OR rn_type <= 10 ORDER BY opt_to DESC
+      SELECT * FROM ranked
+      WHERE rn_all <= 10 OR rn_type <= 10 OR (eq_opt > 0 AND rn_eq <= 10) OR (comm_opt > 0 AND rn_comm <= 10)
+      ORDER BY opt_to DESC
     `, [rng.from, rng.to]);
 
     const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -2576,12 +2742,16 @@ router.get('/client-analytics', auth, async (req, res) => {
     const asOfCa = await pool.query(`SELECT to_char(MAX(trade_date),'FMDD Mon YYYY') a FROM daily_trades`);
     const hvMap = (r) => ({
       ucc: r.ucc, name: r.name || r.ucc, client_type: r.client_type, opt_to: Number(r.opt_to),
+      eq_opt: Number(r.eq_opt), comm_opt: Number(r.comm_opt),
       brokerage: Number(r.brok), float: Number(r.float_bal), mtf: Number(r.mtf),
       rm_name: r.rm_name || '—', status: statusOf(r.last_trade_date),
     });
     const hvAll = hv.rows.filter(r => Number(r.rn_all) <= 10).map(hvMap);
     const hvRI  = hv.rows.filter(r => r.client_type === 'RI'  && Number(r.rn_type) <= 10).map(hvMap);
     const hvNRI = hv.rows.filter(r => r.client_type === 'NRI' && Number(r.rn_type) <= 10).map(hvMap);
+    // Top by option SEGMENT (Equity options vs Commodity options).
+    const hvEq   = hv.rows.filter(r => Number(r.eq_opt)  > 0 && Number(r.rn_eq)   <= 10).sort((a,b)=>b.eq_opt-a.eq_opt).map(hvMap);
+    const hvComm = hv.rows.filter(r => Number(r.comm_opt) > 0 && Number(r.rn_comm) <= 10).sort((a,b)=>b.comm_opt-a.comm_opt).map(hvMap);
     res.json({
       meta: { as_of: asOfCa.rows[0]?.a || null, range: rangeMeta(rng) },
       cards: {
@@ -2605,7 +2775,7 @@ router.get('/client-analytics', auth, async (req, res) => {
         avg_opt_to: Number(r.eq_options) > 0 ? Number(r.opt_to) / Number(r.eq_options) : 0,
         avg_brok: Number(r.active) > 0 ? Number(r.brokerage) / Number(r.active) : 0,
       })),
-      hv_watch: hvAll, hv_ri: hvRI, hv_nri: hvNRI,
+      hv_watch: hvAll, hv_ri: hvRI, hv_nri: hvNRI, hv_eq: hvEq, hv_comm: hvComm,
     });
   } catch (err) {
     console.error('CLIENT-ANALYTICS ERROR:', err.message);
@@ -2757,6 +2927,13 @@ router.get('/daily-mis', auth, async (req, res) => {
     const p3Rows = rows.filter(r => ymOf(r.d) === pm3);
     const expRows = rows.filter(r => r.is_expiry), nonExp = rows.filter(r => !r.is_expiry);
     const avg = (arr, f) => arr.length ? arr.reduce((s, r) => s + f(r), 0) / arr.length : 0;
+    // Segment-aware per-day average: divide by the number of days THIS segment actually
+    // traded (turnover > 0), NOT the total trading days in the window. A day where only
+    // some exchanges were open — e.g. an equity holiday when MCX still ran its evening
+    // session (Sep 14 2026) — must not dilute the segments that didn't trade. This matches
+    // the Market Share "Segment-wise detail", which counts trading days per segment
+    // (e.g. equity 11 days, commodity 12 for 1–16 Sep 2026).
+    const avgSeg = (arr, f) => { const d = arr.filter(r => f(r) > 0); return d.length ? d.reduce((s, r) => s + f(r), 0) / d.length : 0; };
     const cr = (v) => +(v / 1e7).toFixed(2);
     const vsPct = (cur, base) => base ? +(((cur - base) / base) * 100).toFixed(1) : null;
     const dailyFloat = Number(ledger.rows[0]?.bal || 0) * (fdRate / 100) / 365;
@@ -2816,11 +2993,13 @@ router.get('/daily-mis', auth, async (req, res) => {
     const volSeg = (label, f, expiry) => ({
       segment: label,
       today: today ? cr(f(today)) : 0, yesterday: yday ? cr(f(yday)) : 0,
-      mtd_avg: cr(avg(mtdRows, f)),
-      prior1m_avg: cr(avg(p1Rows, f)), prior2m_avg: cr(avg(p2Rows, f)), prior3m_avg: cr(avg(p3Rows, f)),
-      vs: vsPct(avg(mtdRows, f), avg(p3Rows, f)),   // MTD avg vs Prior-3M avg (like-for-like)
-      expiry_premium: expiry && nonExp.length && avg(nonExp, f) > 0
-        ? +(((avg(expRows, f) - avg(nonExp, f)) / avg(nonExp, f)) * 100).toFixed(0) : null,
+      // Per-segment trading-day denominator (avgSeg): each segment's MTD/prior average is
+      // divided by the days IT traded, so an equity-only holiday doesn't understate equity.
+      mtd_avg: cr(avgSeg(mtdRows, f)),
+      prior1m_avg: cr(avgSeg(p1Rows, f)), prior2m_avg: cr(avgSeg(p2Rows, f)), prior3m_avg: cr(avgSeg(p3Rows, f)),
+      vs: vsPct(avgSeg(mtdRows, f), avgSeg(p3Rows, f)),   // MTD avg vs Prior-3M avg (like-for-like)
+      expiry_premium: expiry && avgSeg(nonExp, f) > 0
+        ? +(((avgSeg(expRows, f) - avgSeg(nonExp, f)) / avgSeg(nonExp, f)) * 100).toFixed(0) : null,
     });
     const totVol = (r) => r.eq_opt + r.comm_opt + r.eq_fut + r.comm_fut + r.eq_cash;
     const actSeg = (label, f) => ({
@@ -3590,7 +3769,14 @@ router.get('/revenue-ramp', auth, async (req, res) => {
 
 // ── MARKET SHARE ────────────────────────────────────────────────
 // --- exchange_volume table (manual / feed-fed exchange turnover, segment-wise) ---
-// Columns: trade_date, segment (eqopt|eqfut|commopt|commfut|eqcash), traded_value (₹, options = PREMIUM turnover)
+// Columns: trade_date, segment (eqopt|eqfut|commopt|commfut|eqcash), traded_value (₹, options = PREMIUM turnover),
+//          source (which EXCHANGE fed the row — 'NSE'|'BSE'|'MCX'|'manual').
+// PRIMARY KEY is (trade_date, segment, SOURCE) so two exchanges that feed the SAME segment
+// (NSE F&O and BSE both feed eqopt/eqfut) each keep their own row. The read side already
+// SUM(traded_value) GROUP BY segment, so the market total = NSE + BSE summed. With the old
+// 2-column PK (trade_date, segment) the two exchanges collided into one row and BSE was
+// silently dropped/overwritten — which understated the prior-month exchange volume and blew
+// the month-over-month % up (e.g. Equity Options +75.7%).
 let _exVolEnsured = false;
 async function ensureExchangeVolume() {
   if (_exVolEnsured) return;
@@ -3601,8 +3787,56 @@ async function ensureExchangeVolume() {
       traded_value NUMERIC      NOT NULL,
       source       VARCHAR(16)  DEFAULT 'manual',
       updated_at   TIMESTAMPTZ  DEFAULT now(),
-      PRIMARY KEY (trade_date, segment)
+      PRIMARY KEY (trade_date, segment, source)
     )
+  `);
+  await pool.query(`ALTER TABLE exchange_volume ADD COLUMN IF NOT EXISTS source VARCHAR(16) DEFAULT 'manual'`);
+  // One-time migration for tables created with the old (trade_date, segment) primary key.
+  // Those rows hold a single collapsed/partial value per (date,segment) whose source mix is
+  // unknowable (could be NSE-only, or NSE+BSE summed), so they cannot be safely combined with
+  // the new per-exchange rows without double counting. We therefore drop the old PK, add the
+  // 3-column PK, and clear the ambiguous legacy rows so they can be re-captured per source.
+  // Runs exactly once — after migration the PK already includes `source`, so the guard is false.
+  await pool.query(`
+    DO $$
+    DECLARE has_src_pk boolean;
+    BEGIN
+      SELECT EXISTS (
+        SELECT 1 FROM pg_index i
+        JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+        WHERE i.indrelid = 'exchange_volume'::regclass AND i.indisprimary AND a.attname = 'source'
+      ) INTO has_src_pk;
+      IF NOT has_src_pk THEN
+        DELETE FROM exchange_volume;                               -- clear ambiguous legacy rows (re-capture per source)
+        ALTER TABLE exchange_volume DROP CONSTRAINT IF EXISTS exchange_volume_pkey;
+        ALTER TABLE exchange_volume ADD PRIMARY KEY (trade_date, segment, source);
+      END IF;
+    END $$;
+  `);
+  // Drop ANY leftover 2-column UNIQUE constraint/index on exactly (trade_date, segment) — e.g.
+  // exchange_volume_date_seg_uq. These predate the per-source model and still force one row per
+  // (date, segment), which makes a second exchange (BSE alongside NSE) fail with
+  // "duplicate key value violates unique constraint". Runs every ensure and is idempotent.
+  await pool.query(`
+    DO $$
+    DECLARE c record;
+    BEGIN
+      FOR c IN
+        SELECT con.conname FROM pg_constraint con
+        WHERE con.conrelid = 'exchange_volume'::regclass AND con.contype = 'u'
+          AND (SELECT array_agg(a.attname ORDER BY a.attname)
+               FROM pg_attribute a WHERE a.attrelid = con.conrelid AND a.attnum = ANY(con.conkey))
+              = ARRAY['segment','trade_date']::name[]
+      LOOP EXECUTE format('ALTER TABLE exchange_volume DROP CONSTRAINT %I', c.conname); END LOOP;
+      FOR c IN
+        SELECT i.relname AS conname
+        FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid
+        WHERE x.indrelid = 'exchange_volume'::regclass AND x.indisunique AND NOT x.indisprimary
+          AND (SELECT array_agg(a.attname ORDER BY a.attname)
+               FROM pg_attribute a WHERE a.attrelid = x.indrelid AND a.attnum = ANY(x.indkey))
+              = ARRAY['segment','trade_date']::name[]
+      LOOP EXECUTE format('DROP INDEX IF EXISTS %I', c.conname); END LOOP;
+    END $$;
   `);
   _exVolEnsured = true;
 }

@@ -40,12 +40,20 @@ const ClientAnalytics = () => {
   if (loading && !data) return <div className="ph"><h2>Client analytics</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Client analytics</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { meta, cards, daily_fo, daily_pnl = [], pnl_available, breakdown, hv_watch = [], hv_ri = [], hv_nri = [] } = data;
+  const { meta, cards, daily_fo, daily_pnl = [], pnl_available, breakdown, hv_watch = [], hv_ri = [], hv_nri = [], hv_eq = [], hv_comm = [] } = data;
   const tradedDelta = pctDelta(cards.total_traded, cards.total_traded_prev);
   // RI vs NRI split of clients traded (each as a % of total clients traded in the period).
   const riPct  = cards.total_traded ? ((cards.ri  || 0) / cards.total_traded * 100).toFixed(1) : '0.0';
   const nriPct = cards.total_traded ? ((cards.nri || 0) / cards.total_traded * 100).toFixed(1) : '0.0';
-  const hvRows = hvType === 'RI' ? hv_ri : hvType === 'NRI' ? hv_nri : hv_watch;   // client-type filter
+  // High-value watch filter: client-type (RI/NRI) OR option segment (Equity/Commodity).
+  const hvRows = hvType === 'RI' ? hv_ri
+    : hvType === 'NRI' ? hv_nri
+    : hvType === 'Equity' ? hv_eq
+    : hvType === 'Commodity' ? hv_comm
+    : hv_watch;
+  // When filtering by segment, show that segment's options TO (else the total).
+  const hvTo = (r) => hvType === 'Equity' ? r.eq_opt : hvType === 'Commodity' ? r.comm_opt : r.opt_to;
+  const hvToLabel = hvType === 'Equity' ? 'Eq Options TO' : hvType === 'Commodity' ? 'Comm Options TO' : 'Options TO';
   // Client-type breakdown total (RI + NRI): distinct counts are disjoint, so they sum to the whole.
   const bSum = (k) => (breakdown || []).reduce((s, r) => s + (Number(r[k]) || 0), 0);
   const bTotOptTo = bSum('opt_to'), bTotBrok = bSum('brokerage'), bTotEqOpt = bSum('eq_options'), bTotActive = bSum('active');
@@ -165,26 +173,28 @@ const ClientAnalytics = () => {
       <div className="tc2">
         <div className="panel">
           <div className="ptitle" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            ⭐ High-value client watch — top by options TO<InfoBtn text="Top 10 clients ranked by options turnover, listing brokerage, ledger float (as of the selected date), MTF usage, mapped RM and active/dormant status. Use the filter to see the top All / Resident / NRI clients." />
+            ⭐ High-value client watch — top by options TO<InfoBtn text="Top 10 clients ranked by options turnover, listing brokerage, ledger float (as of the selected date), MTF usage, mapped RM and active/dormant status. Filter by client type (All / Resident / NRI) or by option segment (Equity options / Commodity options) — segment views rank by that segment's premium turnover." />
             <select value={hvType} onChange={e => setHvType(e.target.value)}
               style={{ marginLeft: 'auto', padding: '3px 6px', border: '1px solid var(--br)', borderRadius: 6, fontSize: 11 }}>
               <option value="All">All clients</option>
               <option value="RI">Resident (RI)</option>
               <option value="NRI">NRI</option>
+              <option value="Equity">Equity options</option>
+              <option value="Commodity">Commodity options</option>
             </select>
           </div>
           <div className="tw"><table>
-            <thead><tr><th>UCC</th><th>Name</th><th>Type</th><th>Options TO</th><th>Brokerage</th><th>Float</th><th>MTF</th><th>RM</th><th>Status</th></tr></thead>
+            <thead><tr><th>UCC</th><th>Name</th><th>Type</th><th>{hvToLabel}</th><th>Brokerage</th><th>Float</th><th>MTF</th><th>RM</th><th>Status</th></tr></thead>
             <tbody>
               {hvRows.map(r => (
                 <tr key={r.ucc}>
                   <td>{r.ucc}</td><td><ClientLink ucc={r.ucc} name={r.name} /></td>
                   <td><TypeBadge t={r.client_type} /></td>
-                  <td>{rupee(r.opt_to)}</td><td>{rupee(r.brokerage)}</td><td>{rupee(r.float)}</td><td>{r.mtf > 0 ? '✓' : '—'}</td><td>{r.rm_name}</td>
+                  <td>{rupee(hvTo(r))}</td><td>{rupee(r.brokerage)}</td><td>{rupee(r.float)}</td><td>{r.mtf > 0 ? '✓' : '—'}</td><td>{r.rm_name}</td>
                   <td><span className={`badge ${r.status === 'Active' ? 'b-act' : 'b-dor'}`}>{r.status}</span></td>
                 </tr>
               ))}
-              {hvRows.length === 0 && <tr><td colSpan={9} style={{ color: 'var(--tx3)' }}>No {hvType === 'NRI' ? 'NRI ' : hvType === 'RI' ? 'resident ' : ''}option traders in this period.</td></tr>}
+              {hvRows.length === 0 && <tr><td colSpan={9} style={{ color: 'var(--tx3)' }}>No {hvType === 'NRI' ? 'NRI ' : hvType === 'RI' ? 'resident ' : hvType === 'Equity' ? 'equity-option ' : hvType === 'Commodity' ? 'commodity-option ' : ''}option traders in this period.</td></tr>}
             </tbody>
           </table></div>
         </div>

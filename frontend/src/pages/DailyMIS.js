@@ -7,6 +7,14 @@ const inr = (n) => (n == null ? '—' : '₹' + Number(n).toLocaleString('en-IN'
 const inr0 = (n) => (n == null ? '—' : '₹' + Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 }));  // whole rupees (no paise)
 const vsColor = (n) => (n == null ? 'var(--tx2)' : n >= 0 ? 'var(--sc)' : 'var(--dc)');
 const vsFmt = (n) => (n == null ? '—' : (n >= 0 ? '+' : '') + n + '%');
+// Colour the last-traded-date value vs the previous trading day: green if up, red if down,
+// neutral if equal or if either side is missing (never colour a comparison we can't make).
+const dayCmpColor = (cur, prev) => {
+  if (cur == null || prev == null) return undefined;
+  if (cur > prev) return 'var(--sc)';
+  if (cur < prev) return 'var(--dc)';
+  return undefined;
+};
 const num = (n) => (n == null ? '—' : Number(n).toLocaleString('en-IN'));
 const cr  = (n) => (n == null ? '0.00' : (Number(n) / 1e7).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 
@@ -124,9 +132,8 @@ const DailyMIS = () => {
         </div>
         <button className="btn bp" disabled={!from || !to || from > to} onClick={() => load(from, to, asof)}>Validate range</button>
         {range && <button className="btn" onClick={() => { setFrom(''); setTo(''); load('', '', asof); }}>Clear</button>}
-        <span style={{ fontSize: 11, color: 'var(--tx3)' }}>Pick a From & To date to validate MTF interest, brokerage, clearing and float per day for that window.</span>
 
-        <div style={{ borderLeft: '1px solid var(--br)', paddingLeft: 14, marginLeft: 2 }}>
+        <div style={{ borderLeft: '1px solid var(--br)', paddingLeft: 14, marginLeft: 'auto' }}>
           <div style={{ fontSize: 11, color: 'var(--tx3)', marginBottom: 4 }}>As-of date <span style={{ opacity: 0.7 }}>(table columns)</span></div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
             <input type="date" value={asof} onChange={e => { setAsof(e.target.value); load(from, to, e.target.value); }}
@@ -134,6 +141,10 @@ const DailyMIS = () => {
             {asof && <button className="btn" onClick={() => { setAsof(''); load(from, to, ''); }}>Latest</button>}
           </div>
         </div>
+
+        {/* Helper text on its own full-width line below the controls, so it can't push the
+            As-of control onto a stray wrapped row at 100% zoom. */}
+        <span style={{ flexBasis: '100%', fontSize: 11, color: 'var(--tx3)', marginTop: 2 }}>Pick a From &amp; To date to validate MTF interest, brokerage, clearing and float per day for that window.</span>
       </div>
 
       {range && (
@@ -197,14 +208,14 @@ const DailyMIS = () => {
         <div className="tw"><table>
           <thead><tr><th style={{ width: 180 }}>Revenue line</th>
             <th>Last traded date<div style={dsub}>{meta.today}</div></th>
-            <th>Previous trading day<div style={dsub}>{meta.yesterday_date}</div></th>
-            <th>2nd previous trading day<div style={dsub}>{meta.day_before_date}</div></th>
+            <th>Previous<br/>trading day<div style={dsub}>{meta.yesterday_date}</div></th>
+            <th>2nd previous<br/>trading day<div style={dsub}>{meta.day_before_date}</div></th>
             <th>MTD avg</th><th>Prior 1M avg</th><th>Prior 2M avg</th><th>Prior 3M avg</th><th>vs Prior 3M avg</th><th>Revenue share</th></tr></thead>
           <tbody>
             {income.map(r => (
               <tr key={r.line} style={{ fontWeight: r.total ? 600 : 'normal', borderTop: r.total ? '.5px solid var(--br)' : undefined }}>
                 <td><strong>{r.line}</strong>{r.note ? <span style={{ fontSize: 10, color: 'var(--tx3)' }}> ({r.note})</span> : ''}</td>
-                <td>{inr0(r.today)}</td><td>{inr0(r.yesterday)}</td><td>{inr0(r.day_before)}</td>
+                <td style={{ color: dayCmpColor(r.today, r.yesterday), fontWeight: 600 }}>{inr0(r.today)}</td><td>{inr0(r.yesterday)}</td><td>{inr0(r.day_before)}</td>
                 <td>{inr0(r.mtd_avg)}</td><td>{inr0(r.prior1m_avg)}</td><td>{inr0(r.prior2m_avg)}</td><td>{inr0(r.prior3m_avg)}</td>
                 <td style={{ color: vsColor(r.vs) }}>{vsFmt(r.vs)}</td>
                 <td>{r.total ? '100%' : (r.share == null ? '—' : r.share + '%')}</td>
