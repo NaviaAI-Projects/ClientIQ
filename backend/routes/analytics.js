@@ -38,19 +38,38 @@ router.get('/revenue-float', auth, async (req, res) => {
       GROUP BY month_year ORDER BY month_year
     `, [rng.from, rng.to]);
 
-    // Per-month float = that month's AVERAGE daily total ledger balance × FD rate ÷ 365.
-    // (Previously float was only attributed to the single latest ledger month, so a July
-    //  report showed ₹0 when the newest ledger row was in August.)
+    // Per-month float, computed on a CALENDAR-DAY carry-forward basis — the SAME method the
+    // Daily MIS "selected range" validation uses. Float accrues every calendar day the balance
+    // sits (weekends/holidays included), so for each calendar day we carry forward the most
+    // recent ledger balance and sum ₹/day across the whole month. Previously this summed only
+    // the days that had a ledger row (~trading days), which under-reported each month by the
+    // weekend/holiday fraction (e.g. Aug read ~₹13L instead of the true ~₹20L). n_days is now
+    // calendar days in the month (within the loaded ledger range), so month total = ₹/day × n_days
+    // reconciles with Daily MIS and the Company Dashboard.
     const monthlyFloat = await pool.query(`
-      SELECT to_char(ledger_date,'YYYY-MM') AS month, AVG(daybal)::float AS avg_bal,
-             COUNT(*)::int AS n_days
-      FROM ( SELECT ledger_date, SUM(opening_balance) FILTER (WHERE opening_balance > 0) AS daybal FROM daily_ledger GROUP BY ledger_date ) d
+      WITH daybal AS (
+        SELECT ledger_date, SUM(opening_balance) FILTER (WHERE opening_balance > 0) AS bal
+        FROM daily_ledger GROUP BY ledger_date
+      ),
+      bounds AS (SELECT MIN(ledger_date) mn, MAX(ledger_date) mx FROM daybal),
+      perday AS (
+        SELECT gs::date AS d,
+               (SELECT b.bal FROM daybal b WHERE b.ledger_date <= gs::date ORDER BY b.ledger_date DESC LIMIT 1) AS bal
+        FROM generate_series((SELECT mn FROM bounds), (SELECT mx FROM bounds), interval '1 day') gs
+      )
+      SELECT to_char(d,'YYYY-MM') AS month,
+             SUM(bal)::float  AS sum_bal,     -- Σ carry-forward balance across every calendar day
+             COUNT(*)::int    AS n_days       -- calendar days in the month (within the ledger range)
+      FROM perday WHERE bal IS NOT NULL
       GROUP BY 1
     `);
     const floatByMonth = {}, floatDaysByMonth = {};
     monthlyFloat.rows.forEach(r => {
-      floatByMonth[r.month] = Number(r.avg_bal) * (fdRate / 100) / 365;   // ₹/day rate
-      floatDaysByMonth[r.month] = Number(r.n_days);                        // calendar days with ledger data
+      const nDays = Number(r.n_days) || 1;
+      // ₹/day rate = mean carry-forward balance × FD ÷ 365 (≈ the same daily rate as before);
+      // multiplying by n_days (now calendar days) gives the full-month float.
+      floatByMonth[r.month] = (Number(r.sum_bal) / nDays) * (fdRate / 100) / 365;
+      floatDaysByMonth[r.month] = Number(r.n_days);
     });
 
     const monthlyMtf = await pool.query(`
@@ -3708,6 +3727,55 @@ router.get('/revenue-ramp', auth, async (req, res) => {
       GROUP BY 1`);
     const activatedByC = {}; optQ.rows.forEach(r => { activatedByC[r.cmon] = Number(r.activated); });
 
+    // ── Avg revenue at M6 — options-activated vs not ─────────────────────────────
+    // M6 = the client's 6th month AFTER opening (M0 = opening month). Only computable for a
+    // cohort when BOTH (a) its opening month is observed — so options activation in the first
+    // 60 days can be seen — AND (b) its M6 month (opening + 6) is observed. With the current
+    // window (Apr–Sep) no cohort satisfies both (recent openers' M6 is in the future; older
+    // openers' activation window predates the loaded trade files), so this stays null until a
+    // cohort that opened inside the trade window ages into its 6th month. Then it fills on its own.
+    const m6q = await pool.query(`
+      WITH obs AS (
+        SELECT DISTINCT month_year m FROM client_monthly_summary WHERE turnover > 0
+        UNION SELECT DISTINCT month_year FROM mtf_monthly
+      ),
+      cohort AS (
+        SELECT ucc, account_open_date,
+               to_char(account_open_date,'YYYY-MM')                        AS cmon,
+               to_char(account_open_date + interval '6 months','YYYY-MM')  AS m6mon
+        FROM clients WHERE account_open_date IS NOT NULL
+      ),
+      firstopt AS (SELECT ucc, MIN(trade_date) d FROM daily_trades WHERE options_premium_turnover > 0 GROUP BY ucc),
+      revm AS (
+        SELECT ucc, mon, SUM(rev)::float AS rev FROM (
+          SELECT ucc, month_year AS mon, (COALESCE(brokerage,0) + COALESCE(opt_prem_to,0) * 0.0005)::float AS rev
+          FROM client_monthly_summary WHERE turnover > 0
+          UNION ALL
+          SELECT ucc, month_year AS mon, COALESCE(interest_earned,0)::float AS rev FROM mtf_monthly
+        ) s GROUP BY ucc, mon
+      ),
+      elig AS (
+        SELECT c.ucc,
+               (f.d IS NOT NULL AND f.d >= c.account_open_date AND f.d - c.account_open_date <= 60) AS activated,
+               COALESCE(r.rev, 0)::float AS m6rev
+        FROM cohort c
+        LEFT JOIN firstopt f ON f.ucc = c.ucc
+        LEFT JOIN revm r ON r.ucc = c.ucc AND r.mon = c.m6mon
+        WHERE c.cmon  IN (SELECT m FROM obs)     -- activation window observable
+          AND c.m6mon IN (SELECT m FROM obs)     -- 6th month observed
+      )
+      SELECT activated, COUNT(*)::int AS clients, AVG(m6rev)::float AS avg_m6
+      FROM elig GROUP BY 1
+    `);
+    let m6Act = null, m6Non = null, m6ActN = 0, m6NonN = 0;
+    m6q.rows.forEach(r => {
+      if (r.activated) { m6Act = Math.round(Number(r.avg_m6)); m6ActN = Number(r.clients); }
+      else             { m6Non = Math.round(Number(r.avg_m6)); m6NonN = Number(r.clients); }
+    });
+    const m6Options = (m6ActN || m6NonN)
+      ? { activated_avg: m6Act, activated_n: m6ActN, non_activated_avg: m6Non, non_activated_n: m6NonN }
+      : null;
+
     const cmons = Object.keys(cohortSize).sort();   // ALL opening months (curve/cards blend over these)
     const cohortsAll = cmons.map(cmon => {
       const size = cohortSize[cmon];
@@ -3762,6 +3830,7 @@ router.get('/revenue-ramp', auth, async (req, res) => {
       cards: { m1: curveRev(1), m3: curveRev(3), m6: curveRev(6), opt_activation: optCard },
       cohorts,
       ramp_curve: curve,
+      m6_options: m6Options,
       opt_activation_by_cohort: cohorts.map(c => ({ cohort: c.cohort, pct: c.opt_activation })),
     });
   } catch (err) { console.error('REVENUE-RAMP ERROR:', err.message); res.status(500).json({ message: 'Server error' }); }

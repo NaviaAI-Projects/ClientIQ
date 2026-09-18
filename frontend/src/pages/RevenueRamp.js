@@ -32,8 +32,12 @@ const RevenueRamp = () => {
   if (loading && !data) return <div className="ph"><h2>Client revenue ramp</h2><p>Loading…</p></div>;
   if (error)   return <div className="ph"><h2>Client revenue ramp</h2><p style={{ color: 'var(--dc)' }}>{error}</p></div>;
 
-  const { meta, cards, cohorts, ramp_curve = [], opt_activation_by_cohort = [] } = data;
+  const { meta, cards, cohorts, ramp_curve = [], opt_activation_by_cohort = [], m6_options = null } = data;
   const pct = v => v == null ? '—' : v + '%';
+  const m6Chart = m6_options ? [
+    { label: 'Options activated', rev: m6_options.activated_avg || 0, n: m6_options.activated_n || 0 },
+    { label: 'Not activated',     rev: m6_options.non_activated_avg || 0, n: m6_options.non_activated_n || 0 },
+  ] : [];
 
   return (
     <div>
@@ -80,9 +84,18 @@ const RevenueRamp = () => {
           ) : <Pending />}
         </div>
         <div className="panel">
-          <div className="ptitle">📊 Avg revenue at M6 — options vs non-options activated clients<InfoBtn text="Compares average month-6 revenue per client between those who activated options trading and those who did not. Needs 6+ months of post-opening history." /></div>
-          <Pending />
-          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>Needs 6+ post-opening months; only a few months of trade history loaded so far. Fills automatically as more monthly files load.</p>
+          <div className="ptitle">📊 Avg revenue at M6 — options vs non-options activated clients<InfoBtn text="Average month-6 revenue per client (M0 = opening month, so M6 is the 6th month after opening), split by whether the client placed its first options trade within 60 days of opening. Computable only for cohorts whose opening AND 6th month both fall inside the loaded trade history." /></div>
+          {m6Chart.length ? (
+            <ResponsiveContainer width="100%" height={200}>
+              <BarChart data={m6Chart} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(0,0,0,0.06)" />
+                <XAxis dataKey="label" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 10 }} tickFormatter={rupee} />
+                <Tooltip formatter={(v, k, p) => [rupee(v), `Avg M6 revenue (${p.payload.n} clients)`]} />
+                <Bar dataKey="rev" fill="#185fa5" name="Avg M6 revenue/client" radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : <Pending />}
+          <p style={{ fontSize: 11, color: 'var(--tx3)', marginTop: 6 }}>M6 = 6th month after opening. Needs a cohort whose opening month and its 6th month are both in loaded history — fills automatically once cohorts opened inside the trade window (May '26+) reach month 6.</p>
         </div>
       </div>
 

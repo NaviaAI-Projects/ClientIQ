@@ -106,7 +106,7 @@ const InactiveDP = () => {
 
       <div className="tc2">
         <div className="panel">
-          <div className="ptitle">📊 Inactive accounts by duration band<InfoBtn text="Count of inactive accounts by inactivity-duration band, stacked by whether they hold securities in DP versus having no holdings or balance." /></div>
+          <div className="ptitle">📊 Inactive trading accounts by duration band<InfoBtn text="Count of inactive trading accounts by inactivity-duration band, stacked by whether they hold securities in DP versus having no holdings or balance." /></div>
           <ViewToggle
             chart={
           <ResponsiveContainer width="100%" height={220}>
